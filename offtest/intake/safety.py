@@ -56,13 +56,13 @@ def scan_for_secrets(content: str, file_path: str) -> List[Tuple[int, str, str, 
         matched = False
 
         # 1. Known high-confidence regex patterns
-        for pattern in OfflineConfig.SENSITIVE_PATTERNS:
+        for det_name, pattern in OfflineConfig.SENSITIVE_DETECTORS:
             match = pattern.search(line)
             if match:
                 raw_secret = match.group(match.lastindex) if (match.lastindex and match.lastindex >= 1) else match.group(0)
                 fingerprint = compute_secret_fingerprint(raw_secret)
                 preview = redact_sensitive_data(line.strip())
-                findings.append((idx, "Hardcoded Secret / Credential", preview, fingerprint))
+                findings.append((idx, f"Hardcoded Secret ({det_name})", preview, fingerprint))
                 matched = True
                 break
 
@@ -75,7 +75,7 @@ def scan_for_secrets(content: str, file_path: str) -> List[Tuple[int, str, str, 
                 if entropy >= 4.5:
                     fingerprint = compute_secret_fingerprint(token)
                     preview = line.strip().replace(token, "[REDACTED_SECRET]")
-                    findings.append((idx, f"High-Entropy Secret Token (entropy {entropy:.2f})", preview, fingerprint))
+                    findings.append((idx, f"High-Entropy Secret Token (Shannon Entropy {entropy:.2f} bits)", preview, fingerprint))
                     break
 
     return findings

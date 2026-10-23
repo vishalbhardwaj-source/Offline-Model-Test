@@ -139,7 +139,7 @@ class SBOMGenerator:
                 pass
 
         # 5. Python: requirements.txt
-        req_pattern = re.compile(r"^([a-zA-Z0-9_\-\.]+)\s*(==|>=|<=|~=|>|<)\s*([a-zA-Z0-9_\-\.]+)")
+        req_pattern = re.compile(r"^([a-zA-Z0-9_\-\.]+)\s*(?:(==|>=|<=|~=|>|<)\s*([a-zA-Z0-9_\-\.]+))?")
         for f in self.files:
             if "requirements" in f.path.lower() and f.path.endswith(".txt"):
                 try:
@@ -149,10 +149,17 @@ class SBOMGenerator:
                         line = line.strip()
                         if not line or line.startswith("#") or line.startswith("-"):
                             continue
+                        line = line.split("#")[0].strip()
                         m = req_pattern.match(line)
                         if m:
-                            name, op, version = m.group(1), m.group(2), m.group(3)
-                            is_range = (op != "==")
+                            name = m.group(1)
+                            op = m.group(2)
+                            version = m.group(3)
+                            if op and version:
+                                is_range = (op != "==")
+                            else:
+                                version = "unspecified"
+                                is_range = True
                             components.append(
                                 SBOMComponent(
                                     name=name,

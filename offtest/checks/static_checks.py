@@ -37,6 +37,16 @@ class OfflineStaticChecker:
             # 1. Hardcoded secrets check
             secret_hits = scan_for_secrets(content, f.path)
             for line_no, label, preview, fingerprint in secret_hits:
+                if "AWS" in label:
+                    impact = "Detected token matching AWS credential structure (prefix 'AKIA'). High risk of AWS cloud credential exposure if repository is shared."
+                    suggested_action = "Rotate AWS credentials immediately via AWS IAM and move secrets to local environment variables."
+                elif "Entropy" in label:
+                    impact = "Detected high-entropy string exceeding randomness threshold. High likelihood of custom API key, token, or secret."
+                    suggested_action = "Rotate token and move credentials to local environment variables or an offline secret store."
+                else:
+                    impact = "High risk of credential exposure if repository is shared or breached."
+                    suggested_action = "Rotate credentials immediately and move secrets to local environment variables or an offline vault."
+
                 findings.append(
                     Finding(
                         id=f"FIND-{counter:04d}",
@@ -47,9 +57,9 @@ class OfflineStaticChecker:
                         branch=branch,
                         file_path=f.path,
                         line_number=line_no,
-                        impact="High risk of credential exposure if repository is shared or breached.",
-                        evidence=f"Line {line_no} [fingerprint: {fingerprint}]: {preview}",
-                        suggested_action="Rotate credentials immediately and move secrets to local environment variables or an offline vault.",
+                        impact=impact,
+                        evidence=f"Line {line_no} [detector: {label}, fingerprint: {fingerprint}]: {preview}",
+                        suggested_action=suggested_action,
                         check_tool="offtest-secret-scanner",
                     )
                 )
@@ -110,6 +120,27 @@ class OfflineStaticChecker:
         class SecurityVisitor(ast.NodeVisitor):
             def __init__(self):
                 self.issues = []
+
+            def visit_FunctionDef(self, node: ast.FunctionDef):
+                # Check decorators for GET method with auth/login route and credential parameters
+                for dec in node.decorator_list:
+                    # e.g. @app.get("/api/v1/auth/login")
+                    if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute) and dec.func.attr.lower() == "get":
+                        if dec.args and isinstance(dec.args[0], ast.Constant) and isinstance(dec.args[0].value, str):
+                            route_path = dec.args[0].value.lower()
+                            if any(k in route_path for k in ["login", "auth", "token"]):
+                                arg_names = [a.arg.lower() for a in node.args.args]
+                                if any(c in arg_names for c in ["password", "secret", "passwd", "pwd"]):
+                                    self.issues.append((
+                                        node.lineno,
+                                        "Insecure Credential Transmission via GET Method",
+                                        Severity.HIGH,
+                                        Confidence.HIGH,
+                                        "Credentials (passwords) accepted via GET query parameters appear in web server access logs, browser history, and HTTP Referer headers.",
+                                        f"Line {node.lineno}: @app.get('{dec.args[0].value}') handler '{node.name}' receives sensitive arguments: {', '.join(arg_names)}",
+                                        "Change the HTTP route method from GET to POST and accept credentials within the request body."
+                                    ))
+                self.generic_visit(node)
 
             def visit_Call(self, node: ast.Call):
                 # Check eval() / exec()

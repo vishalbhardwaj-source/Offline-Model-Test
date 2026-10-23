@@ -43,6 +43,8 @@ class InventoryEngine:
         test_files_count = 0
 
         for root, dirs, filenames in os.walk(self.repo_dir):
+            # Prune VCS internals so internal object blobs do not inflate repository file counts
+            dirs[:] = [d for d in dirs if d not in [".git", ".svn", ".hg"]]
             rel_root = os.path.relpath(root, self.repo_dir)
             if rel_root == ".":
                 rel_root = ""

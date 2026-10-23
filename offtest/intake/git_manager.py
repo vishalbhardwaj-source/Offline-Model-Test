@@ -18,7 +18,7 @@ class GitManager:
             hardened_flags = [
                 "-c", "core.fsmonitor=false",
                 "-c", "core.pager=cat",
-                "-c", "core.hooksPath=" + os.devnull,
+                "-c", "core.hooksPath=",
                 "-c", "diff.external=false",
                 "-c", "diff.textconv=false",
                 "-c", "protocol.allow=never",
@@ -35,7 +35,7 @@ class GitManager:
             })
 
             result = subprocess.run(
-                ["git"] + hardened_flags + args,
+                ["git", "--no-pager"] + hardened_flags + args,
                 cwd=str(self.repo_dir),
                 env=git_env,
                 capture_output=True,
@@ -113,7 +113,7 @@ class GitManager:
                         is_base=(name == comparison_base),
                         head_commit=commit,
                         commit_message=msg,
-                        status="available",
+                        status="assessed" if (name == active) else "unassessed",
                     )
                 )
         return branches

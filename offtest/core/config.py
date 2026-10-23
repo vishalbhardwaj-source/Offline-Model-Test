@@ -1,5 +1,5 @@
 import re
-from typing import Dict, List, Pattern, Set
+from typing import Dict, List, Pattern, Set, Tuple
 
 
 class OfflineConfig:
@@ -73,36 +73,37 @@ class OfflineConfig:
         r"Gemfile\.lock$",
     ]
 
-    # Sensitive data regex patterns for automatic redaction and secret scanning
-    SENSITIVE_PATTERNS: List[Pattern] = [
+    # Sensitive data detectors and regex patterns for automatic redaction and secret scanning
+    SENSITIVE_DETECTORS: List[Tuple[str, Pattern]] = [
         # AWS Access Key ID
-        re.compile(r"\b(AKIA[0-9A-Z]{16})\b"),
+        ("AWS Access Key ID Pattern [regex: AKIA...]", re.compile(r"\b(AKIA[0-9A-Z]{16})\b")),
         # AWS Secret Access Key
-        re.compile(r"(?i)(?:aws_secret_access_key|aws_secret)\s*[:=]\s*['\"]?([A-Za-z0-9\/+=]{40})['\"]?"),
+        ("AWS Secret Access Key Pattern", re.compile(r"(?i)(?:aws_secret_access_key|aws_secret)\s*[:=]\s*['\"]?([A-Za-z0-9\/+=]{40})['\"]?")),
         # GitHub Personal Access Tokens
-        re.compile(r"\b(gh[pousr]_[A-Za-z0-9_]{36,255})\b"),
-        re.compile(r"\b(github_pat_[A-Za-z0-9_]{82})\b"),
+        ("GitHub Personal Access Token", re.compile(r"\b(gh[pousr]_[A-Za-z0-9_]{36,255})\b")),
+        ("GitHub Fine-Grained Token", re.compile(r"\b(github_pat_[A-Za-z0-9_]{82})\b")),
         # OpenAI / Anthropic / LLM API Keys
-        re.compile(r"\b(sk-(?:proj-|live-)?[a-zA-Z0-9_\-]{20,})\b"),
+        ("LLM API Key (OpenAI/Anthropic)", re.compile(r"\b(sk-(?:proj-|live-)?[a-zA-Z0-9_\-]{20,})\b")),
         # Google API Keys
-        re.compile(r"\b(AIza[0-9A-Za-z\-_]{35})\b"),
+        ("Google API Key", re.compile(r"\b(AIza[0-9A-Za-z\-_]{35})\b")),
         # Slack API Tokens
-        re.compile(r"\b(xox[baprs]-[A-Za-z0-9\-]{10,48})\b"),
+        ("Slack API Token", re.compile(r"\b(xox[baprs]-[A-Za-z0-9\-]{10,48})\b")),
         # Stripe API Keys
-        re.compile(r"\b((?:sk|pk)_(?:live|test)_[0-9a-zA-Z]{24,})\b"),
+        ("Stripe API Key", re.compile(r"\b((?:sk|pk)_(?:live|test)_[0-9a-zA-Z]{24,})\b")),
         # JWT Tokens (JSON Web Tokens)
-        re.compile(r"\b(eyJ[a-zA-Z0-9_\-]{10,}\.eyJ[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]{10,})\b"),
+        ("JWT Authentication Token", re.compile(r"\b(eyJ[a-zA-Z0-9_\-]{10,}\.eyJ[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]{10,})\b")),
         # Authorization Headers
-        re.compile(r"(?i)(?:Authorization|Auth)\s*[:=]\s*['\"]?(?:Bearer|Basic)\s+([A-Za-z0-9_\-\.\:\=\+\/]{16,})['\"]?"),
+        ("HTTP Authorization Header", re.compile(r"(?i)(?:Authorization|Auth)\s*[:=]\s*['\"]?(?:Bearer|Basic)\s+([A-Za-z0-9_\-\.\:\=\+\/]{16,})['\"]?")),
         # Generic API key / Bearer token / Secret
-        re.compile(r"(?i)(api[_-]?key|secret|auth[_-]?token|bearer|client[_-]?secret)\s*[:=]\s*['\"]?([A-Za-z0-9_\-\.]{16,80})['\"]?"),
+        ("Generic API Key Assignment", re.compile(r"(?i)(api[_-]?key|secret|auth[_-]?token|bearer|client[_-]?secret)\s*[:=]\s*['\"]?([A-Za-z0-9_\-\.]{16,80})['\"]?")),
         # Private key blocks (RSA, EC, DSA, OPENSSH, PGP)
-        re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY(?: BLOCK)?-----"),
+        ("Private Key Block", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY(?: BLOCK)?-----")),
         # Password assignments
-        re.compile(r"(?i)(password|passwd|pwd|db_pass)\s*[:=]\s*['\"]?([^'\"\s\r\n]{6,64})['\"]?"),
+        ("Plaintext Password Assignment", re.compile(r"(?i)(password|passwd|pwd|db_pass)\s*[:=]\s*['\"]?([^'\"\s\r\n]{6,64})['\"]?")),
         # Database / Service connection strings with password
-        re.compile(r"(?i)(postgres|postgresql|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^:\s\/]+:([^@\s\/]+)@"),
+        ("Database Connection URI Credential", re.compile(r"(?i)(postgres|postgresql|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^:\s\/]+:([^@\s\/]+)@")),
     ]
+    SENSITIVE_PATTERNS: List[Pattern] = [p for _, p in SENSITIVE_DETECTORS]
 
     # Offline runner environment variables to strictly disable network resolution and outbound calls
     OFFLINE_ENV_OVERRIDES: Dict[str, str] = {

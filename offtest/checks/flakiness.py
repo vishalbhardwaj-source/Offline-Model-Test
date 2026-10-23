@@ -77,7 +77,8 @@ class FlakinessRepeatSampler:
         flaky_count = 0
 
         for chk in test_checks:
-            if chk.status in [CheckStatus.SKIPPED, CheckStatus.BLOCKED]:
+            # Strictly evaluate automated unit test suites that actually executed
+            if chk.check_type != "unit_test" or chk.status in [CheckStatus.SKIPPED, CheckStatus.BLOCKED]:
                 continue
 
             record = self.evaluate_check(chk)

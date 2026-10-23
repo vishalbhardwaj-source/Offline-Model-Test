@@ -86,16 +86,25 @@ class DetailedReportGenerator:
             lines.append("_No explicit HTTP routes or API endpoints discovered in source files._")
 
         lines.append("\n### Role-Based Access Control (RBAC) Matrix")
-        lines.append(f"- **Identified Roles:** {', '.join(f'`{r}`' for r in self.ctx.rbac_matrix.roles)}")
+        roles_list_str = ', '.join(f'`{r}`' for r in self.ctx.rbac_matrix.roles) if self.ctx.rbac_matrix.roles else "_None explicitly identified_"
+        lines.append(f"- **Identified Roles:** {roles_list_str}")
         lines.append(f"- **Endpoints Covered in RBAC Map:** {self.ctx.rbac_matrix.endpoints_count}")
         if self.ctx.rbac_matrix.permissions:
-            lines.append("\n| Endpoint | Method | Auth Required | Required Roles | Evidence Location |")
-            lines.append("| :--- | :---: | :---: | :--- | :--- |")
+            lines.append("\n| Endpoint | Method | Auth Required | Guard Status | Required Roles | Evidence Location |")
+            lines.append("| :--- | :---: | :---: | :---: | :--- | :--- |")
             for p in self.ctx.rbac_matrix.permissions[:10]:
-                roles_str = ", ".join(f"`{r}`" for r in p.required_roles) or "`Anonymous`"
-                lines.append(f"| `{p.endpoint}` | `{p.method}` | {'Yes' if p.auth_required else 'No'} | {roles_str} | `{p.file_path}:{p.line_number or 1}` |")
+                if p.auth_required:
+                    guard_status = "Protected"
+                    roles_str = ", ".join(f"`{r}`" for r in p.required_roles) or "`Authenticated`"
+                elif p.status.value == "unverified":
+                    guard_status = "**Unverified** (No local guard)"
+                    roles_str = "_None verified_"
+                else:
+                    guard_status = "Public (Inferred/Observed)"
+                    roles_str = "`Anonymous`"
+                lines.append(f"| `{p.endpoint}` | `{p.method}` | {'Yes' if p.auth_required else 'No'} | {guard_status} | {roles_str} | `{p.file_path}:{p.line_number or 1}` |")
             if len(self.ctx.rbac_matrix.permissions) > 10:
-                lines.append(f"| ... and {len(self.ctx.rbac_matrix.permissions) - 10} more endpoints | | | | |")
+                lines.append(f"| ... and {len(self.ctx.rbac_matrix.permissions) - 10} more endpoints | | | | | |")
 
         lines.append(f"\n### Inferred OpenAPI 3.1 Spec")
         lines.append(f"- **OpenAPI Version:** `{self.ctx.openapi_spec.openapi_version}` | **Endpoints Synthesized:** {self.ctx.openapi_spec.paths_count}")

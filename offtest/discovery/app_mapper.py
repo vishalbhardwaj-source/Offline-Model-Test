@@ -160,16 +160,18 @@ class ApplicationMapper:
                 page_route = "/" + f.path.replace("\\", "/")
                 if page_route.endswith("/index.html"):
                     page_route = page_route[:-10] or "/"
-                routes.append(
-                    RouteRecord(
-                        path=page_route,
-                        method="GET",
-                        file_path=f.path,
-                        line_number=1,
-                        status=EvidenceStatus.OBSERVED,
-                        notes="Static HTML page / screen",
+                # Deduplicate: do not add duplicate GET route if already declared by server route handler
+                if not any(r.path == page_route and r.method == "GET" for r in routes):
+                    routes.append(
+                        RouteRecord(
+                            path=page_route,
+                            method="GET",
+                            file_path=f.path,
+                            line_number=1,
+                            status=EvidenceStatus.OBSERVED,
+                            notes="Static HTML page / screen",
+                        )
                     )
-                )
 
             # Feature flags scan
             for line_idx, line in enumerate(lines, start=1):
@@ -177,9 +179,11 @@ class ApplicationMapper:
                 if fm:
                     flag_name = fm.group(1) or fm.group(2)
                     if flag_name:
-                        # Find linked tests
+                        # Find linked tests (exclude synthesized unverified tests)
                         linked = []
                         for tf_path, t_content in test_file_contents.items():
+                            if "synthesized" in tf_path.lower():
+                                continue
                             if flag_name in t_content:
                                 linked.append(tf_path)
                         features.append(
@@ -241,9 +245,11 @@ class ApplicationMapper:
         route_paths = [r.path.lower() for r in routes] + [a.endpoint.lower() for a in apis]
         auth_routes = [r for r in route_paths if any(term in r for term in ["login", "register", "auth", "signup", "signin"])]
         if auth_routes:
-            # Check if any test tests authentication
+            # Check if any non-synthesized test tests authentication
             linked_auth_tests = []
             for tf_path, t_content in test_file_contents.items():
+                if "synthesized" in tf_path.lower():
+                    continue
                 if any(term in t_content.lower() for term in ["login", "auth", "token"]):
                     linked_auth_tests.append(tf_path)
 

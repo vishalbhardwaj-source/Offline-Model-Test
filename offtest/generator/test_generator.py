@@ -47,6 +47,16 @@ class BranchConditionVisitor(ast.NodeVisitor):
                 ]
             except Exception:
                 test_expr = "comparison"
+        elif isinstance(node.test, ast.Call):
+            pred_type = "function_call"
+            try:
+                test_expr = ast.unparse(node.test)
+                suggested = [
+                    {"case": "truthy_return", "strategy": "mock_call_true"},
+                    {"case": "falsy_return", "strategy": "mock_call_false"},
+                ]
+            except Exception:
+                test_expr = "function_call"
         elif isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not):
             pred_type = "null_check"
             try:
@@ -119,14 +129,18 @@ class ConstrainedTestGenerator:
                     value=f"Target branch at {cond.file_path}:{cond.line_number} -> ({cond.condition_expr})\nPredicate type: {cond.predicate_type}"
                 )
             )
-            assert_node = ast.Assert(
-                test=ast.Constant(value=True),
-                msg=ast.Constant(value=f"Synthesized reachability check for {func_name}"),
+            # Emit pytest.skip so synthesized probe never produces a false-green pass without an oracle
+            skip_node = ast.Expr(
+                value=ast.Call(
+                    func=ast.Attribute(value=ast.Name(id="pytest", ctx=ast.Load()), attr="skip", ctx=ast.Load()),
+                    args=[ast.Constant(value=f"Synthesized probe for {func_name}: no test oracle available")],
+                    keywords=[],
+                )
             )
             func_ast = ast.FunctionDef(
                 name=test_id,
                 args=ast.arguments(posonlyargs=[], args=[], kwonlyargs=[], kw_defaults=[], defaults=[]),
-                body=[doc_node, assert_node],
+                body=[doc_node, skip_node],
                 decorator_list=[],
                 lineno=1,
                 col_offset=0,

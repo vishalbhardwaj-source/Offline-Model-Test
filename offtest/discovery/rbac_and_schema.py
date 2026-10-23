@@ -107,7 +107,8 @@ class RBACAndSchemaExtractor:
                     if f"{method} {endpoint}" not in role_to_endpoints.get(r, []):
                         role_to_endpoints.setdefault(r, []).append(f"{method} {endpoint}")
             else:
-                # Check for explicit public declarations
+                # Check for explicit public declarations or conventional public auth/health endpoints
+                # Conventional endpoints (/login, /register, /health, /) without decorators are inferred as Anonymous
                 is_explicit_public = (
                     re.search(r"""@(?:public|allow_anonymous|permit_all)\b""", context_block, re.IGNORECASE)
                     or endpoint in ["/", "/health", "/login", "/register", "/api/v1/auth/login"]
@@ -115,7 +116,7 @@ class RBACAndSchemaExtractor:
                 if is_explicit_public:
                     roles = ["Anonymous"]
                     status = EvidenceStatus.INFERRED
-                    role_to_endpoints["Anonymous"].append(f"{method} {endpoint}")
+                    role_to_endpoints.setdefault("Anonymous", []).append(f"{method} {endpoint}")
                 else:
                     # Do not assume unguarded routes are public: global middleware or CBVs may apply
                     roles = ["Unverified (No local guard)"]
@@ -134,7 +135,8 @@ class RBACAndSchemaExtractor:
                 )
             )
 
-        all_roles = sorted(list(role_to_endpoints.keys()))
+        # Only list roles that actually have one or more associated endpoints
+        all_roles = sorted([r for r, eps in role_to_endpoints.items() if len(eps) > 0 and not r.startswith("Unverified")])
         return RBACMatrix(
             roles=all_roles,
             endpoints_count=len(permissions),
@@ -144,6 +146,8 @@ class RBACAndSchemaExtractor:
 
     def synthesize_openapi(self, title: str = "Inferred Application API", version: str = "1.0.0") -> OpenAPISpecRecord:
         paths: Dict[str, Any] = {}
+        rbac = self.extract_rbac()
+        auth_map = {(p.endpoint, p.method.upper()): p.auth_required for p in rbac.permissions}
 
         # Standardize paths and methods from routes and apis
         all_endpoints: Dict[str, Dict[str, Any]] = {}
@@ -153,16 +157,20 @@ class RBACAndSchemaExtractor:
             method = a.method.lower()
             if method == "any":
                 method = "get"
+            
+            responses: Dict[str, Any] = {
+                "200": {"description": "Successful operation", "x-inferred": True},
+                "400": {"description": "Bad Request", "x-inferred": True},
+                "500": {"description": "Internal Server Error", "x-inferred": True},
+            }
+            if auth_map.get((a.endpoint, a.method.upper()), False):
+                responses["401"] = {"description": "Unauthorized - Authentication required", "x-inferred": True}
+
             all_endpoints.setdefault(norm_path, {})[method] = {
                 "summary": f"Handler for {a.endpoint}",
                 "operationId": f"{method}_{norm_path.strip('/').replace('/', '_').replace('{', '').replace('}', '') or 'root'}",
                 "parameters": self._extract_path_params(norm_path),
-                "responses": {
-                    "200": {"description": "Successful operation"},
-                    "400": {"description": "Bad Request"},
-                    "401": {"description": "Unauthorized"},
-                    "500": {"description": "Internal Server Error"},
-                },
+                "responses": responses,
             }
 
         for r in self.routes:
@@ -177,8 +185,8 @@ class RBACAndSchemaExtractor:
                         "operationId": f"{method}_{norm_path.strip('/').replace('/', '_').replace('{', '').replace('}', '') or 'root'}",
                         "parameters": self._extract_path_params(norm_path),
                         "responses": {
-                            "200": {"description": "HTML or JSON Page Content"},
-                            "404": {"description": "Not Found"},
+                            "200": {"description": "HTML or JSON Page Content", "x-inferred": True},
+                            "404": {"description": "Not Found", "x-inferred": True},
                         },
                     }
 

@@ -75,6 +75,11 @@ class AssessmentOrchestrator:
             if diff:
                 branch_diffs.append(diff)
 
+        # Mark branches with completed diffs as diffed
+        for b in local_branches:
+            if any(d.branch_name == b.name for d in branch_diffs):
+                b.status = "diffed"
+
         # 3. Inventory & Multi-Ecosystem Offline SBOM Generation
         inv_engine = InventoryEngine(str(target_dir))
         files, inv_summary = inv_engine.scan()
@@ -124,6 +129,7 @@ class AssessmentOrchestrator:
             "Assessment runs in an offline isolated environment without external dependency retrieval.",
             "Static analysis provides full AST depth for Python; regex heuristics apply for other languages.",
             "Undocumented APIs and implicit workflows without local guards are explicitly tagged as Unverified.",
+            "On Windows 11 / bare-metal host platforms, process isolation enforces environment scrubbing and proxy sinkholing; physical/kernel air-gap requires containerization (Docker --network none) or OS-level packet filtering.",
         ]
         if not self.allow_scripts:
             limitations.append(

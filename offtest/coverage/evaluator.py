@@ -27,18 +27,24 @@ class CoverageEvaluator:
 
         # 1. Repository inventory coverage
         total_discovered = len(files)
-        # All discovered files are classified with explicit disposition
-        classified_count = len(files)
-        inv_pct = 100.0 if total_discovered > 0 else 0.0
+        analyzed_count = len([f for f in files if f.disposition == FileDisposition.ANALYZED])
+        excluded_count = len([f for f in files if f.disposition == FileDisposition.EXCLUDED])
+        generated_count = len([f for f in files if f.disposition == FileDisposition.GENERATED])
+        binary_count = len([f for f in files if f.disposition == FileDisposition.BINARY])
+        unsupported_count = len([f for f in files if f.disposition == FileDisposition.UNSUPPORTED])
+        failed_count = len([f for f in files if f.disposition == FileDisposition.FAILED_TO_INSPECT])
+
+        eligible_count = total_discovered - excluded_count
+        inv_pct = round((analyzed_count / eligible_count) * 100, 1) if eligible_count > 0 else 0.0
         dimensions.append(
             CoverageDimension(
                 name="Repository Inventory Coverage",
                 value_pct=inv_pct,
-                numerator=classified_count,
-                denominator=total_discovered,
-                unit="files",
+                numerator=analyzed_count,
+                denominator=eligible_count,
+                unit="eligible non-excluded files",
                 is_available=True,
-                explanation=f"{classified_count} files classified out of {total_discovered} discovered files (100% of files have an explicit disposition).",
+                explanation=f"{analyzed_count} analyzed of {total_discovered} discovered files ({eligible_count} eligible non-excluded). Breakdown: {analyzed_count} analyzed, {excluded_count} excluded, {generated_count} generated, {binary_count} binary, {unsupported_count} unsupported.",
             )
         )
 
@@ -128,11 +134,25 @@ class CoverageEvaluator:
                 )
             )
 
+        # Check if test suites were executed (synthesized tests never count toward confirmed coverage)
+        has_executed_tests = executed_test_suites > 0
+
         # 5. Workflow coverage
         total_workflows = len(workflows)
-        covered_workflows = len([w for w in workflows if len(w.linked_tests) > 0])
+        covered_workflows = 0
+        if has_executed_tests:
+            covered_workflows = len([
+                w for w in workflows
+                if any(lt for lt in w.linked_tests if "synthesized" not in lt.lower())
+            ])
+
         if total_workflows > 0:
             wf_pct = round((covered_workflows / total_workflows) * 100, 1)
+            expl = (
+                f"{covered_workflows} of {total_workflows} identified application workflows have linked automated test evidence."
+                if has_executed_tests
+                else f"0 of {total_workflows} application workflows confirmed covered (test suite execution was blocked or not run; synthesized tests are excluded from confirmed coverage)."
+            )
             dimensions.append(
                 CoverageDimension(
                     name="Workflow Coverage",
@@ -141,7 +161,7 @@ class CoverageEvaluator:
                     denominator=total_workflows,
                     unit="workflows",
                     is_available=True,
-                    explanation=f"{covered_workflows} of {total_workflows} identified application workflows have linked automated test evidence.",
+                    explanation=expl,
                 )
             )
         else:
@@ -159,9 +179,20 @@ class CoverageEvaluator:
 
         # 6. Feature coverage
         total_features = len(features)
-        covered_features = len([f for f in features if len(f.linked_tests) > 0])
+        covered_features = 0
+        if has_executed_tests:
+            covered_features = len([
+                f for f in features
+                if any(lt for lt in f.linked_tests if "synthesized" not in lt.lower())
+            ])
+
         if total_features > 0:
             ft_pct = round((covered_features / total_features) * 100, 1)
+            expl = (
+                f"{covered_features} of {total_features} identified features/toggles have linked automated test coverage."
+                if has_executed_tests
+                else f"0 of {total_features} identified features/toggles confirmed covered (test suite execution was blocked or not run; synthesized tests are excluded from confirmed coverage)."
+            )
             dimensions.append(
                 CoverageDimension(
                     name="Feature Coverage",
@@ -170,7 +201,7 @@ class CoverageEvaluator:
                     denominator=total_features,
                     unit="features",
                     is_available=True,
-                    explanation=f"{covered_features} of {total_features} identified features/toggles have linked automated test coverage.",
+                    explanation=expl,
                 )
             )
         else:
@@ -186,21 +217,30 @@ class CoverageEvaluator:
                 )
             )
 
-        # 7. Branch coverage
+        # 7. Git Branch Assessment
         requested_branches = selected_branches if selected_branches else ([b.name for b in branches] if branches else ["HEAD"])
         total_branches = len(requested_branches)
-        # Branches analyzed
-        analyzed_branches = len([b for b in branches if b.name in requested_branches and b.status == "available"])
-        branch_pct = round((analyzed_branches / total_branches) * 100, 1) if total_branches > 0 else 0.0
+        # A branch only counts as assessed if it was actively scanned (current active branch) or diffed/assessed
+        assessed_branches = len([
+            b for b in branches
+            if b.name in requested_branches and (b.is_current or b.status in ["assessed", "diffed"])
+        ])
+        branch_pct = round((assessed_branches / total_branches) * 100, 1) if total_branches > 0 else 0.0
+        active_name = next((b.name for b in branches if b.is_current), "HEAD")
+        unassessed_branches = [b.name for b in branches if b.name in requested_branches and not (b.is_current or b.status in ["assessed", "diffed"])]
+        if unassessed_branches:
+            unassessed_str = f"; {len(unassessed_branches)} unmerged branch(es) [{', '.join(unassessed_branches)}] not diffed or scanned"
+        else:
+            unassessed_str = ""
         dimensions.append(
             CoverageDimension(
                 name="Git Branch Assessment",
                 value_pct=branch_pct,
-                numerator=analyzed_branches,
+                numerator=assessed_branches,
                 denominator=total_branches,
                 unit="git branches",
                 is_available=True,
-                explanation=f"{analyzed_branches} of {total_branches} requested local branches analyzed without checkout errors.",
+                explanation=f"{assessed_branches} of {total_branches} requested local branches assessed ({active_name} scanned as active branch{unassessed_str}).",
             )
         )
 
