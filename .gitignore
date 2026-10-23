@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Testing & Coverage
+.pytest_cache/
+.tox/
+.coverage
+htmlcov/
+
+# Build & Distribution
+build/
+dist/
+*.egg-info/
+
+# offtest test run artifacts & reproduction scratch
+.offtest_runs/
+reproduced_reports/
+sample_repos/sample_web_app/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
