@@ -192,6 +192,100 @@ class RepositoryInventorySummary(BaseModel):
     test_files_count: int = 0
 
 
+# --- New Feature Data Models ---
+
+class SBOMComponent(BaseModel):
+    name: str
+    version: str
+    ecosystem: str  # npm, pypi, cargo, maven, composer, etc.
+    license: Optional[str] = None
+    purl: Optional[str] = None
+    source_file: str
+    direct: bool = True
+
+
+class SBOMReport(BaseModel):
+    spec_version: str = "CycloneDX-1.5"
+    total_dependencies: int = 0
+    direct_dependencies: int = 0
+    ecosystems: List[str] = Field(default_factory=list)
+    components: List[SBOMComponent] = Field(default_factory=list)
+
+
+class RBACPermissionRecord(BaseModel):
+    endpoint: str
+    method: str = "GET"
+    auth_required: bool = False
+    required_roles: List[str] = Field(default_factory=list)
+    file_path: str
+    line_number: Optional[int] = None
+    status: EvidenceStatus = EvidenceStatus.OBSERVED
+
+
+class RBACMatrix(BaseModel):
+    roles: List[str] = Field(default_factory=lambda: ["Anonymous", "Authenticated", "Admin"])
+    endpoints_count: int = 0
+    permissions: List[RBACPermissionRecord] = Field(default_factory=list)
+    role_to_endpoints_map: Dict[str, List[str]] = Field(default_factory=dict)
+
+
+class OpenAPISpecRecord(BaseModel):
+    openapi_version: str = "3.1.0"
+    title: str = "Inferred Application API"
+    version: str = "1.0.0"
+    paths_count: int = 0
+    paths: Dict[str, Any] = Field(default_factory=dict)
+    is_valid: bool = True
+
+
+class QuarantinedTestRecord(BaseModel):
+    test_identifier: str
+    total_runs: int = 3
+    passed_runs: int = 0
+    failed_runs: int = 0
+    is_flaky: bool = False
+    durations_sec: List[float] = Field(default_factory=list)
+    variance_sec: float = 0.0
+    failure_messages: List[str] = Field(default_factory=list)
+
+
+class FlakinessReport(BaseModel):
+    enabled: bool = False
+    tested_count: int = 0
+    deterministic_passed_count: int = 0
+    deterministic_failed_count: int = 0
+    quarantined_flaky_count: int = 0
+    quarantined_tests: List[QuarantinedTestRecord] = Field(default_factory=list)
+
+
+class BranchConditionRecord(BaseModel):
+    file_path: str
+    function_name: Optional[str] = None
+    line_number: int
+    condition_expr: str
+    predicate_type: str = "comparison"  # comparison, null_check, membership, boolean
+    suggested_inputs: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class GeneratedTestCase(BaseModel):
+    test_id: str
+    target_file: str
+    target_branch_line: int
+    test_type: str  # boundary, null_check, negative_auth, type_check
+    description: str
+    test_code: str
+    validation_status: str = "verified"  # verified, repaired, failed_syntax
+
+
+class GeneratedTestSuite(BaseModel):
+    total_generated: int = 0
+    verified_count: int = 0
+    repaired_count: int = 0
+    target_branches_covered: int = 0
+    test_cases: List[GeneratedTestCase] = Field(default_factory=list)
+    suite_file_path: Optional[str] = None
+
+
 class RunContext(BaseModel):
     run_id: str
     timestamp: str = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
@@ -223,3 +317,10 @@ class RunContext(BaseModel):
     coverage: CoverageReport = Field(default_factory=CoverageReport)
     limitations: List[str] = Field(default_factory=list)
     execution_assumptions: List[str] = Field(default_factory=list)
+
+    # Extended features
+    sbom: SBOMReport = Field(default_factory=SBOMReport)
+    rbac_matrix: RBACMatrix = Field(default_factory=RBACMatrix)
+    openapi_spec: OpenAPISpecRecord = Field(default_factory=OpenAPISpecRecord)
+    flakiness: FlakinessReport = Field(default_factory=FlakinessReport)
+    generated_test_suite: GeneratedTestSuite = Field(default_factory=GeneratedTestSuite)

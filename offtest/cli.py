@@ -11,7 +11,7 @@ from offtest.reports.issue_focused import IssueFocusedReportGenerator
 
 
 @click.group()
-@click.version_option(version="0.1.0", prog_name="offtest")
+@click.version_option(version="0.2.0", prog_name="offtest")
 def main():
     """Offline App and Website Testing Model CLI."""
     pass
@@ -27,9 +27,20 @@ def main():
     default=False,
     help="Approve running repository-provided test and build scripts in offline sandbox.",
 )
+@click.option(
+    "--detect-flaky",
+    is_flag=True,
+    default=False,
+    help="Perform multi-run bisection testing to identify and quarantine unstable/flaky tests.",
+)
+@click.option(
+    "--generate-tests/--no-generate-tests",
+    default=True,
+    help="Automatically synthesize and validate targeted branch unit tests.",
+)
 @click.option("--out", default=".offtest_runs", help="Output directory for runs and reports.")
 @click.option("--json-out", is_flag=True, default=False, help="Print summary JSON to stdout.")
-def assess(repo_path, base, branch, allow_scripts, out, json_out):
+def assess(repo_path, base, branch, allow_scripts, detect_flaky, generate_tests, out, json_out):
     """
     Run offline repository intake, inventory, app mapping, checks, and generate reports.
     """
@@ -45,6 +56,8 @@ def assess(repo_path, base, branch, allow_scripts, out, json_out):
         target_branch=branch,
         allow_scripts=allow_scripts,
         output_dir=out,
+        detect_flaky=detect_flaky,
+        generate_tests=generate_tests,
     )
 
     context, detailed_path, issue_path = orchestrator.run()
@@ -52,6 +65,9 @@ def assess(repo_path, base, branch, allow_scripts, out, json_out):
     click.echo(f"[+] Assessment completed successfully! Run ID: {context.run_id}")
     click.echo(f"[+] Files analyzed: {context.inventory_summary.analyzed_count} / {context.inventory_summary.total_files}")
     click.echo(f"[+] Discovered routes/APIs: {len(context.routes)} routes, {len(context.apis)} APIs")
+    click.echo(f"[+] Offline SBOM Components: {context.sbom.total_dependencies} ({', '.join(context.sbom.ecosystems) or 'None'})")
+    click.echo(f"[+] Inferred RBAC Roles: {', '.join(context.rbac_matrix.roles)}")
+    click.echo(f"[+] Generated Branch Tests: {context.generated_test_suite.total_generated} ({context.generated_test_suite.verified_count} verified)")
     click.echo(f"[+] Total findings: {len(context.findings)}")
     click.echo(f"[+] Report 1 (Detailed): {detailed_path}")
     click.echo(f"[+] Report 2 (Issue-focused): {issue_path}")
@@ -62,6 +78,9 @@ def assess(repo_path, base, branch, allow_scripts, out, json_out):
             "timestamp": context.timestamp,
             "findings_count": len(context.findings),
             "files_analyzed": context.inventory_summary.analyzed_count,
+            "sbom_dependencies": context.sbom.total_dependencies,
+            "rbac_endpoints": context.rbac_matrix.endpoints_count,
+            "generated_tests": context.generated_test_suite.total_generated,
             "detailed_report": str(detailed_path),
             "issue_report": str(issue_path),
         }

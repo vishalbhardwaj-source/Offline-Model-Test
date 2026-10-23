@@ -1,4 +1,5 @@
 from offtest.core.models import CheckStatus, RunContext, Severity
+from offtest.intake.safety import redact_sensitive_data
 
 
 class IssueFocusedReportGenerator:
@@ -59,6 +60,15 @@ class IssueFocusedReportGenerator:
                 lines.append(f"- **Evidence / Reproduction:**\n```\n{f.evidence}\n```")
                 lines.append(f"- **Suggested Action:** {f.suggested_action}")
 
+        # Flakiness Quarantine Section
+        if self.ctx.flakiness.enabled and self.ctx.flakiness.quarantined_tests:
+            lines.append(f"\n## Quarantined Flaky Tests ({len(self.ctx.flakiness.quarantined_tests)})")
+            lines.append("> [!WARNING]\n> The following tests demonstrated non-deterministic outcomes across repeated runs and are isolated from blocking regression gates:")
+            lines.append("\n| Test Identifier | Total Runs | Passed | Failed | Variance |")
+            lines.append("| :--- | :---: | :---: | :---: | :---: |")
+            for q in self.ctx.flakiness.quarantined_tests:
+                lines.append(f"| **`{q.test_identifier}`** | {q.total_runs} | {q.passed_runs} | {q.failed_runs} | {q.variance_sec}s |")
+
         # Blocked or Unverified Checks
         lines.append("\n## Blocked & Unverified Checks")
         if blocked_checks or skipped_checks:
@@ -81,4 +91,4 @@ class IssueFocusedReportGenerator:
         else:
             lines.append("- All evaluated dimensions reached 100% within current offline tools.")
 
-        return "\n".join(lines)
+        return redact_sensitive_data("\n".join(lines))

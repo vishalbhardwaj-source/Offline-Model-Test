@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Optional
 from offtest.core.models import EvidenceStatus, RunContext, Severity
+from offtest.intake.safety import redact_sensitive_data
 
 
 class DetailedReportGenerator:
@@ -37,6 +38,7 @@ class DetailedReportGenerator:
         lines.append("\n### Key Observations & Operational Risk")
         lines.append(f"- **Total Discovered Files:** {self.ctx.inventory_summary.total_files} ({self.ctx.inventory_summary.analyzed_count} analyzed, {self.ctx.inventory_summary.excluded_count} excluded, {self.ctx.inventory_summary.generated_count} generated, {self.ctx.inventory_summary.binary_count} binary)")
         lines.append(f"- **Identified Ecosystem:** Languages: `{', '.join(self.ctx.inventory_summary.languages.keys()) or 'None'}` | Frameworks: `{', '.join(self.ctx.inventory_summary.frameworks) or 'None'}`")
+        lines.append(f"- **Offline SBOM Dependencies:** {self.ctx.sbom.total_dependencies} components across `{', '.join(self.ctx.sbom.ecosystems) or 'None'}`")
         lines.append(f"- **Test Execution Security:** {'Script execution was approved by user flag.' if self.ctx.allow_scripts else 'Project-supplied test scripts were BLOCKED from automated execution per safety policy.'}")
         lines.append("\n---\n")
 
@@ -53,19 +55,17 @@ class DetailedReportGenerator:
         lines.append(f"| **Failed to Inspect** | {self.ctx.inventory_summary.failed_to_inspect_count} | Files unreadable due to I/O or permissions |")
         lines.append(f"| **Total Discovered** | **{self.ctx.inventory_summary.total_files}** | **100% cataloged** |")
 
-        lines.append("\n### Languages & Frameworks")
-        if self.ctx.inventory_summary.languages:
-            lines.append("| Language | Files |")
-            lines.append("| :--- | :---: |")
-            for lang, cnt in sorted(self.ctx.inventory_summary.languages.items(), key=lambda x: x[1], reverse=True):
-                lines.append(f"| {lang} | {cnt} |")
-        else:
-            lines.append("_No recognized programming language files detected._")
-
-        lines.append(f"\n- **Build Systems Detected:** {', '.join(self.ctx.inventory_summary.build_systems) or 'None'}")
-        lines.append(f"- **Package Managers Detected:** {', '.join(self.ctx.inventory_summary.package_managers) or 'None'}")
-        lines.append(f"- **Entry Points Identified:** {', '.join(f'`{ep}`' for ep in self.ctx.inventory_summary.entry_points) or 'None'}")
-        lines.append(f"- **Discovered Test Files:** {self.ctx.inventory_summary.test_files_count}")
+        lines.append("\n### Offline Software Bill of Materials (SBOM) Summary")
+        lines.append(f"- **Total Tracked Dependencies:** {self.ctx.sbom.total_dependencies}")
+        lines.append(f"- **Direct Dependencies:** {self.ctx.sbom.direct_dependencies}")
+        lines.append(f"- **Ecosystems:** {', '.join(self.ctx.sbom.ecosystems) or 'None'}")
+        if self.ctx.sbom.components:
+            lines.append("\n| Package | Version | Ecosystem | Direct | Source File |")
+            lines.append("| :--- | :--- | :---: | :---: | :--- |")
+            for comp in self.ctx.sbom.components[:15]:
+                lines.append(f"| **`{comp.name}`** | `{comp.version}` | {comp.ecosystem} | {'Yes' if comp.direct else 'No'} | `{comp.source_file}` |")
+            if len(self.ctx.sbom.components) > 15:
+                lines.append(f"| ... and {len(self.ctx.sbom.components) - 15} more dependencies | | | | |")
         lines.append("\n---\n")
 
         # 4. Application Map
@@ -78,79 +78,80 @@ class DetailedReportGenerator:
             lines.append("| :--- | :---: | :--- | :--- | :---: |")
             for r in self.ctx.routes:
                 loc = f"`{r.file_path}:{r.line_number}`" if r.line_number else f"`{r.file_path}`"
-                lines.append(f"| Web Route | `{r.method}` | `{r.path}` | {loc} | **{r.status.value}** |")
+                lines.append(f"| Web Route | `{r.method}` | `{r.path}` | {loc} | {r.status.value} |")
             for a in self.ctx.apis:
                 loc = f"`{a.file_path}:{a.line_number}`" if a.line_number else f"`{a.file_path}`"
-                lines.append(f"| API Endpoint | `{a.method}` | `{a.endpoint}` | {loc} | **{a.status.value}** |")
+                lines.append(f"| API Endpoint | `{a.method}` | `{a.endpoint}` | {loc} | {a.status.value} |")
         else:
-            lines.append("_No web routes or API endpoints detected in analyzed files._")
+            lines.append("_No explicit HTTP routes or API endpoints discovered in source files._")
 
-        lines.append("\n### Discovered Features & Toggles")
-        if self.ctx.features:
-            lines.append("| Feature Name | Flag Identifier | Source File | Status | Linked Tests |")
-            lines.append("| :--- | :--- | :--- | :---: | :--- |")
-            for ft in self.ctx.features:
-                linked = f"{len(ft.linked_tests)} test(s)" if ft.linked_tests else "_No linked test_"
-                lines.append(f"| {ft.name} | `{ft.flag_key or 'N/A'}` | `{ft.file_path}` | **{ft.status.value}** | {linked} |")
-        else:
-            lines.append("_No feature flags or toggles detected in source code._")
+        lines.append("\n### Role-Based Access Control (RBAC) Matrix")
+        lines.append(f"- **Identified Roles:** {', '.join(f'`{r}`' for r in self.ctx.rbac_matrix.roles)}")
+        lines.append(f"- **Endpoints Covered in RBAC Map:** {self.ctx.rbac_matrix.endpoints_count}")
+        if self.ctx.rbac_matrix.permissions:
+            lines.append("\n| Endpoint | Method | Auth Required | Required Roles | Evidence Location |")
+            lines.append("| :--- | :---: | :---: | :--- | :--- |")
+            for p in self.ctx.rbac_matrix.permissions[:10]:
+                roles_str = ", ".join(f"`{r}`" for r in p.required_roles) or "`Anonymous`"
+                lines.append(f"| `{p.endpoint}` | `{p.method}` | {'Yes' if p.auth_required else 'No'} | {roles_str} | `{p.file_path}:{p.line_number or 1}` |")
+            if len(self.ctx.rbac_matrix.permissions) > 10:
+                lines.append(f"| ... and {len(self.ctx.rbac_matrix.permissions) - 10} more endpoints | | | | |")
 
-        lines.append("\n### Application Workflows")
+        lines.append(f"\n### Inferred OpenAPI 3.1 Spec")
+        lines.append(f"- **OpenAPI Version:** `{self.ctx.openapi_spec.openapi_version}` | **Endpoints Synthesized:** {self.ctx.openapi_spec.paths_count}")
+
+        lines.append("\n### Application Workflows & Features")
         if self.ctx.workflows:
-            lines.append("| Workflow Name | Type / Status | Entry Point | Related Files | Linked Test Suites |")
-            lines.append("| :--- | :---: | :--- | :--- | :--- |")
-            for wf in self.ctx.workflows:
-                linked = ", ".join(f"`{t}`" for t in wf.linked_tests) if wf.linked_tests else "_None detected_"
-                related = ", ".join(f"`{r}`" for r in wf.related_files[:3])
-                lines.append(f"| **{wf.name}** | **{wf.status.value}** | `{wf.entry_point or 'N/A'}` | {related} | {linked} |")
-        else:
-            lines.append("_No multi-step workflows recognized._")
-
-        lines.append("\n### External Integrations & Data Stores")
-        if self.ctx.integrations:
-            lines.append("| Integration | Category | Status | Detected In |")
-            lines.append("| :--- | :--- | :---: | :--- |")
-            for ig in self.ctx.integrations:
-                files_preview = ", ".join(f"`{p}`" for p in ig.detected_in[:3])
-                lines.append(f"| **{ig.name}** | {ig.category} | **{ig.status.value}** | {files_preview} |")
-        else:
-            lines.append("_No third-party integrations or distinct database drivers observed._")
+            for w in self.ctx.workflows:
+                lines.append(f"- **Workflow `{w.name}`:** {w.description} (Steps: {len(w.steps)})")
+        if self.ctx.features:
+            for feat in self.ctx.features:
+                lines.append(f"- **Feature `{feat.name}`:** Flag `{feat.flag_key or 'None'}` ({feat.file_path})")
         lines.append("\n---\n")
 
-        # 5. Branch and Change Analysis
+        # 5. Branch & Change Analysis
         lines.append("## 4. Branch and Change Analysis")
         if self.ctx.branches:
-            lines.append("| Branch | Head Commit | Current | Base | Status | Commit Message |")
-            lines.append("| :--- | :---: | :---: | :---: | :---: | :--- |")
+            lines.append("| Branch | Status | HEAD Commit | Message |")
+            lines.append("| :--- | :---: | :--- | :--- |")
             for b in self.ctx.branches:
-                curr = "Yes" if b.is_current else "No"
-                base = "Yes" if b.is_base else "No"
-                lines.append(f"| `{b.name}` | `{b.head_commit or 'unknown'}` | {curr} | {base} | {b.status} | {b.commit_message or ''} |")
-        else:
-            lines.append("_Repository is not a Git repository or no local branches were found._")
-
-        if self.ctx.branch_diffs:
-            lines.append("\n### Comparison Diff Against Base Branch")
-            for bd in self.ctx.branch_diffs:
-                lines.append(f"- **Target:** `{bd.branch_name}` vs **Base:** `{bd.base_branch}`: {bd.diff_summary}")
-                if bd.added_files:
-                    lines.append(f"  - Added ({len(bd.added_files)}): {', '.join(f'`{f}`' for f in bd.added_files[:5])}")
-                if bd.modified_files:
-                    lines.append(f"  - Modified ({len(bd.modified_files)}): {', '.join(f'`{f}`' for f in bd.modified_files[:5])}")
-                if bd.deleted_files:
-                    lines.append(f"  - Deleted ({len(bd.deleted_files)}): {', '.join(f'`{f}`' for f in bd.deleted_files[:5])}")
+                curr_mark = " (active)" if b.is_current else ""
+                base_mark = " (base)" if b.is_base else ""
+                lines.append(f"| **`{b.name}`**{curr_mark}{base_mark} | {b.status} | `{b.head_commit or 'N/A'}` | {b.commit_message or 'N/A'} |")
         lines.append("\n---\n")
 
-        # 6. Checks & Test Results
+        # 6. Checks & Test Execution Results
         lines.append("## 5. Checks & Test Execution Results")
         if self.ctx.check_results:
-            lines.append("| Check Name | Tool & Version | Type | Status | Duration | Reason / Details |")
-            lines.append("| :--- | :--- | :---: | :---: | :---: | :--- |")
+            lines.append("| Check Name | Tool (Version) | Type | Status | Duration | Output / Blocker |")
+            lines.append("| :--- | :--- | :--- | :---: | :---: | :--- |")
             for cr in self.ctx.check_results:
                 reason = cr.skip_or_blocked_reason or f"Exit code {cr.exit_code}"
                 lines.append(f"| **{cr.check_name}** | {cr.tool_name} (`{cr.tool_version}`) | {cr.check_type} | **{cr.status.value}** | {cr.duration_sec}s | {reason} |")
         else:
             lines.append("_No checks were scheduled or executed._")
+
+        if self.ctx.flakiness.enabled:
+            lines.append("\n### Flakiness Bisection & Quarantine Summary")
+            lines.append(f"- **Deterministic Passed:** {self.ctx.flakiness.deterministic_passed_count}")
+            lines.append(f"- **Deterministic Failed:** {self.ctx.flakiness.deterministic_failed_count}")
+            lines.append(f"- **Quarantined Flaky Tests:** {self.ctx.flakiness.quarantined_flaky_count}")
+            if self.ctx.flakiness.quarantined_tests:
+                lines.append("\n| Test Name | Total Runs | Passed | Failed | Duration Variance |")
+                lines.append("| :--- | :---: | :---: | :---: | :---: |")
+                for q in self.ctx.flakiness.quarantined_tests:
+                    lines.append(f"| **`{q.test_identifier}`** | {q.total_runs} | {q.passed_runs} | {q.failed_runs} | {q.variance_sec}s |")
+
+        lines.append("\n### Synthesized Branch Tests (Constrained Generation)")
+        lines.append(f"- **Total Generated Tests:** {self.ctx.generated_test_suite.total_generated}")
+        lines.append(f"- **Syntax Verified:** {self.ctx.generated_test_suite.verified_count} | **Repaired:** {self.ctx.generated_test_suite.repaired_count}")
+        if self.ctx.generated_test_suite.suite_file_path:
+            lines.append(f"- **Test Suite Output File:** `{self.ctx.generated_test_suite.suite_file_path}`")
+        if self.ctx.generated_test_suite.test_cases:
+            lines.append("\n| Test ID | Target File:Line | Predicate Type | Validation Status | Description |")
+            lines.append("| :--- | :--- | :---: | :---: | :--- |")
+            for tc in self.ctx.generated_test_suite.test_cases[:8]:
+                lines.append(f"| `{tc.test_id}` | `{tc.target_file}:{tc.target_branch_line}` | {tc.test_type} | `{tc.validation_status}` | {tc.description} |")
         lines.append("\n---\n")
 
         # 7. Findings
@@ -200,4 +201,4 @@ class DetailedReportGenerator:
         for lim in self.ctx.limitations:
             lines.append(f"- {lim}")
 
-        return "\n".join(lines)
+        return redact_sensitive_data("\n".join(lines))

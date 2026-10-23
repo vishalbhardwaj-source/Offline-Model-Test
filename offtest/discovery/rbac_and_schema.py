@@ -1,0 +1,200 @@
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Set, Tuple
+from offtest.core.models import (
+    APIRecord,
+    EvidenceStatus,
+    FileRecord,
+    OpenAPISpecRecord,
+    RBACMatrix,
+    RBACPermissionRecord,
+    RouteRecord,
+)
+
+
+class RBACAndSchemaExtractor:
+    """Extracts a Role-Based Access Control (RBAC) permission matrix and synthesizes an offline OpenAPI 3.1 specification."""
+
+    def __init__(self, repo_dir: Path, files: List[FileRecord], routes: List[RouteRecord], apis: List[APIRecord]):
+        self.repo_dir = repo_dir
+        self.files = files
+        self.routes = routes
+        self.apis = apis
+
+    def extract_rbac(self) -> RBACMatrix:
+        permissions: List[RBACPermissionRecord] = []
+        role_to_endpoints: Dict[str, List[str]] = {
+            "Anonymous": [],
+            "Authenticated": [],
+            "Admin": [],
+        }
+
+        # Regex patterns for auth decorators / middleware
+        login_req_pattern = re.compile(r"""@(?:login_required|auth_required|jwt_required|authenticate|require_auth)\b""", re.IGNORECASE)
+        role_req_pattern = re.compile(
+            r"""@(?:roles_required|has_role|require_role|roles_allowed|allow_roles)\s*\(\s*['"]?([a-zA-Z0-9_\-]+)['"]?""",
+            re.IGNORECASE,
+        )
+        admin_pattern = re.compile(r"""\b(?:is_admin|admin_required|require_admin|@admin)\b""", re.IGNORECASE)
+        js_auth_middleware_pattern = re.compile(r"""(?:authMiddleware|passport\.authenticate|verifyToken|checkRole\(['"](\w+)['"]\))""")
+
+        # Cache file lines for context lookups
+        file_lines: Dict[str, List[str]] = {}
+        for f in self.files:
+            if f.disposition.value == "analyzed" and f.language in ["Python", "JavaScript", "TypeScript"]:
+                try:
+                    full_p = self.repo_dir / f.path
+                    if full_p.is_file():
+                        file_lines[f.path] = full_p.read_text(encoding="utf-8", errors="ignore").splitlines()
+                except Exception:
+                    pass
+
+        # Combine routes and APIs for RBAC evaluation
+        all_targets: List[Tuple[str, str, str, int]] = []
+        for r in self.routes:
+            all_targets.append((r.path, r.method, r.file_path, r.line_number or 1))
+        for a in self.apis:
+            all_targets.append((a.endpoint, a.method, a.file_path, a.line_number or 1))
+
+        # Deduplicate
+        seen_targets = set()
+        for endpoint, method, file_path, line_num in all_targets:
+            key = (endpoint, method, file_path)
+            if key in seen_targets:
+                continue
+            seen_targets.add(key)
+
+            lines = file_lines.get(file_path, [])
+            auth_required = False
+            roles: List[str] = []
+
+            # Check surrounding lines (e.g. 5 lines above handler definition)
+            start_look = max(0, line_num - 6)
+            end_look = min(len(lines), line_num + 3)
+            context_block = "\n".join(lines[start_look:end_look])
+
+            if login_req_pattern.search(context_block):
+                auth_required = True
+                roles.append("Authenticated")
+
+            role_m = role_req_pattern.search(context_block)
+            if role_m:
+                auth_required = True
+                explicit_role = role_m.group(1).capitalize()
+                roles.append(explicit_role)
+                if explicit_role not in role_to_endpoints:
+                    role_to_endpoints[explicit_role] = []
+
+            if admin_pattern.search(context_block) or "admin" in endpoint.lower():
+                auth_required = True
+                if "Admin" not in roles:
+                    roles.append("Admin")
+
+            js_auth_m = js_auth_middleware_pattern.search(context_block)
+            if js_auth_m:
+                auth_required = True
+                roles.append("Authenticated")
+                if js_auth_m.group(1):
+                    custom_role = js_auth_m.group(1).capitalize()
+                    roles.append(custom_role)
+                    if custom_role not in role_to_endpoints:
+                        role_to_endpoints[custom_role] = []
+
+            # If no auth required, public/anonymous endpoint
+            if not auth_required:
+                roles = ["Anonymous"]
+                role_to_endpoints["Anonymous"].append(f"{method} {endpoint}")
+            else:
+                for r in roles:
+                    if f"{method} {endpoint}" not in role_to_endpoints.get(r, []):
+                        role_to_endpoints.setdefault(r, []).append(f"{method} {endpoint}")
+
+            permissions.append(
+                RBACPermissionRecord(
+                    endpoint=endpoint,
+                    method=method,
+                    auth_required=auth_required,
+                    required_roles=roles,
+                    file_path=file_path,
+                    line_number=line_num,
+                    status=EvidenceStatus.OBSERVED if lines else EvidenceStatus.INFERRED,
+                )
+            )
+
+        all_roles = sorted(list(role_to_endpoints.keys()))
+        return RBACMatrix(
+            roles=all_roles,
+            endpoints_count=len(permissions),
+            permissions=permissions,
+            role_to_endpoints_map=role_to_endpoints,
+        )
+
+    def synthesize_openapi(self, title: str = "Inferred Application API", version: str = "1.0.0") -> OpenAPISpecRecord:
+        paths: Dict[str, Any] = {}
+
+        # Standardize paths and methods from routes and apis
+        all_endpoints: Dict[str, Dict[str, Any]] = {}
+
+        for a in self.apis:
+            norm_path = self._normalize_openapi_path(a.endpoint)
+            method = a.method.lower()
+            if method == "any":
+                method = "get"
+            all_endpoints.setdefault(norm_path, {})[method] = {
+                "summary": f"Handler for {a.endpoint}",
+                "operationId": f"{method}_{norm_path.strip('/').replace('/', '_').replace('{', '').replace('}', '') or 'root'}",
+                "parameters": self._extract_path_params(norm_path),
+                "responses": {
+                    "200": {"description": "Successful operation"},
+                    "400": {"description": "Bad Request"},
+                    "401": {"description": "Unauthorized"},
+                    "500": {"description": "Internal Server Error"},
+                },
+            }
+
+        for r in self.routes:
+            if not r.path.startswith("/api"):
+                norm_path = self._normalize_openapi_path(r.path)
+                method = r.method.lower()
+                if method == "any":
+                    method = "get"
+                if norm_path not in all_endpoints or method not in all_endpoints[norm_path]:
+                    all_endpoints.setdefault(norm_path, {})[method] = {
+                        "summary": f"UI / Page Route {r.path}",
+                        "operationId": f"{method}_{norm_path.strip('/').replace('/', '_').replace('{', '').replace('}', '') or 'root'}",
+                        "parameters": self._extract_path_params(norm_path),
+                        "responses": {
+                            "200": {"description": "HTML or JSON Page Content"},
+                            "404": {"description": "Not Found"},
+                        },
+                    }
+
+        return OpenAPISpecRecord(
+            openapi_version="3.1.0",
+            title=title,
+            version=version,
+            paths_count=len(all_endpoints),
+            paths=all_endpoints,
+            is_valid=True,
+        )
+
+    def _normalize_openapi_path(self, path: str) -> str:
+        # Express-style :id -> {id}
+        norm = re.sub(r":([a-zA-Z0-9_]+)", r"{\1}", path)
+        if not norm.startswith("/"):
+            norm = "/" + norm
+        return norm
+
+    def _extract_path_params(self, path: str) -> List[Dict[str, Any]]:
+        params = []
+        matches = re.findall(r"\{([a-zA-Z0-9_]+)\}", path)
+        for m in matches:
+            params.append(
+                {
+                    "name": m,
+                    "in": "path",
+                    "required": True,
+                    "schema": {"type": "string"},
+                }
+            )
+        return params

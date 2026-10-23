@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Tuple
 
 
+class SecurityError(Exception):
+    """Raised when an archive contains malicious paths or path-traversal attempts."""
+    pass
+
+
 class RepositoryIntake:
     @staticmethod
     def prepare_target(path_or_archive: str) -> Tuple[Path, bool]:

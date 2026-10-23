@@ -2,15 +2,19 @@
 
 An offline pipeline and analysis engine that ingests, catalogs, analyzes, and tests application and website repositories without sending repository data, secrets, or test results over any network.
 
-Designed directly against the **[Blueprint](file:///c:/Users/visha/Downloads/Testing%20model/BLUEPRINT.md)**.
+Designed directly against the **[Master Blueprint](file:///c:/Users/visha/Downloads/Testing%20model/BLUEPRINT.md)**.
 
 ---
 
 ## Key Capabilities
 
 - **Strict Offline Operation:** Analyzes repositories with network access blocked. Disables network resolution in package runners (`PIP_NO_INDEX=1`, `npm_config_offline=true`, null proxy).
+- **Offline Software Bill of Materials (SBOM):** Automatically extracts and catalogs all dependencies from `package-lock.json`, `package.json`, `poetry.lock`, `Cargo.lock`, and `requirements.txt` into a CycloneDX 1.5-compatible schema offline.
+- **RBAC Permission Matrix & OpenAPI 3.1 Spec Generator:** Inters role-based access control policies (`Anonymous`, `Authenticated`, `Admin`) and automatically reconstructs an offline OpenAPI 3.1 specification from route signatures.
+- **Constrained Branch Test Generator:** Parses AST conditional branches (comparisons, null checks, boolean expressions) and synthesizes syntax-validated, self-healing unit test suites.
+- **Flakiness Bisection & Quarantine Runner:** Automatically performs multi-run bisection testing ($N \ge 3$) on tests to detect and quarantine non-deterministic tests from blocking release gates.
 - **Exhaustive Inventory:** Discovers and classifies 100% of discovered files into recorded dispositions (`analyzed`, `excluded`, `generated`, `binary`, `unsupported`, or `failed_to_inspect`) with explicit reasons.
-- **Application Structure & Workflow Discovery:** Extracts routes, APIs, pages, integrations, and feature toggles. Differentiates evidence status:
+- **Application Structure & Workflow Discovery:** Extracts routes, APIs, pages, integrations, and feature toggles with explicit evidence status:
   - `Observed`: Directly present in code/config.
   - `Inferred`: Deduced through naming/relationships.
   - `Unverified`: Lacking confirmation.
@@ -28,8 +32,8 @@ Designed directly against the **[Blueprint](file:///c:/Users/visha/Downloads/Tes
   6. Feature coverage
   7. Branch coverage
 - **Two Complete Report Formats:**
-  - **Report 1 (Detailed Report):** Full 10-section investigation report for architectural and compliance review.
-  - **Report 2 (Issue-Focused Report):** Prioritized, actionable issue list grouped by severity with reproduction evidence, impact, next actions, blocked checks, and coverage gaps.
+  - **Report 1 (Detailed Report):** Full 10-section investigation report covering inventory, SBOM, RBAC matrix, OpenAPI specs, branch diffs, checks, flakiness quarantine, findings, and 7 coverage dimensions.
+  - **Report 2 (Issue-Focused Report):** Prioritized, actionable issue list grouped by severity with reproduction evidence, impact, quarantined flaky tests, next actions, blocked checks, and coverage gaps.
 - **Evidence Store & Report Reproduction:** Saves complete run contexts as structured JSON and reproduces reports on demand without re-running checks.
 
 ---
@@ -49,8 +53,11 @@ pip install -e .
 
 #### 1. Assess a Repository
 ```bash
-# Analyze a repository (repository scripts blocked by default for safety)
+# Standard assessment (intake, SBOM, RBAC, OpenAPI, static scans, test generation)
 python -m offtest assess /path/to/repo --base main --branch feature/payment
+
+# Run with flakiness bisection and quarantine enabled
+python -m offtest assess /path/to/repo --base main --detect-flaky
 
 # Approve executing repository test scripts in offline isolation
 python -m offtest assess /path/to/repo --base main --allow-scripts
@@ -59,7 +66,7 @@ python -m offtest assess /path/to/repo --base main --allow-scripts
 #### 2. Reproduce Reports from Run Evidence
 ```bash
 # Reproduce both reports from a previous run ID or JSON evidence file
-python -m offtest report run_20261023_165338_61b06b --out ./exported_reports
+python -m offtest report run_20261023_172221_e5691f --out ./exported_reports
 ```
 
 #### 3. Inspect Offline Tool Manifest
@@ -80,7 +87,7 @@ python -m offtest verify-offline
 ├── offtest/
 │   ├── core/
 │   │   ├── config.py           # Offline flags, timeouts, sensitive data regexes
-│   │   ├── models.py           # Pydantic data models for runs, findings, coverage
+│   │   ├── models.py           # Pydantic data models (SBOM, RBAC, Flakiness, Findings)
 │   │   └── evidence_store.py   # Persistent JSON evidence store & loader
 │   ├── intake/
 │   │   ├── intake.py           # Archive (.zip, .tar.gz) and path intake with Zip Slip protection
@@ -88,31 +95,42 @@ python -m offtest verify-offline
 │   │   └── safety.py           # Secret scanning & sensitive data redaction
 │   ├── inventory/
 │   │   ├── classifier.py       # Language and disposition classifier (analyzed, excluded, binary...)
-│   │   └── engine.py           # File walker and inventory summary generator
+│   │   ├── engine.py           # File walker and inventory summary generator
+│   │   └── sbom.py             # Offline Software Bill of Materials (CycloneDX 1.5)
 │   ├── discovery/
-│   │   └── app_mapper.py       # Route, API, feature toggle, and workflow extractor
+│   │   ├── app_mapper.py       # Route, API, feature toggle, and workflow extractor
+│   │   └── rbac_and_schema.py  # RBAC permission matrix & OpenAPI 3.1 spec generator
+│   ├── generator/
+│   │   └── test_generator.py   # Constrained branch predicate analysis & test synthesizer
 │   ├── checks/
 │   │   ├── isolated_runner.py  # Subprocess isolation with offline env variables & timeouts
 │   │   ├── static_checks.py    # AST syntax, security flaws (eval, os.system, debug), dependency pins
 │   │   ├── test_adapter.py     # Test discovery & execution with explicit script approval guard
+│   │   ├── flakiness.py        # Multi-run bisection & flakiness quarantine runner
 │   │   └── planner.py          # Coordinates checks and tool manifest
 │   ├── coverage/
 │   │   └── evaluator.py        # Calculates 7 coverage dimensions with explicit denominators
 │   ├── reports/
 │   │   ├── detailed.py         # Report 1: Detailed 10-section report
 │   │   └── issue_focused.py    # Report 2: Actionable issue-focused report
+│   ├── orchestrator.py         # Multi-stage assessment pipeline coordinator
 │   └── cli.py                  # Click CLI interface
-├── tests/                      # Pytest test suite covering all components
-└── sample_repos/               # Fixture generator for end-to-end testing
+├── tests/                      # Pytest test suite covering all 16 components
+└── sample_repos/               # Fixtures and test applications
 ```
 
 ---
 
 ## Acceptance Criteria Conformance
 
-| Acceptance Criterion (Section 11) | Implementation Status |
+| Acceptance Criterion | Implementation Status |
 | :--- | :---: |
 | Run assessment with networking disabled | Verified (`IsolatedRunner` + environment controls) |
+| Offline Software Bill of Materials (SBOM) | Verified (`SBOMGenerator`, CycloneDX-compatible) |
+| Role-Based Access Control (RBAC) Matrix | Verified (`RBACAndSchemaExtractor`) |
+| Offline OpenAPI 3.1 Specification Synthesis | Verified (`OpenAPISpecRecord` generation) |
+| Flakiness Bisection & Quarantine Runner | Verified (`FlakinessBisectionRunner` $N \ge 3$) |
+| Constrained Branch Test Generation | Verified (`ConstrainedTestGenerator` AST analysis) |
 | Record tested revision and selected local branches | Verified (`GitManager` without remote fetch) |
 | Inventory files with explicit exclusions/dispositions | Verified (`InventoryEngine`, 100% cataloged) |
 | Discover checks without silently fetching dependencies | Verified (offline manifests & offline runner) |

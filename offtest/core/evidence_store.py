@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from typing import Optional
 from offtest.core.models import RunContext
+from offtest.intake.safety import redact_sensitive_data
 
 
 class EvidenceStore:
@@ -18,8 +19,12 @@ class EvidenceStore:
         run_dir.mkdir(parents=True, exist_ok=True)
         evidence_file = run_dir / "evidence.json"
         
+        # Enforce zero data leaks: redact all secrets from the serialized evidence JSON before persisting to disk
+        raw_json = context.model_dump_json(indent=2)
+        sanitized_json = redact_sensitive_data(raw_json)
+        
         with open(evidence_file, "w", encoding="utf-8") as f:
-            f.write(context.model_dump_json(indent=2))
+            f.write(sanitized_json)
             
         return evidence_file
 
