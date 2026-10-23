@@ -34,7 +34,7 @@ TOKEN = "{raw_jwt}"
             generate_tests=False,
         )
 
-        context, det_path, iss_path = orchestrator.run()
+        context, det_path, iss_path, sarif_path = orchestrator.run()
 
         # 1. Inspect Detailed Report
         det_text = det_path.read_text(encoding="utf-8")

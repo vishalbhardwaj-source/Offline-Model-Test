@@ -1,10 +1,12 @@
 import json
+import shutil
 import sys
 from pathlib import Path
 import click
 
 from offtest.checks.planner import get_tool_manifest
 from offtest.core.evidence_store import EvidenceStore
+from offtest.core.models import CheckStatus, Severity
 from offtest.orchestrator import AssessmentOrchestrator
 from offtest.reports.detailed import DetailedReportGenerator
 from offtest.reports.issue_focused import IssueFocusedReportGenerator
@@ -31,7 +33,13 @@ def main():
     "--detect-flaky",
     is_flag=True,
     default=False,
-    help="Perform multi-run bisection testing to identify and quarantine unstable/flaky tests.",
+    help="Perform multi-run repeat-sampling to identify and quarantine unstable/flaky tests.",
+)
+@click.option(
+    "--quarantine-policy",
+    type=click.Choice(["warn", "block", "ignore"], case_sensitive=False),
+    default="warn",
+    help="Handling policy for quarantined flaky tests (warn, block CI, or ignore).",
 )
 @click.option(
     "--generate-tests/--no-generate-tests",
@@ -39,8 +47,10 @@ def main():
     help="Automatically synthesize and validate targeted branch unit tests.",
 )
 @click.option("--out", default=".offtest_runs", help="Output directory for runs and reports.")
+@click.option("--sarif-out", default=None, help="Optional output path for OASIS SARIF 2.1.0 file.")
 @click.option("--json-out", is_flag=True, default=False, help="Print summary JSON to stdout.")
-def assess(repo_path, base, branch, allow_scripts, detect_flaky, generate_tests, out, json_out):
+@click.option("--strict", is_flag=True, default=False, help="Fail with non-zero exit code on blocked checks.")
+def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_policy, generate_tests, out, sarif_out, json_out, strict):
     """
     Run offline repository intake, inventory, app mapping, checks, and generate reports.
     """
@@ -57,23 +67,30 @@ def assess(repo_path, base, branch, allow_scripts, detect_flaky, generate_tests,
         allow_scripts=allow_scripts,
         output_dir=out,
         detect_flaky=detect_flaky,
+        quarantine_policy=quarantine_policy,
         generate_tests=generate_tests,
     )
 
-    context, detailed_path, issue_path = orchestrator.run()
+    context, detailed_path, issue_path, sarif_path = orchestrator.run()
+
+    if sarif_out:
+        shutil.copyfile(str(sarif_path), sarif_out)
+        click.echo(f"[+] SARIF 2.1.0 report saved to: {sarif_out}")
 
     click.echo(f"[+] Assessment completed successfully! Run ID: {context.run_id}")
     click.echo(f"[+] Files analyzed: {context.inventory_summary.analyzed_count} / {context.inventory_summary.total_files}")
     click.echo(f"[+] Discovered routes/APIs: {len(context.routes)} routes, {len(context.apis)} APIs")
     click.echo(f"[+] Offline SBOM Components: {context.sbom.total_dependencies} ({', '.join(context.sbom.ecosystems) or 'None'})")
     click.echo(f"[+] Inferred RBAC Roles: {', '.join(context.rbac_matrix.roles)}")
-    click.echo(f"[+] Generated Branch Tests: {context.generated_test_suite.total_generated} ({context.generated_test_suite.verified_count} verified)")
+    click.echo(f"[+] Generated Branch Tests: {context.generated_test_suite.total_generated} (Status: synthesized, unverified)")
     click.echo(f"[+] Total findings: {len(context.findings)}")
     click.echo(f"[+] Report 1 (Detailed): {detailed_path}")
     click.echo(f"[+] Report 2 (Issue-focused): {issue_path}")
+    click.echo(f"[+] SARIF Report: {sarif_path}")
 
     if json_out:
         summary = {
+            "schema_version": context.schema_version,
             "run_id": context.run_id,
             "timestamp": context.timestamp,
             "findings_count": len(context.findings),
@@ -83,8 +100,22 @@ def assess(repo_path, base, branch, allow_scripts, detect_flaky, generate_tests,
             "generated_tests": context.generated_test_suite.total_generated,
             "detailed_report": str(detailed_path),
             "issue_report": str(issue_path),
+            "sarif_report": str(sarif_path),
         }
         click.echo(json.dumps(summary, indent=2))
+
+    # Standard CI Exit Codes
+    crit_or_high = [f for f in context.findings if f.severity in [Severity.CRITICAL, Severity.HIGH]]
+    blocked_checks = [c for c in context.check_results if c.status == CheckStatus.BLOCKED]
+
+    if crit_or_high:
+        click.echo(f"[!] CI Gate: {len(crit_or_high)} Critical/High findings detected.")
+        sys.exit(1)
+    elif strict and blocked_checks:
+        click.echo(f"[!] CI Gate: {len(blocked_checks)} checks were blocked under strict mode.")
+        sys.exit(3)
+    else:
+        sys.exit(0)
 
 
 @main.command("report")
@@ -132,16 +163,42 @@ def manifest():
 @main.command("verify-offline")
 def verify_offline():
     """
-    Verify that the environment executes analysis without network dependencies.
+    Verify that the environment executes analysis without network dependencies
+    using raw socket, DNS, and HTTP probes executed inside the IsolatedRunner.
     """
-    click.echo("[*] Verifying offline execution safeguards...")
+    click.echo("[*] Executing deep offline isolation verification probes inside IsolatedRunner...")
     from offtest.checks.isolated_runner import IsolatedRunner
-    runner = IsolatedRunner(Path("."))
-    code, stdout, stderr, dur = runner.run([sys.executable, "-c", "import urllib.request; urllib.request.urlopen('http://example.com', timeout=2)"])
-    if code != 0:
-        click.echo(f"[+] Network isolation confirmed: External network request blocked ({dur}s).")
+    runner = IsolatedRunner(Path("."), timeout_sec=5)
+
+    # 1. HTTP Probe with proxy sinkhole
+    http_probe = [sys.executable, "-c", "import urllib.request; urllib.request.urlopen('http://example.com', timeout=2)"]
+    c1, _, _, d1 = runner.run(http_probe)
+
+    # 2. Raw TCP Socket Probe (direct IP connection attempt, ignores proxy env vars)
+    raw_socket_probe = [sys.executable, "-c", "import socket; s = socket.create_connection(('1.1.1.1', 53), timeout=2); s.close()"]
+    c2, _, _, d2 = runner.run(raw_socket_probe)
+
+    # 3. Direct DNS Lookup Probe
+    dns_probe = [sys.executable, "-c", "import socket; socket.getaddrinfo('example.com', 80)"]
+    c3, _, _, d3 = runner.run(dns_probe)
+
+    click.echo(f"  - HTTP Proxy Sinkhole Probe: {'BLOCKED / SAFE' if c1 != 0 else 'UNPROTECTED'} ({d1}s)")
+    if c2 != 0:
+        click.echo(f"  - Raw TCP Socket Probe: BLOCKED / SAFE (Kernel/Network isolation active) ({d2}s)")
     else:
-        click.echo("[!] WARNING: Outbound socket connection succeeded. Ensure network adapter is disabled or isolated.")
+        click.echo(f"  - Raw TCP Socket Probe: [!] WARNING: Connected to raw socket! (Host network interface is open)")
+
+    if c3 != 0:
+        click.echo(f"  - Direct DNS Resolution Probe: BLOCKED / SAFE ({d3}s)")
+    else:
+        click.echo(f"  - Direct DNS Resolution Probe: [!] NOTICE: DNS resolved via host resolver.")
+
+    if c1 != 0 and c2 != 0 and c3 != 0:
+        click.echo("[+] Full air-gap verified: All HTTP, TCP, and DNS outbound attempts blocked.")
+    elif c1 != 0:
+        click.echo("[i] Standard isolation active (Env-var sinkholing). Note: Raw socket access is permitted on host unless OS firewall/network namespace is active.")
+    else:
+        click.echo("[!] WARNING: Network isolation is not functioning.")
 
 
 if __name__ == "__main__":

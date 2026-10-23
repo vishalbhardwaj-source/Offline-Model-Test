@@ -1,5 +1,7 @@
 import os
+import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -12,6 +14,23 @@ class IsolatedRunner:
         self.work_dir = work_dir
         self.timeout_sec = timeout_sec
 
+    def _kill_process_tree(self, proc: subprocess.Popen):
+        """Kills the entire process tree to prevent orphan background worker leaks."""
+        try:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    capture_output=True,
+                    timeout=5,
+                )
+            else:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
     def run(
         self,
         command: List[str],
@@ -19,39 +38,69 @@ class IsolatedRunner:
         custom_cwd: Optional[Path] = None,
     ) -> Tuple[int, str, str, float]:
         """
-        Runs a command with networking disabled through environment controls,
-        enforcing a timeout and redacting secrets from output.
+        Runs a command with:
+        1. Scrubbed environment (whitelisted safe vars only, zero host secrets leaked)
+        2. Network proxy sinkholing and telemetry suppression
+        3. Full process-tree termination on timeout
+        4. Output size cap to prevent memory exhaustion
         Returns: (exit_code, stdout, stderr, duration_sec)
         """
-        env = os.environ.copy()
+        # Scrubbed environment: only keep safe system vars
+        env = {
+            k: v for k, v in os.environ.items()
+            if k.upper() in OfflineConfig.SAFE_ENV_WHITELIST
+        }
         # Enforce offline overrides
         env.update(OfflineConfig.OFFLINE_ENV_OVERRIDES)
         if env_extra:
             env.update(env_extra)
 
         cwd = custom_cwd or self.work_dir
-
         start_time = time.perf_counter()
+
+        # Platform specific process group setup
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["preexec_fn"] = os.setsid
+
+        proc = None
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 command,
                 cwd=str(cwd),
                 env=env,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=self.timeout_sec,
+                **kwargs,
             )
+
+            stdout_raw, stderr_raw = proc.communicate(timeout=self.timeout_sec)
             duration = round(time.perf_counter() - start_time, 3)
-            stdout = redact_sensitive_data(proc.stdout)
-            stderr = redact_sensitive_data(proc.stderr)
+
+            # Cap output to prevent memory exhaustion
+            max_bytes = OfflineConfig.MAX_SUBPROCESS_OUTPUT_BYTES
+            if len(stdout_raw) > max_bytes:
+                stdout_raw = stdout_raw[:max_bytes] + "\n[... OUTPUT TRUNCATED TO 10MB ...]"
+            if len(stderr_raw) > max_bytes:
+                stderr_raw = stderr_raw[:max_bytes] + "\n[... OUTPUT TRUNCATED TO 10MB ...]"
+
+            stdout = redact_sensitive_data(stdout_raw)
+            stderr = redact_sensitive_data(stderr_raw)
             return proc.returncode, stdout, stderr, duration
-        except subprocess.TimeoutExpired as te:
+
+        except subprocess.TimeoutExpired:
             duration = round(time.perf_counter() - start_time, 3)
-            stdout = redact_sensitive_data(te.stdout or "")
-            stderr = f"Execution timed out after {self.timeout_sec} seconds."
-            return 124, stdout, stderr, duration
+            if proc:
+                self._kill_process_tree(proc)
+            return 124, "", f"Execution timed out after {self.timeout_sec} seconds. Process tree terminated.", duration
+
         except Exception as e:
             duration = round(time.perf_counter() - start_time, 3)
+            if proc:
+                self._kill_process_tree(proc)
             return 1, "", f"Failed to execute command: {e}", duration

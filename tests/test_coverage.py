@@ -94,5 +94,5 @@ def test_coverage_dimensions():
     assert "Feature Coverage" in dims
     assert dims["Feature Coverage"].value_pct == 0.0  # 0 of 1 linked
 
-    assert "Branch Coverage" in dims
-    assert dims["Branch Coverage"].value_pct == 100.0
+    assert "Git Branch Assessment" in dims
+    assert dims["Git Branch Assessment"].value_pct == 100.0

@@ -202,6 +202,7 @@ class SBOMComponent(BaseModel):
     purl: Optional[str] = None
     source_file: str
     direct: bool = True
+    is_approximate_range: bool = False
 
 
 class SBOMReport(BaseModel):
@@ -287,6 +288,7 @@ class GeneratedTestSuite(BaseModel):
 
 
 class RunContext(BaseModel):
+    schema_version: str = "1.1.0"
     run_id: str
     timestamp: str = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
     repo_path: str

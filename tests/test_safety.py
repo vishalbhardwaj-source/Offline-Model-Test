@@ -1,4 +1,9 @@
-from offtest.intake.safety import redact_sensitive_data, scan_for_secrets
+from offtest.intake.safety import (
+    calculate_shannon_entropy,
+    compute_secret_fingerprint,
+    redact_sensitive_data,
+    scan_for_secrets,
+)
 
 
 def test_redact_sensitive_data_aws():
@@ -51,3 +56,20 @@ def test_scan_for_secrets():
     assert "Hardcoded Secret" in hits[0][1]
     assert "super_secret_pw" not in hits[0][2]
     assert "[REDACTED_SECRET]" in hits[0][2]
+    assert len(hits[0][3]) == 16  # SHA-256 fingerprint
+
+
+def test_shannon_entropy_calculation():
+    # Low entropy: repetitive characters
+    low = calculate_shannon_entropy("aaaaaaaaaaaaaaaaaaaa")
+    assert low < 1.0
+
+    # High entropy: random hex/base64 key
+    high = calculate_shannon_entropy("4f8a9b2c3d1e0f7e6a5b4c3d2e1f0a9b")
+    assert high > 3.5
+
+    # Fingerprint deduplication determinism
+    fp1 = compute_secret_fingerprint("my_super_secret_token_123")
+    fp2 = compute_secret_fingerprint("my_super_secret_token_123")
+    assert fp1 == fp2
+    assert len(fp1) == 16

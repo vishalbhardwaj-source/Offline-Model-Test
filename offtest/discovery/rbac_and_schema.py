@@ -100,14 +100,27 @@ class RBACAndSchemaExtractor:
                     if custom_role not in role_to_endpoints:
                         role_to_endpoints[custom_role] = []
 
-            # If no auth required, public/anonymous endpoint
-            if not auth_required:
-                roles = ["Anonymous"]
-                role_to_endpoints["Anonymous"].append(f"{method} {endpoint}")
-            else:
+            # Public vs Unverified guard evaluation
+            status = EvidenceStatus.OBSERVED
+            if auth_required:
                 for r in roles:
                     if f"{method} {endpoint}" not in role_to_endpoints.get(r, []):
                         role_to_endpoints.setdefault(r, []).append(f"{method} {endpoint}")
+            else:
+                # Check for explicit public declarations
+                is_explicit_public = (
+                    re.search(r"""@(?:public|allow_anonymous|permit_all)\b""", context_block, re.IGNORECASE)
+                    or endpoint in ["/", "/health", "/login", "/register", "/api/v1/auth/login"]
+                )
+                if is_explicit_public:
+                    roles = ["Anonymous"]
+                    status = EvidenceStatus.INFERRED
+                    role_to_endpoints["Anonymous"].append(f"{method} {endpoint}")
+                else:
+                    # Do not assume unguarded routes are public: global middleware or CBVs may apply
+                    roles = ["Unverified (No local guard)"]
+                    status = EvidenceStatus.UNVERIFIED
+                    role_to_endpoints.setdefault("Unverified (No local guard)", []).append(f"{method} {endpoint}")
 
             permissions.append(
                 RBACPermissionRecord(
@@ -117,7 +130,7 @@ class RBACAndSchemaExtractor:
                     required_roles=roles,
                     file_path=file_path,
                     line_number=line_num,
-                    status=EvidenceStatus.OBSERVED if lines else EvidenceStatus.INFERRED,
+                    status=status,
                 )
             )
 

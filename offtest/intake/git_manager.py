@@ -1,3 +1,4 @@
+import os
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -13,10 +14,30 @@ class GitManager:
         if not self.is_git:
             return 1, "", "Not a git repository"
         try:
-            # Strictly local commands, never network
+            # Harden Git against malicious .git/config commands (fsmonitor, textconv, hooks, pagers)
+            hardened_flags = [
+                "-c", "core.fsmonitor=false",
+                "-c", "core.pager=cat",
+                "-c", "core.hooksPath=" + os.devnull,
+                "-c", "diff.external=false",
+                "-c", "diff.textconv=false",
+                "-c", "protocol.allow=never",
+            ]
+            git_env = {
+                k: v for k, v in os.environ.items()
+                if k.upper() in ["PATH", "SYSTEMROOT", "WINDIR", "TMP", "TEMP"]
+            }
+            git_env.update({
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_TERMINAL_PROMPT": "0",
+                "GIT_SSH_COMMAND": "false",
+            })
+
             result = subprocess.run(
-                ["git"] + args,
+                ["git"] + hardened_flags + args,
                 cwd=str(self.repo_dir),
+                env=git_env,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

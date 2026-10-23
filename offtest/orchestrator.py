@@ -1,3 +1,4 @@
+import hashlib
 import os
 import platform
 import sys
@@ -5,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
-from offtest.checks.flakiness import FlakinessBisectionRunner
+from offtest.checks.flakiness import FlakinessRepeatSampler
 from offtest.checks.planner import CheckPlanner, get_tool_manifest
 from offtest.core.evidence_store import EvidenceStore
 from offtest.core.models import (
@@ -25,6 +26,7 @@ from offtest.inventory.engine import InventoryEngine
 from offtest.inventory.sbom import SBOMGenerator
 from offtest.reports.detailed import DetailedReportGenerator
 from offtest.reports.issue_focused import IssueFocusedReportGenerator
+from offtest.reports.sarif import SARIFReportGenerator
 
 
 class AssessmentOrchestrator:
@@ -36,6 +38,7 @@ class AssessmentOrchestrator:
         allow_scripts: bool = False,
         output_dir: Optional[str] = None,
         detect_flaky: bool = False,
+        quarantine_policy: str = "warn",
         generate_tests: bool = True,
     ):
         self.input_target = repo_path_or_archive
@@ -44,9 +47,10 @@ class AssessmentOrchestrator:
         self.allow_scripts = allow_scripts
         self.output_dir = Path(output_dir) if output_dir else Path(".offtest_runs")
         self.detect_flaky = detect_flaky
+        self.quarantine_policy = quarantine_policy
         self.generate_tests = generate_tests
 
-    def run(self) -> Tuple[RunContext, Path, Path]:
+    def run(self) -> Tuple[RunContext, Path, Path, Path]:
         run_id = f"run_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         run_folder = self.output_dir / run_id
         run_folder.mkdir(parents=True, exist_ok=True)
@@ -55,7 +59,7 @@ class AssessmentOrchestrator:
         target_dir, is_temp = RepositoryIntake.prepare_target(self.input_target)
         repo_name = target_dir.name
 
-        # 2. Git State
+        # 2. Hardened Git State (protected from malicious .git/config)
         git_mgr = GitManager(str(target_dir))
         git_state = git_mgr.get_repo_state()
         local_branches = git_mgr.list_local_branches(comparison_base=self.base_branch)
@@ -71,7 +75,7 @@ class AssessmentOrchestrator:
             if diff:
                 branch_diffs.append(diff)
 
-        # 3. Inventory & Offline SBOM Generation
+        # 3. Inventory & Multi-Ecosystem Offline SBOM Generation
         inv_engine = InventoryEngine(str(target_dir))
         files, inv_summary = inv_engine.scan()
 
@@ -87,13 +91,13 @@ class AssessmentOrchestrator:
         rbac_matrix = rbac_schema_extractor.extract_rbac()
         openapi_spec = rbac_schema_extractor.synthesize_openapi(title=f"{repo_name} API")
 
-        # 5. Check Planning & Execution
+        # 5. Check Planning & Execution (inside scrubbed isolated runner)
         check_planner = CheckPlanner(target_dir, files, allow_scripts=self.allow_scripts)
         active_b_name = git_state.get("active_branch") or "HEAD"
         check_results, findings = check_planner.execute_all(branch=active_b_name)
 
-        # 5b. Flakiness Bisection & Quarantine Analysis
-        flakiness_runner = FlakinessBisectionRunner(target_dir)
+        # 5b. Flakiness Repeat-Sampling & Quarantine Analysis
+        flakiness_runner = FlakinessRepeatSampler(target_dir, quarantine_policy=self.quarantine_policy)
         flakiness_report = flakiness_runner.analyze_results(check_results, enabled=self.detect_flaky)
 
         # 5c. AST Branch Predicates & Constrained Test Generation
@@ -104,7 +108,7 @@ class AssessmentOrchestrator:
             from offtest.core.models import GeneratedTestSuite
             generated_test_suite = GeneratedTestSuite()
 
-        # 6. Coverage Evaluation (7 Dimensions)
+        # 6. Coverage Evaluation (7 Dimensions with explicit Git Branch naming)
         selected_b_list = [self.target_branch] if self.target_branch else [b.name for b in local_branches]
         coverage_report = CoverageEvaluator.evaluate(
             files=files,
@@ -118,8 +122,8 @@ class AssessmentOrchestrator:
         # 7. Formulate Limitations and Assumptions
         limitations = [
             "Assessment runs in an offline isolated environment without external dependency retrieval.",
-            "Static analysis cannot guarantee detection of runtime-only behavior or dynamic code paths.",
-            "Undocumented APIs and implicit workflows may remain unclassified or marked as Inferred.",
+            "Static analysis provides full AST depth for Python; regex heuristics apply for other languages.",
+            "Undocumented APIs and implicit workflows without local guards are explicitly tagged as Unverified.",
         ]
         if not self.allow_scripts:
             limitations.append(
@@ -128,12 +132,13 @@ class AssessmentOrchestrator:
 
         assumptions = [
             f"Execution running on platform '{platform.platform()}' with Python '{sys.version.split()[0]}'.",
-            "Offline runner enforced environment isolation flags (PIP_NO_INDEX=1, npm_config_offline=true, proxy nullification).",
+            "IsolatedRunner enforced environment scrubbing (host secrets stripped) and proxy nullification.",
             "No remote network calls or remote git fetches performed during assessment.",
         ]
 
         # 8. Assemble Context
         context = RunContext(
+            schema_version="1.1.0",
             run_id=run_id,
             timestamp=datetime.now(timezone.utc).isoformat(),
             repo_path=str(target_dir),
@@ -171,11 +176,13 @@ class AssessmentOrchestrator:
             generated_test_suite=generated_test_suite,
         )
 
-        # 9. Save Evidence Store
+        # 9. Save Evidence Store & Tamper-Proof Checksum
         evidence_store = EvidenceStore(base_dir=str(self.output_dir))
         evidence_path = evidence_store.save_run(context)
+        evidence_sha = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+        (run_folder / "evidence.json.sha256").write_text(f"{evidence_sha}  evidence.json\n", encoding="utf-8")
 
-        # 10. Generate Reports
+        # 10. Generate Reports & SARIF 2.1.0 Export
         detailed_gen = DetailedReportGenerator(context)
         detailed_md = detailed_gen.generate_markdown()
         detailed_report_path = run_folder / "REPORT_1_DETAILED.md"
@@ -186,4 +193,8 @@ class AssessmentOrchestrator:
         issue_report_path = run_folder / "REPORT_2_ISSUES.md"
         issue_report_path.write_text(issue_md, encoding="utf-8")
 
-        return context, detailed_report_path, issue_report_path
+        sarif_gen = SARIFReportGenerator(context)
+        sarif_path = run_folder / "results.sarif"
+        sarif_gen.save_sarif(sarif_path)
+
+        return context, detailed_report_path, issue_report_path, sarif_path

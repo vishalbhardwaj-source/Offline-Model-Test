@@ -1,11 +1,37 @@
 import re
-from typing import Dict, List, Pattern
+from typing import Dict, List, Pattern, Set
 
 
 class OfflineConfig:
-    # Operational timeouts
+    # Operational timeouts and limits
     COMMAND_TIMEOUT_SEC: int = 60
     MAX_FILE_SIZE_BYTES: int = 5 * 1024 * 1024  # 5MB max for text inspection
+    MAX_SUBPROCESS_OUTPUT_BYTES: int = 10 * 1024 * 1024  # 10MB cap on stdout/stderr to prevent memory exhaustion
+
+    # Archive safety limits (decompression bomb protection)
+    ARCHIVE_MAX_FILES: int = 10_000
+    ARCHIVE_MAX_FILE_SIZE_BYTES: int = 50 * 1024 * 1024  # 50MB single file max
+    ARCHIVE_MAX_TOTAL_SIZE_BYTES: int = 500 * 1024 * 1024  # 500MB total extraction max
+    ARCHIVE_MAX_COMPRESSION_RATIO: float = 100.0  # Max 100:1 ratio
+
+    # Safe environment variable whitelist (prevents host secret leaks into child processes)
+    SAFE_ENV_WHITELIST: Set[str] = {
+        "PATH",
+        "SYSTEMROOT",
+        "WINDIR",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "TERM",
+        "TZ",
+        "COMSPEC",
+        "PATHEXT",
+        "PYTHONPATH",
+        "PYTHONHOME",
+    }
 
     # Default file exclusion patterns
     DEFAULT_EXCLUSIONS: List[str] = [
@@ -41,6 +67,10 @@ class OfflineConfig:
         r"yarn\.lock$",
         r"pnpm-lock\.yaml$",
         r"poetry\.lock$",
+        r"uv\.lock$",
+        r"Cargo\.lock$",
+        r"composer\.lock$",
+        r"Gemfile\.lock$",
     ]
 
     # Sensitive data regex patterns for automatic redaction and secret scanning
@@ -82,6 +112,7 @@ class OfflineConfig:
         "YARN_OFFLINE": "true",
         "CARGO_NET_OFFLINE": "true",
         "GOPROXY": "off",
+        "GOSUMDB": "off",
         "GONOSUMDB": "*",
         "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
         "POETRY_VIRTUALENVS_CREATE": "false",

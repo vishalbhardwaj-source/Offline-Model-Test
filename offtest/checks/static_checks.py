@@ -36,7 +36,7 @@ class OfflineStaticChecker:
 
             # 1. Hardcoded secrets check
             secret_hits = scan_for_secrets(content, f.path)
-            for line_no, label, preview in secret_hits:
+            for line_no, label, preview, fingerprint in secret_hits:
                 findings.append(
                     Finding(
                         id=f"FIND-{counter:04d}",
@@ -48,7 +48,7 @@ class OfflineStaticChecker:
                         file_path=f.path,
                         line_number=line_no,
                         impact="High risk of credential exposure if repository is shared or breached.",
-                        evidence=f"Line {line_no}: {preview}",
+                        evidence=f"Line {line_no} [fingerprint: {fingerprint}]: {preview}",
                         suggested_action="Rotate credentials immediately and move secrets to local environment variables or an offline vault.",
                         check_tool="offtest-secret-scanner",
                     )

@@ -68,11 +68,12 @@ def test_end_to_end_assessment():
             output_dir=runs_dir,
         )
 
-        context, det_path, iss_path = orchestrator.run()
+        context, det_path, iss_path, sarif_path = orchestrator.run()
 
         # Check outputs
         assert det_path.exists()
         assert iss_path.exists()
+        assert sarif_path.exists()
 
         det_content = det_path.read_text(encoding="utf-8")
         iss_content = iss_path.read_text(encoding="utf-8")

@@ -194,11 +194,11 @@ class CoverageEvaluator:
         branch_pct = round((analyzed_branches / total_branches) * 100, 1) if total_branches > 0 else 0.0
         dimensions.append(
             CoverageDimension(
-                name="Branch Coverage",
+                name="Git Branch Assessment",
                 value_pct=branch_pct,
                 numerator=analyzed_branches,
                 denominator=total_branches,
-                unit="branches",
+                unit="git branches",
                 is_available=True,
                 explanation=f"{analyzed_branches} of {total_branches} requested local branches analyzed without checkout errors.",
             )

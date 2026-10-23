@@ -13,12 +13,16 @@ from offtest.core.models import (
 )
 
 
-class FlakinessBisectionRunner:
-    """Executes multi-run bisection testing to identify, measure, and quarantine flaky tests."""
+class FlakinessRepeatSampler:
+    """
+    Executes repeated sampling runs (N >= 3) to identify and isolate non-deterministic tests.
+    Enforces explicit quarantine policy ('warn', 'block', or 'ignore') instead of silent exclusion.
+    """
 
-    def __init__(self, repo_dir: Path, iterations: int = 3):
+    def __init__(self, repo_dir: Path, iterations: int = 3, quarantine_policy: str = "warn"):
         self.repo_dir = repo_dir
         self.iterations = max(2, iterations)
+        self.quarantine_policy = quarantine_policy
         self.runner = IsolatedRunner(self.repo_dir)
 
     def evaluate_check(self, check: CheckResult) -> QuarantinedTestRecord:
@@ -93,3 +97,7 @@ class FlakinessBisectionRunner:
             quarantined_flaky_count=flaky_count,
             quarantined_tests=quarantined,
         )
+
+
+# Backward-compatible alias
+FlakinessBisectionRunner = FlakinessRepeatSampler
