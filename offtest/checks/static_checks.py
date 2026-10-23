@@ -1,0 +1,283 @@
+import ast
+import re
+from pathlib import Path
+from typing import List, Optional
+from offtest.core.models import (
+    Confidence,
+    EvidenceStatus,
+    FileRecord,
+    Finding,
+    Severity,
+)
+from offtest.intake.safety import scan_for_secrets
+
+
+class OfflineStaticChecker:
+    def __init__(self, repo_dir: Path, files: List[FileRecord]):
+        self.repo_dir = repo_dir
+        self.files = files
+
+    def run_all(self, branch: Optional[str] = None) -> List[Finding]:
+        findings: List[Finding] = []
+        counter = 1
+
+        for f in self.files:
+            if f.disposition.value != "analyzed":
+                continue
+
+            full_path = self.repo_dir / f.path
+            if not full_path.is_file():
+                continue
+
+            try:
+                content = full_path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+
+            # 1. Hardcoded secrets check
+            secret_hits = scan_for_secrets(content, f.path)
+            for line_no, label, preview in secret_hits:
+                findings.append(
+                    Finding(
+                        id=f"FIND-{counter:04d}",
+                        title=f"{label} Detected",
+                        severity=Severity.CRITICAL,
+                        confidence=Confidence.HIGH,
+                        status=EvidenceStatus.OBSERVED,
+                        branch=branch,
+                        file_path=f.path,
+                        line_number=line_no,
+                        impact="High risk of credential exposure if repository is shared or breached.",
+                        evidence=f"Line {line_no}: {preview}",
+                        suggested_action="Rotate credentials immediately and move secrets to local environment variables or an offline vault.",
+                        check_tool="offtest-secret-scanner",
+                    )
+                )
+                counter += 1
+
+            # 2. Python specific checks (AST syntax & security)
+            if f.language == "Python":
+                syntax_finding, parsed_ast = self._check_python_syntax(f.path, content, counter, branch)
+                if syntax_finding:
+                    findings.append(syntax_finding)
+                    counter += 1
+                elif parsed_ast:
+                    py_findings = self._check_python_security_ast(f.path, parsed_ast, counter, branch)
+                    for item in py_findings:
+                        findings.append(item)
+                        counter += 1
+
+            # 3. Dependency configuration analysis
+            if f.path.endswith("requirements.txt"):
+                dep_findings = self._check_requirements(f.path, content, counter, branch)
+                for item in dep_findings:
+                    findings.append(item)
+                    counter += 1
+
+            elif f.path.endswith("package.json"):
+                pkg_findings = self._check_package_json(f.path, content, counter, branch)
+                for item in pkg_findings:
+                    findings.append(item)
+                    counter += 1
+
+        return findings
+
+    def _check_python_syntax(self, rel_path: str, content: str, counter: int, branch: Optional[str]):
+        try:
+            tree = ast.parse(content, filename=rel_path)
+            return None, tree
+        except SyntaxError as se:
+            finding = Finding(
+                id=f"FIND-{counter:04d}",
+                title=f"Python Syntax Error: {se.msg}",
+                severity=Severity.HIGH,
+                confidence=Confidence.HIGH,
+                status=EvidenceStatus.OBSERVED,
+                branch=branch,
+                file_path=rel_path,
+                line_number=se.lineno,
+                impact="Code fails to compile or execute in Python runtime.",
+                evidence=f"SyntaxError on line {se.lineno}: {se.text.strip() if se.text else se.msg}",
+                suggested_action="Fix syntax error to ensure valid Python execution.",
+                check_tool="python-ast-validator",
+            )
+            return finding, None
+
+    def _check_python_security_ast(self, rel_path: str, tree: ast.AST, counter_start: int, branch: Optional[str]) -> List[Finding]:
+        findings = []
+        c = counter_start
+
+        class SecurityVisitor(ast.NodeVisitor):
+            def __init__(self):
+                self.issues = []
+
+            def visit_Call(self, node: ast.Call):
+                # Check eval() / exec()
+                if isinstance(node.func, ast.Name):
+                    if node.func.id in ("eval", "exec"):
+                        self.issues.append((
+                            node.lineno,
+                            f"Use of dangerous built-in '{node.func.id}()'",
+                            Severity.HIGH,
+                            Confidence.HIGH,
+                            f"Direct execution of dynamic strings via {node.func.id}() can lead to remote code execution.",
+                            f"Line {node.lineno}: {node.func.id}(...)",
+                            f"Refactor to avoid {node.func.id}() using safe static data parsing (e.g. ast.literal_eval, json.loads)."
+                        ))
+                    elif node.func.id == "open":
+                        pass
+
+                # Check os.system(...)
+                elif isinstance(node.func, ast.Attribute):
+                    if isinstance(node.func.value, ast.Name):
+                        if node.func.value.id == "os" and node.func.attr == "system":
+                            self.issues.append((
+                                node.lineno,
+                                "Insecure Process Execution with 'os.system()'",
+                                Severity.HIGH,
+                                Confidence.HIGH,
+                                "os.system executes shell commands without argument escaping, risking command injection.",
+                                f"Line {node.lineno}: os.system(...)",
+                                "Replace os.system() with subprocess.run(..., shell=False) passing command arguments as a list."
+                            ))
+                        # Check yaml.load without SafeLoader
+                        elif node.func.value.id == "yaml" and node.func.attr == "load":
+                            has_loader = False
+                            for kw in node.keywords:
+                                if kw.arg == "Loader":
+                                    has_loader = True
+                            if not has_loader:
+                                self.issues.append((
+                                    node.lineno,
+                                    "Unsafe YAML Deserialization ('yaml.load' without SafeLoader)",
+                                    Severity.HIGH,
+                                    Confidence.HIGH,
+                                    "Calling yaml.load() without explicit SafeLoader can allow arbitrary Python object instantiations.",
+                                    f"Line {node.lineno}: yaml.load(...)",
+                                    "Use yaml.safe_load(...) instead."
+                                ))
+                        # Check pickle.loads
+                        elif node.func.value.id == "pickle" and node.func.attr in ("load", "loads"):
+                            self.issues.append((
+                                node.lineno,
+                                "Insecure Object Deserialization ('pickle.loads')",
+                                Severity.MEDIUM,
+                                Confidence.MEDIUM,
+                                "Pickle deserialization of untrusted payloads enables arbitrary code execution.",
+                                f"Line {node.lineno}: pickle.{node.func.attr}(...)",
+                                "Use safer serialization formats like JSON or Protocol Buffers for untrusted data."
+                            ))
+                        # Check verify=False in requests
+                        elif node.func.value.id == "requests" and node.func.attr in ("get", "post", "put", "delete", "request"):
+                            for kw in node.keywords:
+                                if kw.arg == "verify" and isinstance(kw.value, ast.Constant) and kw.value.value is False:
+                                    self.issues.append((
+                                        node.lineno,
+                                        "Disabled SSL Certificate Verification (verify=False)",
+                                        Severity.HIGH,
+                                        Confidence.HIGH,
+                                        "Disabling SSL verification allows man-in-the-middle attacks.",
+                                        f"Line {node.lineno}: requests.{node.func.attr}(..., verify=False)",
+                                        "Remove verify=False and ensure valid local CA certificates are provided."
+                                    ))
+
+                self.generic_visit(node)
+
+            def visit_Assign(self, node: ast.Assign):
+                # Check DEBUG = True
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "DEBUG":
+                        if isinstance(node.value, ast.Constant) and node.value.value is True:
+                            self.issues.append((
+                                node.lineno,
+                                "Debug Mode Left Active ('DEBUG = True')",
+                                Severity.MEDIUM,
+                                Confidence.HIGH,
+                                "Debug mode reveals sensitive stack traces, environment details, and internal state.",
+                                f"Line {node.lineno}: DEBUG = True",
+                                "Set DEBUG = False or load dynamically from non-production configuration."
+                            ))
+                self.generic_visit(node)
+
+        visitor = SecurityVisitor()
+        visitor.visit(tree)
+
+        for line_no, title, sev, conf, impact, ev, action in visitor.issues:
+            findings.append(
+                Finding(
+                    id=f"FIND-{c:04d}",
+                    title=title,
+                    severity=sev,
+                    confidence=conf,
+                    status=EvidenceStatus.OBSERVED,
+                    branch=branch,
+                    file_path=rel_path,
+                    line_number=line_no,
+                    impact=impact,
+                    evidence=ev,
+                    suggested_action=action,
+                    check_tool="python-ast-security-checker",
+                )
+            )
+            c += 1
+
+        return findings
+
+    def _check_requirements(self, rel_path: str, content: str, counter_start: int, branch: Optional[str]) -> List[Finding]:
+        findings = []
+        c = counter_start
+        lines = content.splitlines()
+        for idx, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            # Check for unpinned dependencies (e.g. 'requests' or 'flask>=2.0' without exact pin '==')
+            if "==" not in stripped and "@" not in stripped and not stripped.startswith("-"):
+                findings.append(
+                    Finding(
+                        id=f"FIND-{c:04d}",
+                        title="Unpinned Python Dependency",
+                        severity=Severity.LOW,
+                        confidence=Confidence.HIGH,
+                        status=EvidenceStatus.OBSERVED,
+                        branch=branch,
+                        file_path=rel_path,
+                        line_number=idx,
+                        impact="Unpinned dependencies can introduce breaking changes or untracked upstream supply-chain differences when running offline.",
+                        evidence=f"Line {idx}: {stripped}",
+                        suggested_action=f"Pin exact version in requirements.txt (e.g. {stripped.split('>')[0].split('<')[0]}==x.y.z) for deterministic offline builds.",
+                        check_tool="dependency-pin-checker",
+                    )
+                )
+                c += 1
+        return findings
+
+    def _check_package_json(self, rel_path: str, content: str, counter_start: int, branch: Optional[str]) -> List[Finding]:
+        import json
+        findings = []
+        c = counter_start
+        try:
+            data = json.loads(content)
+            deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
+            for pkg, ver in deps.items():
+                if ver.startswith("^") or ver.startswith("~") or ver == "*" or ver == "latest":
+                    findings.append(
+                        Finding(
+                            id=f"FIND-{c:04d}",
+                            title=f"Floating Node.js Dependency: '{pkg}'",
+                            severity=Severity.LOW,
+                            confidence=Confidence.HIGH,
+                            status=EvidenceStatus.OBSERVED,
+                            branch=branch,
+                            file_path=rel_path,
+                            line_number=None,
+                            impact="Floating dependency range requires network resolution unless exact package-lock.json is committed.",
+                            evidence=f"\"{pkg}\": \"{ver}\"",
+                            suggested_action=f"Pin exact version or ensure package-lock.json / offline cache is provided.",
+                            check_tool="npm-package-pin-checker",
+                        )
+                    )
+                    c += 1
+        except Exception:
+            pass
+        return findings

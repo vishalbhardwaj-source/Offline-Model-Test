@@ -1,0 +1,741 @@
+{
+  "run_id": "run_20261023_165338_61b06b",
+  "timestamp": "2026-10-23T16:53:40.690512+00:00",
+  "repo_path": "C:\\Users\\visha\\Downloads\\Testing model\\sample_repos\\sample_web_app",
+  "repo_name": "sample_web_app",
+  "commit_hash": "5a264749ed939f449873e61d9e731181c97c9e21",
+  "working_tree_clean": true,
+  "remotes": [],
+  "active_branch": "main",
+  "comparison_base": "main",
+  "selected_branches": [
+    "feature/checkout"
+  ],
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python_version": "3.12.10",
+  "offline_enforced": true,
+  "allow_scripts": true,
+  "tools_manifest": [
+    {
+      "name": "Python Runtime",
+      "version": "3.12.10",
+      "path": "C:\\Program Files\\Python312\\python.exe",
+      "category": "runtime",
+      "is_available": true,
+      "checksum": null,
+      "notes": "Active offline Python interpreter"
+    },
+    {
+      "name": "Git CLI",
+      "version": "git version 2.55.0.windows.5",
+      "path": "C:\\Program Files\\Git\\cmd\\git.EXE",
+      "category": "vcs",
+      "is_available": true,
+      "checksum": null,
+      "notes": "Local repository inspection and branch diffing"
+    },
+    {
+      "name": "Node.js Runtime",
+      "version": "v24.20.0",
+      "path": "C:\\Program Files\\nodejs\\node.EXE",
+      "category": "runtime",
+      "is_available": true,
+      "checksum": null,
+      "notes": "JavaScript runtime for node checks"
+    },
+    {
+      "name": "Pytest Test Runner",
+      "version": "built-in adapter",
+      "path": "C:\\Program Files\\Python312\\python.exe",
+      "category": "test_runner",
+      "is_available": true,
+      "checksum": null,
+      "notes": "Offline test execution adapter"
+    },
+    {
+      "name": "offtest AST & Security Scanner",
+      "version": "0.1.0",
+      "path": null,
+      "category": "static_analysis",
+      "is_available": true,
+      "checksum": null,
+      "notes": "Built-in AST parser, secret scanner, security checks, and dependency pin inspector"
+    }
+  ],
+  "inventory_summary": {
+    "total_files": 38,
+    "analyzed_count": 4,
+    "excluded_count": 34,
+    "generated_count": 0,
+    "binary_count": 0,
+    "unsupported_count": 0,
+    "failed_to_inspect_count": 0,
+    "languages": {
+      "HTML": 1,
+      "Requirements": 1,
+      "Python": 2
+    },
+    "frameworks": [
+      "FastAPI"
+    ],
+    "build_systems": [
+      "Python Setuptools/Pip"
+    ],
+    "package_managers": [
+      "pip"
+    ],
+    "entry_points": [],
+    "test_files_count": 1
+  },
+  "files": [
+    {
+      "path": "index.html",
+      "size_bytes": 65,
+      "sha256": "a208120f24f2093e9b8eef910b27c4291804b87556ec27b413829b54a6377522",
+      "language": "HTML",
+      "category": "source",
+      "disposition": "analyzed",
+      "disposition_reason": "Supported language or manifest for offline inspection",
+      "line_count": 1
+    },
+    {
+      "path": "requirements.txt",
+      "size_bytes": 37,
+      "sha256": "c79d1b2b693248e0cd647c5c1f687d7df877fbd84ddb8223a742f1b9884899a9",
+      "language": "Requirements",
+      "category": "config",
+      "disposition": "analyzed",
+      "disposition_reason": "Supported language or manifest for offline inspection",
+      "line_count": 3
+    },
+    {
+      "path": "server.py",
+      "size_bytes": 597,
+      "sha256": "0eb342430c8d4a0bd442b071dfbd47a929fa4f0cdda016ba0689a3ab5c0a803f",
+      "language": "Python",
+      "category": "source",
+      "disposition": "analyzed",
+      "disposition_reason": "Supported language or manifest for offline inspection",
+      "line_count": 25
+    },
+    {
+      "path": "test_catalog.py",
+      "size_bytes": 146,
+      "sha256": "db787ed5815f70347ffc0607adb0e7dd44e682b1a5697876d5bc44753b96d5fb",
+      "language": "Python",
+      "category": "test",
+      "disposition": "analyzed",
+      "disposition_reason": "Supported language or manifest for offline inspection",
+      "line_count": 7
+    },
+    {
+      "path": ".git/COMMIT_EDITMSG",
+      "size_bytes": 22,
+      "sha256": "c1f7394180e0048de1a49698d463c35eccd549088de9af943a5e62e8b8a82010",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/config",
+      "size_bytes": 187,
+      "sha256": "cb33c33087478bac5ca376bc4d1bdf193f48f829abac7157f7d3270a583e557e",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/description",
+      "size_bytes": 73,
+      "sha256": "85ab6c163d43a17ea9cf7788308bca1466f1b0a8d1cc92e26e9bf63da4062aee",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/HEAD",
+      "size_bytes": 21,
+      "sha256": "28d25bf82af4c0e2b72f50959b2beb859e3e60b9630a5e8c603dad4ddb2b6e80",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/index",
+      "size_bytes": 377,
+      "sha256": "a53bcdfd6227cbf21e0d18742e2f01d1e51b3df1e1142ecc4499ca943e466a7b",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/hooks/applypatch-msg.sample",
+      "size_bytes": 478,
+      "sha256": "0223497a0b8b033aa58a3a521b8629869386cf7ab0e2f101963d328aa62193f7",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/hooks/commit-msg.sample",
+      "size_bytes": 1972,
+      "sha256": "efc1401b0e99d1ff51494d154d98b46c1e99059bcd8bf9f73cecde19fd3eb23b",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/hooks/fsmonitor-watchman.sample",
+      "size_bytes": 4611,
+      "sha256": "9159720099ad5595b8e66645cbfd47763c1e920f46e0b50ae75e642bbec57ef0",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/hooks/post-update.sample",
+      "size_bytes": 189,
+      "sha256": "81765af2daef323061dcbc5e61fc16481cb74b3bac9ad8a174b186523586f6c5",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/hooks/pre-applypatch.sample",
+      "size_bytes": 424,
+      "sha256": "e15c5b469ea3e0a695bea6f2c82bcf8e62821074939ddd85b77e0007ff165475",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/hooks/pre-commit.sample",
+      "size_bytes": 1649,
+      "sha256": "57185b7b9f05239d7ab52db045f5b89eb31348d7b2177eab214f5eb872e1971b",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/hooks/pre-merge-commit.sample",
+      "size_bytes": 416,
+      "sha256": "d3825a70337940ebbd0a5c072984e13245920cdf8898bd225c8d27a6dfc9cb53",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/hooks/pre-push.sample",
+      "size_bytes": 1374,
+      "sha256": "ecce9c7e04d3f5dd9d8ada81753dd1d549a9634b26770042b58dda00217d086a",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/hooks/pre-rebase.sample",
+      "size_bytes": 4898,
+      "sha256": "4febce867790052338076f4e66cc47efb14879d18097d1d61c8261859eaaa7b3",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/hooks/pre-receive.sample",
+      "size_bytes": 544,
+      "sha256": "a4c3d2b9c7bb3fd8d1441c31bd4ee71a595d66b44fcf49ddb310252320169989",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/hooks/prepare-commit-msg.sample",
+      "size_bytes": 1492,
+      "sha256": "e9ddcaa4189fddd25ed97fc8c789eca7b6ca16390b2392ae3276f0c8e1aa4619",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/hooks/push-to-checkout.sample",
+      "size_bytes": 2783,
+      "sha256": "a53d0741798b287c6dd7afa64aee473f305e65d3f49463bb9d7408ec3b12bf5f",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/hooks/sendemail-validate.sample",
+      "size_bytes": 2308,
+      "sha256": "44ebfc923dc5466bc009602f0ecf067b9c65459abfe8868ddc49b78e6ced7a92",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/hooks/update.sample",
+      "size_bytes": 3650,
+      "sha256": "8d5f2fa83e103cf08b57eaa67521df9194f45cbdbcb37da52ad586097a14d106",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/info/exclude",
+      "size_bytes": 240,
+      "sha256": "6671fe83b7a07c8932ee89164d1f2793b2318058eb8b98dc5c06ee0a5a3b0ec1",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/logs/HEAD",
+      "size_bytes": 701,
+      "sha256": "a79b4382d30bbdab74e2ec5854e81825b0b685101f5b9d901de3ca79fb606738",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/logs/refs/heads/main",
+      "size_bytes": 175,
+      "sha256": "e4d775eaa03b6bc58ebe58b7e41785a5ce3dd2ffe0464c6091b76669a1d5ba27",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/logs/refs/heads/feature/checkout",
+      "size_bytes": 324,
+      "sha256": "07052fadc57693baf9c7e1ae733b8523a8686aef5cd19897b06087d2df1f3d18",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/objects/07/144ccad6b2b7ec01fd1d98b52d8028e3024a88",
+      "size_bytes": 138,
+      "sha256": "a9cc2c2809e7fc5e47ba457a85248bde37b3f617304e8d269b8ccbae9a7b25d5",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/objects/36/2bc709e67a9b1641bb16306122176396b2fd5e",
+      "size_bytes": 165,
+      "sha256": "ebbb25076fe3f9a450d189a9296cf1cdf9a054f8694c43f292ceaa006a58a0ba",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/objects/39/3d03e4a3df00df4166a4808eab059ab7b59557",
+      "size_bytes": 67,
+      "sha256": "9743b0647eeff0e073075777444443176ada6cec1061f66278aa7541f0aa3d15",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/objects/59/26883124281698f88df72c89bb8e7009c0ea7f",
+      "size_bytes": 167,
+      "sha256": "5e9a8a172ee31c10f8d89a522a3112953eff2a8bb50de522ff1e76e5fd3970d6",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/objects/5a/264749ed939f449873e61d9e731181c97c9e21",
+      "size_bytes": 136,
+      "sha256": "3678346195a50a72464f04f5cc35052304eef4842efca048732a30dd2e5e39bc",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/objects/6f/ea7612655673b453ffb90b43f775bc27add2db",
+      "size_bytes": 372,
+      "sha256": "7b488921032004d09b31d2800a2f7f79f90134ae89d2d443946cc6eb2737f519",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/objects/9c/9d446d960860f6e3c284226e0371f80ccc64cc",
+      "size_bytes": 200,
+      "sha256": "990485f5a0bed5c9230b9604af584fb5e71d4a31a6e1511d01cee739c6b3a348",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/objects/e0/09c539d75ae9f2b7eba110ac7117ace40207ab",
+      "size_bytes": 50,
+      "sha256": "a4b3727be8d9917b15344285781498fa4bf814d8457b721b019a53012dc99b4d",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/objects/f3/ea4c13640d5eaf93c65044fd9a7d514a12c1cd",
+      "size_bytes": 106,
+      "sha256": "ce995cd49bb2a3f8ac3285e75a75332526ab9fb976d4b9a98bff1046c30a3c97",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/refs/heads/main",
+      "size_bytes": 41,
+      "sha256": "31e18adcbf982e1769bde12121dbfbf0b25b258cf7818a3d2b5579e0ee751c7f",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    },
+    {
+      "path": ".git/refs/heads/feature/checkout",
+      "size_bytes": 41,
+      "sha256": "c6e78f96c6b2e3209b4fd974ff66fed27760a53b143e7a6dd2ba6e459d10abbf",
+      "language": null,
+      "category": "excluded",
+      "disposition": "excluded",
+      "disposition_reason": "Matched default exclusion pattern '^\\.git([\\\\/].*)?$'",
+      "line_count": null
+    }
+  ],
+  "routes": [
+    {
+      "path": "/",
+      "method": "GET",
+      "handler": null,
+      "file_path": "index.html",
+      "line_number": 1,
+      "status": "Observed",
+      "notes": "Static HTML page / screen"
+    },
+    {
+      "path": "/",
+      "method": "GET",
+      "handler": null,
+      "file_path": "server.py",
+      "line_number": 10,
+      "status": "Observed",
+      "notes": "FastAPI/Flask web route detected"
+    }
+  ],
+  "apis": [
+    {
+      "endpoint": "/api/v1/auth/login",
+      "method": "GET",
+      "handler": null,
+      "file_path": "server.py",
+      "line_number": 14,
+      "status": "Observed",
+      "auth_required": null,
+      "notes": "FastAPI/Flask API route detected"
+    },
+    {
+      "endpoint": "/api/v1/products",
+      "method": "GET",
+      "handler": null,
+      "file_path": "server.py",
+      "line_number": 18,
+      "status": "Observed",
+      "auth_required": null,
+      "notes": "FastAPI/Flask API route detected"
+    }
+  ],
+  "features": [
+    {
+      "name": "Feature Toggle: FEATURE_PAYMENT_V2",
+      "flag_key": "FEATURE_PAYMENT_V2",
+      "file_path": "server.py",
+      "line_number": 23,
+      "status": "Observed",
+      "linked_tests": [
+        "test_catalog.py"
+      ],
+      "description": null
+    }
+  ],
+  "workflows": [
+    {
+      "name": "User Authentication & Session Management",
+      "description": "User login, registration, and credential validation workflow",
+      "entry_point": "/api/v1/auth/login",
+      "related_files": [
+        "server.py"
+      ],
+      "linked_tests": [],
+      "status": "Inferred",
+      "steps": [
+        "Submit credentials",
+        "Validate password/token",
+        "Establish session"
+      ]
+    }
+  ],
+  "integrations": [
+    {
+      "name": "Token / OAuth Authentication",
+      "category": "Authentication",
+      "detected_in": [
+        "server.py"
+      ],
+      "status": "Observed",
+      "details": null
+    }
+  ],
+  "branches": [
+    {
+      "name": "feature/checkout",
+      "is_current": false,
+      "is_base": false,
+      "head_commit": "362bc70",
+      "commit_message": "Add checkout endpoint",
+      "status": "available",
+      "error_details": null
+    },
+    {
+      "name": "main",
+      "is_current": true,
+      "is_base": true,
+      "head_commit": "5a26474",
+      "commit_message": "Initial commit on main",
+      "status": "available",
+      "error_details": null
+    }
+  ],
+  "branch_diffs": [
+    {
+      "branch_name": "feature/checkout",
+      "base_branch": "main",
+      "added_files": [
+        "checkout.py"
+      ],
+      "modified_files": [],
+      "deleted_files": [],
+      "total_changed_files": 1,
+      "diff_summary": "+1 ~0 -0 files changed"
+    }
+  ],
+  "check_results": [
+    {
+      "tool_name": "offtest-static-scanner",
+      "tool_version": "0.1.0",
+      "check_name": "Static AST, Security & Secret Analysis",
+      "check_type": "security",
+      "command": "internal static ast inspection",
+      "exit_code": 1,
+      "duration_sec": 0.15,
+      "stdout": "Processed eligible source files. Generated 3 findings.",
+      "stderr": "",
+      "status": "Passed",
+      "skip_or_blocked_reason": null
+    },
+    {
+      "tool_name": "pytest",
+      "tool_version": "3.12.10",
+      "check_name": "Python Pytest Suite",
+      "check_type": "unit_test",
+      "command": "python -m pytest -v",
+      "exit_code": 0,
+      "duration_sec": 1.094,
+      "stdout": "============================= test session starts =============================\nplatform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.6.0 -- C:\\Program Files\\Python312\\python.exe\ncachedir: .pytest_cache\nrootdir: C:\\Users\\visha\\Downloads\\Testing model\\sample_repos\\sample_web_app\nplugins: anyio-4.15.1\ncollecting ... collected 2 items\n\ntest_catalog.py::test_products PASSED                                    [ 50%]\ntest_catalog.py::test_feature_payment PASSED                             [100%]\n\n============================== 2 passed in 0.03s ==============================\n",
+      "stderr": "",
+      "status": "Passed",
+      "skip_or_blocked_reason": null
+    }
+  ],
+  "findings": [
+    {
+      "id": "FIND-0001",
+      "title": "Unpinned Python Dependency",
+      "severity": "Low",
+      "confidence": "High",
+      "status": "Observed",
+      "branch": "main",
+      "file_path": "requirements.txt",
+      "line_number": 2,
+      "impact": "Unpinned dependencies can introduce breaking changes or untracked upstream supply-chain differences when running offline.",
+      "evidence": "Line 2: uvicorn",
+      "suggested_action": "Pin exact version in requirements.txt (e.g. uvicorn==x.y.z) for deterministic offline builds.",
+      "check_tool": "dependency-pin-checker"
+    },
+    {
+      "id": "FIND-0002",
+      "title": "Unpinned Python Dependency",
+      "severity": "Low",
+      "confidence": "High",
+      "status": "Observed",
+      "branch": "main",
+      "file_path": "requirements.txt",
+      "line_number": 3,
+      "impact": "Unpinned dependencies can introduce breaking changes or untracked upstream supply-chain differences when running offline.",
+      "evidence": "Line 3: pydantic",
+      "suggested_action": "Pin exact version in requirements.txt (e.g. pydantic==x.y.z) for deterministic offline builds.",
+      "check_tool": "dependency-pin-checker"
+    },
+    {
+      "id": "FIND-0003",
+      "title": "Hardcoded Secret / Credential Detected",
+      "severity": "Critical",
+      "confidence": "High",
+      "status": "Observed",
+      "branch": "main",
+      "file_path": "server.py",
+      "line_number": 8,
+      "impact": "High risk of credential exposure if repository is shared or breached.",
+      "evidence": "Line 8: INTERNAL_API_KEY = \"[REDACTED_SECRET]\"",
+      "suggested_action": "Rotate credentials immediately and move secrets to local environment variables or an offline vault.",
+      "check_tool": "offtest-secret-scanner"
+    }
+  ],
+  "coverage": {
+    "dimensions": [
+      {
+        "name": "Repository Inventory Coverage",
+        "value_pct": 100.0,
+        "numerator": 38,
+        "denominator": 38,
+        "unit": "files",
+        "is_available": true,
+        "explanation": "38 files classified out of 38 discovered files (100% of files have an explicit disposition)."
+      },
+      {
+        "name": "Static Analysis Coverage",
+        "value_pct": 100.0,
+        "numerator": 4,
+        "denominator": 4,
+        "unit": "eligible source files",
+        "is_available": true,
+        "explanation": "4 of 4 eligible source files successfully parsed and inspected."
+      },
+      {
+        "name": "Test Suite Execution Coverage",
+        "value_pct": 100.0,
+        "numerator": 1,
+        "denominator": 1,
+        "unit": "test suites",
+        "is_available": true,
+        "explanation": "1 of 1 discovered test suites executed in isolated offline runner."
+      },
+      {
+        "name": "Code Coverage (Statement/Branch)",
+        "value_pct": null,
+        "numerator": null,
+        "denominator": null,
+        "unit": "statements",
+        "is_available": false,
+        "explanation": "Unavailable: No offline coverage instrumentation report (e.g., coverage.xml or lcov.info) was supplied or generated."
+      },
+      {
+        "name": "Workflow Coverage",
+        "value_pct": 0.0,
+        "numerator": 0,
+        "denominator": 1,
+        "unit": "workflows",
+        "is_available": true,
+        "explanation": "0 of 1 identified application workflows have linked automated test evidence."
+      },
+      {
+        "name": "Feature Coverage",
+        "value_pct": 100.0,
+        "numerator": 1,
+        "denominator": 1,
+        "unit": "features",
+        "is_available": true,
+        "explanation": "1 of 1 identified features/toggles have linked automated test coverage."
+      },
+      {
+        "name": "Branch Coverage",
+        "value_pct": 100.0,
+        "numerator": 1,
+        "denominator": 1,
+        "unit": "branches",
+        "is_available": true,
+        "explanation": "1 of 1 requested local branches analyzed without checkout errors."
+      }
+    ],
+    "summary_notes": [
+      "Pass rates must not be conflated with 100% feature or path coverage.",
+      "One or more coverage dimensions are explicitly marked 'Unavailable' due to absence of offline artifacts."
+    ]
+  },
+  "limitations": [
+    "Assessment runs in an offline isolated environment without external dependency retrieval.",
+    "Static analysis cannot guarantee detection of runtime-only behavior or dynamic code paths.",
+    "Undocumented APIs and implicit workflows may remain unclassified or marked as Inferred."
+  ],
+  "execution_assumptions": [
+    "Execution running on platform 'Windows-11-10.0.26200-SP0' with Python '3.12.10'.",
+    "Offline runner enforced environment isolation flags (PIP_NO_INDEX=1, npm_config_offline=true, proxy nullification).",
+    "No remote network calls or remote git fetches performed during assessment."
+  ]
+}
