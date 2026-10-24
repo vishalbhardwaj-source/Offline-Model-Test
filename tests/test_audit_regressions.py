@@ -407,5 +407,38 @@ def test_target_repo_assessment_runs_pytest_under_isolated_runner_and_passes(tmp
     assert pytest_res.exit_code == 0
 
 
+def test_user_site_package_imported_under_isolated_runner(tmp_path: Path):
+    """
+    Directly tests the PYTHONUSERBASE regression scenario:
+    When packages are installed in the host's per-user site-packages directory (site.getusersitepackages()),
+    IsolatedRunner must allow them to be imported in the child process via PYTHONPATH fallback
+    despite redirecting PYTHONUSERBASE to the isolated sandbox home.
+    """
+    import shutil
+    import site
+    import sys
+    from offtest.checks.isolated_runner import IsolatedRunner
+
+    user_site = Path(site.getusersitepackages())
+    user_site.mkdir(parents=True, exist_ok=True)
+    pkg_dir = user_site / "_offtest_test_user_pkg"
+    try:
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        (pkg_dir / "__init__.py").write_text("LOADED_USER_SITE = 'SUCCESS_MARKER'\n", encoding="utf-8")
+
+        runner = IsolatedRunner(tmp_path)
+        probe = [
+            sys.executable,
+            "-c",
+            "import _offtest_test_user_pkg; print(_offtest_test_user_pkg.LOADED_USER_SITE)",
+        ]
+        exit_code, stdout, stderr, _ = runner.run(probe)
+        assert exit_code == 0, f"Child failed to import user-site package: stderr={stderr}"
+        assert "SUCCESS_MARKER" in stdout
+    finally:
+        shutil.rmtree(pkg_dir, ignore_errors=True)
+
+
+
 
 

@@ -152,6 +152,19 @@ class IsolatedRunner:
         env["PYTHONUSERBASE"] = str(self.sandbox_home / "userbase")
 
         # Python air-gap sandbox socket interceptor bootstrap
+        # Fallback for user-site packages:
+        # If pytest or test dependencies were installed with `pip install --user`,
+        # redirecting PYTHONUSERBASE to the sandbox hides them unless the host user-site
+        # is explicitly appended to PYTHONPATH.
+        #
+        # Architectural Trade-offs & Limitations:
+        # 1. .pth files: Python does not process `.pth` files for directories on PYTHONPATH
+        #    (only directories added by the `site` module execute `.pth` files). Editable
+        #    installs (`pip install -e`) relying on `.pth` files in user-site may not resolve.
+        # 2. Host Package Leakage: Exposing the host's user site allows sandbox code to import
+        #    host user-site packages, weakening isolation from host-level environment contamination.
+        #    For complete hermetic isolation, a dedicated runner virtual environment with pinned
+        #    dependencies should be used.
         import site
         pythonpath_parts = [str(self.sandbox_home)]
         curr_pythonpath = env.get("PYTHONPATH", "")

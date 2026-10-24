@@ -151,6 +151,7 @@ class Finding(BaseModel):
     title: str
     severity: Severity
     confidence: Confidence
+    provenance: str = "rule"  # rule, symbolic, model
     status: EvidenceStatus = EvidenceStatus.OBSERVED
     branch: Optional[str] = None
     file_path: Optional[str] = None

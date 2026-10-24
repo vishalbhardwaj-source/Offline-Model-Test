@@ -32,7 +32,8 @@ class MutationReport:
     survived_mutants: int = 0
     timed_out_mutants: int = 0
     invalid_mutants: int = 0
-    mutation_score_pct: float = 0.0
+    mutation_score_pct: Optional[float] = 0.0
+    status: str = "completed"  # completed, baseline_failure, harness_failure
     baseline_passed: bool = True
     canary_verified: bool = False
     mutants: List[dict] = field(default_factory=list)
@@ -246,41 +247,32 @@ for k, v in current_ns.items():
                 survived_mutants=0,
                 timed_out_mutants=0,
                 invalid_mutants=0,
-                mutation_score_pct=0.0,
+                mutation_score_pct=None,
+                status="baseline_failure",
                 baseline_passed=False,
                 canary_verified=False,
                 mutants=[],
                 interpretation="Baseline test failed against unmutated code; tests cannot be trusted for mutation analysis.",
             )
 
-        # 2. Canary Mutant: Invalidate target module to confirm the test imports the mutant
-        canary_src = source_code + "\n\n# Canary mutant injection\ndef __canary_check__(): raise RuntimeError('__CANARY_TRIGGERED__')\n"
-        # Also mutate any return statement in target function to raise RuntimeError
-        canary_tree = None
-        try:
-            canary_tree = ast.parse(source_code)
-            for node in ast.walk(canary_tree):
-                if isinstance(node, ast.Return):
-                    node.value = ast.Constant(value=None)
-            canary_src = ast.unparse(canary_tree)
-        except Exception:
-            pass
-
-        c_exit, _, _, _ = _execute_harness(canary_src)
-        # Canary is verified if modifying return values broke at least one assertion
-        canary_verified = (c_exit != 0)
+        # 2. Top-Level Harness Canary: Unconditionally poisons module import to guarantee
+        # that the runner actually loads the mutant from the sandbox rather than a host/cached module.
+        canary_src = "raise RuntimeError('__HARNESS_CANARY_ACTIVE__')\n" + source_code
+        c_exit, _, c_err, _ = _execute_harness(canary_src)
+        canary_verified = (c_exit != 0 and "__HARNESS_CANARY_ACTIVE__" in c_err)
         if not canary_verified:
             return MutationReport(
                 total_mutants=len(mutants),
                 killed_mutants=0,
-                survived_mutants=len(mutants),
+                survived_mutants=0,
                 timed_out_mutants=0,
                 invalid_mutants=0,
-                mutation_score_pct=0.0,
+                mutation_score_pct=None,
+                status="harness_failure",
                 baseline_passed=True,
                 canary_verified=False,
                 mutants=[],
-                interpretation="Canary mutant survived: test suite does not exercise target module or imported unmutated host module.",
+                interpretation="Harness failure: test runner did not import the target module from the isolated sandbox (top-level canary was not triggered).",
             )
 
         # 3. Evaluate Mutants

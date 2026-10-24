@@ -99,9 +99,9 @@ def redact_sensitive_data(text: str) -> str:
         start_idx = token_m.start(1)
         prefix_context = redacted[max(0, start_idx - 50) : start_idx].lower()
 
-        # Integrity hashes MUST strictly match hexadecimal shape (32-64 hex chars)
-        if any(k in prefix_context for k in ["commit_hash", "sha256", "checksum"]):
-            if re.fullmatch(r"[0-9a-fA-F]{32,64}", token):
+        # Integrity hashes MUST strictly match exact Git SHA-1 (40 hex) or SHA-256 (64 hex) shape
+        if any(k in prefix_context for k in ["commit_hash", "file_sha256", "sha256", "checksum"]):
+            if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", token):
                 continue
 
         # Package URLs must match purl schema
@@ -181,6 +181,11 @@ def verify_model_weights_manifest(
     - If copy_to_private_sandbox=True, streams verified bytes directly into an immutable,
       private sandbox location so the downstream runtime loads the exact verified bytes
       without path-substitution race conditions.
+    - Security Boundary & OS ACL Limits: Sets stat.S_IREAD (0o400 / read-only). Note that
+      on both Windows and Unix, this stops accidental overwrites or unprivileged processes,
+      but cannot fully prevent an attacker running under the same user identity (file owner)
+      from restoring write permissions. Full tamper-proofing requires execution inside an OS
+      container or unprivileged service account.
     Returns: (is_valid, verified_path)
     """
     p = Path(model_path)

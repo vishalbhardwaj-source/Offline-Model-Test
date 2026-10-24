@@ -479,20 +479,50 @@ def test_cwe_map_entries_comprehensive():
     assert resolve_cwe_cvss("Insecure Authentication Endpoint")[0] == "CWE-598"
 
 
-def test_canary_mutant_survival_fails_run():
+def test_canary_mutant_survival_fails_run(monkeypatch):
     source = """
 def multiply(a, b):
     return a * b
 """
-    # A test that does not call or assert on multiply() at all
-    disconnected_test = """
-def test_something_else():
-    assert 2 + 2 == 4
+    test_code = """
+def test_mult():
+    assert multiply(2, 3) == 6
 """
-    report = evaluate_test_against_mutants(source, disconnected_test)
-    assert report.canary_verified is False
+    # 1. Normal run: top-level canary is executed, breaks module import, and canary is verified.
+    report = evaluate_test_against_mutants(source, test_code)
+    assert report.canary_verified is True
+    assert report.status == "completed"
+    assert report.mutation_score_pct is not None
+
+    # 2. Canary survival scenario: if the harness runner fails to trigger the canary error
+    # (e.g. runner imported unmutated cached module or ignored the mutant file),
+    # it must abort as harness_failure with None score.
+    from offtest.checks.isolated_runner import IsolatedRunner
+    monkeypatch.setattr(IsolatedRunner, "run", lambda self, *args, **kwargs: (0, "ok", "", 0.05))
+    harness_fail_report = evaluate_test_against_mutants(source, test_code)
+    assert harness_fail_report.canary_verified is False
+    assert harness_fail_report.status == "harness_failure"
+    assert harness_fail_report.mutation_score_pct is None
+    assert "Harness failure" in harness_fail_report.interpretation
+
+
+def test_weak_test_surviving_return_nullification_is_recorded_as_survived():
+    source = """
+def compute(x):
+    return x * 2
+"""
+    # Test that calls compute but doesn't check return value
+    weak_test = """
+def test_comp():
+    compute(5)
+    assert True
+"""
+    report = evaluate_test_against_mutants(source, weak_test)
+    assert report.status == "completed"
+    assert report.canary_verified is True
+    assert report.survived_mutants > 0
     assert report.mutation_score_pct == 0.0
-    assert "Canary mutant survived" in report.interpretation
+
 
 
 def test_verify_against_pinned_manifest(tmp_path: Path):
