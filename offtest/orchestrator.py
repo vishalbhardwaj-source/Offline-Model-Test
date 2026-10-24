@@ -27,6 +27,7 @@ from offtest.inventory.sbom import SBOMGenerator
 from offtest.reports.detailed import DetailedReportGenerator
 from offtest.reports.issue_focused import IssueFocusedReportGenerator
 from offtest.reports.sarif import SARIFReportGenerator
+from offtest.intake.safety import redact_sensitive_data
 
 
 class AssessmentOrchestrator:
@@ -204,14 +205,14 @@ class AssessmentOrchestrator:
         evidence_sha = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
         (run_folder / "evidence.json.sha256").write_text(f"{evidence_sha}  evidence.json\n", encoding="utf-8")
 
-        # 10. Generate Reports & SARIF 2.1.0 Export
+        # 10. Generate Reports & SARIF 2.1.0 Export (Pre-persistence Redaction Barrier)
         detailed_gen = DetailedReportGenerator(context)
-        detailed_md = detailed_gen.generate_markdown()
+        detailed_md = redact_sensitive_data(detailed_gen.generate_markdown())
         detailed_report_path = run_folder / "REPORT_1_DETAILED.md"
         detailed_report_path.write_text(detailed_md, encoding="utf-8")
 
         issue_gen = IssueFocusedReportGenerator(context)
-        issue_md = issue_gen.generate_markdown()
+        issue_md = redact_sensitive_data(issue_gen.generate_markdown())
         issue_report_path = run_folder / "REPORT_2_ISSUES.md"
         issue_report_path.write_text(issue_md, encoding="utf-8")
 

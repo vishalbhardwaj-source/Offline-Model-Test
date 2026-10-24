@@ -25,6 +25,13 @@ class RepositoryIntake:
         - Device nodes / FIFOs
         - Decompression bombs (file count, single file size, total size, compression ratio)
         """
+        norm_path = str(path_or_archive).strip()
+        # Prohibit remote UNC/SMB network paths to prevent outbound NTLM credential leaks (ports 445/139)
+        if norm_path.startswith(("\\\\", "//", "\\\\?\\UNC\\", "//?/UNC/")):
+            raise SecurityError(
+                f"UNC / SMB remote network paths are strictly prohibited in offline air-gap mode: '{path_or_archive}'"
+            )
+
         target = Path(path_or_archive).resolve()
         if not target.exists():
             raise FileNotFoundError(f"Input path '{path_or_archive}' does not exist.")

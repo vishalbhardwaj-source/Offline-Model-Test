@@ -317,3 +317,21 @@ def test_absolute_path_host_file_read_documented_gap(tmp_path: Path):
     exit_code, stdout, _, _ = runner.run(read_cmd)
     # On bare host, absolute path can be read.
     assert "HOST_SECRET" not in stdout, "Expected absolute path read to fail under filesystem jail"
+
+
+def test_unc_path_rejection_prevents_smb_leak():
+    """
+    Verifies that UNC and SMB network paths are rejected immediately before
+    invoking filesystem APIs (which would trigger outbound SMB/NTLM traffic on ports 445/139).
+    """
+    unc_paths = [
+        r"\\attacker.evil.com\share\repo",
+        r"//remote-server/payload.zip",
+        r"\\?\UNC\malicious-host\archive.tar.gz",
+        r"//?/UNC/leak/test",
+    ]
+    for unc in unc_paths:
+        with pytest.raises(SecurityError) as exc_info:
+            RepositoryIntake.prepare_target(unc)
+        assert "UNC / SMB" in str(exc_info.value)
+

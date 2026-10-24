@@ -78,4 +78,7 @@ class SARIFReportGenerator:
 
     def save_sarif(self, out_path: Path):
         data = self.generate_sarif()
-        out_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        raw_sarif = json.dumps(data, indent=2)
+        from offtest.intake.safety import redact_sensitive_data
+        sanitized_sarif = redact_sensitive_data(raw_sarif)
+        out_path.write_text(sanitized_sarif, encoding="utf-8")
