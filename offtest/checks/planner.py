@@ -131,6 +131,8 @@ class CheckPlanner:
                 stdout=f"Processed eligible source files. Generated {len(static_findings)} findings.",
                 stderr="",
                 status=CheckStatus.FAILED if has_critical_or_high else CheckStatus.PASSED,
+                execution_status="Completed",
+                gate_outcome="Fail" if has_critical_or_high else "Pass",
                 skip_or_blocked_reason=failure_reason,
             )
         )

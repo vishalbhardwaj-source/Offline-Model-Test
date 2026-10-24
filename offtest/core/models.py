@@ -133,6 +133,8 @@ class CheckResult(BaseModel):
     stdout: str = ""
     stderr: str = ""
     status: CheckStatus
+    execution_status: str = "Completed"  # Completed, Blocked, Error, Skipped
+    gate_outcome: str = "Pass"          # Pass, Fail, Blocked, Neutral
     skip_or_blocked_reason: Optional[str] = None
 
 

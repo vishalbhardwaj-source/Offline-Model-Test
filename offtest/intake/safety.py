@@ -62,7 +62,12 @@ def scan_for_secrets(content: str, file_path: str) -> List[Tuple[int, str, str, 
                 raw_secret = match.group(match.lastindex) if (match.lastindex and match.lastindex >= 1) else match.group(0)
                 fingerprint = compute_secret_fingerprint(raw_secret)
                 preview = redact_sensitive_data(line.strip())
-                findings.append((idx, f"Hardcoded Secret ({det_name})", preview, fingerprint))
+                # Check for documented public sample AWS keys (e.g. AKIAIOSFODNN7EXAMPLE)
+                if "AKIA" in raw_secret and ("EXAMPLE" in raw_secret or raw_secret == "AKIAIOSFODNN7EXAMPLE"):
+                    det_label = "Documented AWS Example Key (AKIA...EXAMPLE)"
+                else:
+                    det_label = f"Hardcoded Secret ({det_name})"
+                findings.append((idx, det_label, preview, fingerprint))
                 matched = True
                 break
 

@@ -244,3 +244,96 @@ def test_windows_git_hardening_prevents_fsmonitor_and_hooks(tmp_path: Path):
     gm._run_git(["checkout", "-b", "hardened_branch"])
     assert not marker.exists(), "Hardened GitManager unexpectedly executed malicious .git/hooks/post-checkout!"
 
+
+def test_target_directory_immutability_before_and_after_assessment(tmp_path: Path):
+    """Verifies that running an assessment never mutates the target codebase (bit-for-bit identical)."""
+    import hashlib
+    import os
+    from offtest.orchestrator import AssessmentOrchestrator
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    (repo_dir / "app.py").write_text("print('hello')\n", encoding="utf-8")
+    (repo_dir / "requirements.txt").write_text("pytest==8.0.0\n", encoding="utf-8")
+    tests_dir = repo_dir / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_simple.py").write_text("def test_ok(): assert 1 == 1\n", encoding="utf-8")
+
+    def snapshot_dir(d: Path):
+        snap = {}
+        for root, _, files in os.walk(d):
+            for f in files:
+                p = Path(root) / f
+                rel = p.relative_to(d).as_posix()
+                snap[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+        return snap
+
+    snap_before = snapshot_dir(repo_dir)
+
+    # 1. Run without scripts
+    orch1 = AssessmentOrchestrator(str(repo_dir), allow_scripts=False, output_dir=str(tmp_path / "out1"))
+    orch1.run()
+    snap_after1 = snapshot_dir(repo_dir)
+    assert snap_before == snap_after1, f"Target directory was mutated during allow_scripts=False run: {set(snap_after1.keys()) ^ set(snap_before.keys())}"
+
+    # 2. Run with scripts approved
+    orch2 = AssessmentOrchestrator(str(repo_dir), allow_scripts=True, output_dir=str(tmp_path / "out2"))
+    orch2.run()
+    snap_after2 = snapshot_dir(repo_dir)
+    assert snap_before == snap_after2, f"Target directory was mutated during allow_scripts=True run: {set(snap_after2.keys()) ^ set(snap_before.keys())}"
+
+
+def test_aws_example_key_downgraded_to_informational(tmp_path: Path):
+    """Verifies that documented AWS sample keys (e.g. AKIAIOSFODNN7EXAMPLE) are downgraded to Informational."""
+    from offtest.checks.static_checks import OfflineStaticChecker
+    from offtest.core.models import FileDisposition, FileRecord, Severity
+
+    app_file = tmp_path / "sample.py"
+    app_file.write_text('DOC_KEY = "AKIAIOSFODNN7EXAMPLE"\nREAL_LOOKING_KEY = "AKIA1234567890ABCDEF"\n', encoding="utf-8")
+
+    files = [
+        FileRecord(
+            path="sample.py",
+            size_bytes=len(app_file.read_bytes()),
+            sha256="s123",
+            language="Python",
+            category="source",
+            disposition=FileDisposition.ANALYZED,
+            disposition_reason="Source",
+        )
+    ]
+
+    checker = OfflineStaticChecker(tmp_path, files)
+    findings = checker.run_all()
+
+    example_findings = [f for f in findings if "Example Key" in f.title]
+    real_findings = [f for f in findings if "AWS Access Key ID" in f.title]
+
+    assert len(example_findings) == 1
+    assert example_findings[0].severity == Severity.INFORMATIONAL
+    assert "Example Key" in example_findings[0].title
+
+    assert len(real_findings) == 1
+    assert real_findings[0].severity == Severity.CRITICAL
+
+
+def test_sandbox_home_redirection_shields_ssh_and_aws(tmp_path: Path):
+    """Verifies that IsolatedRunner redirects USERPROFILE/HOME to a sandbox directory to shield host secrets."""
+    import os
+    import sys
+    import tempfile
+    from offtest.checks.isolated_runner import IsolatedRunner
+
+    runner = IsolatedRunner(tmp_path)
+    # Check what child sees for HOME and USERPROFILE
+    probe = [
+        sys.executable, "-c",
+        "import os, sys; print('HOME=' + (os.environ.get('USERPROFILE') or os.environ.get('HOME', '')))"
+    ]
+    code, stdout, stderr, dur = runner.run(probe)
+    assert code == 0
+    assert "HOME=" in stdout
+    assert str(runner.sandbox_home) in stdout
+    assert str(runner.sandbox_home) != str(Path.home())
+
+

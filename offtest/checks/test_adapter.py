@@ -38,24 +38,36 @@ class TestAdapter:
                         stdout="",
                         stderr="",
                         status=CheckStatus.BLOCKED,
+                        execution_status="Blocked",
+                        gate_outcome="Blocked",
                         skip_or_blocked_reason="Untrusted repository script execution blocked by default. Pass '--allow-scripts' to approve running project test suite.",
                     )
                 )
             else:
-                # Run with offline isolated runner
-                code, out, err, dur = self.runner.run([sys.executable, "-m", "pytest", "-v"])
+                # Run with offline isolated runner (shield repo from .pytest_cache and __pycache__)
+                sandbox_pytest_cache = str(self.runner.sandbox_home / ".pytest_cache").replace("\\", "/")
+                pytest_cmd = [
+                    sys.executable, "-m", "pytest", "-v",
+                    "-o", f"cache_dir={sandbox_pytest_cache}",
+                    "-p", "no:cacheprovider",
+                ]
+                code, out, err, dur = self.runner.run(pytest_cmd)
+                exec_status = "Completed" if code in [0, 1] else "Error"
+                gate = "Pass" if code == 0 else "Fail"
                 results.append(
                     CheckResult(
                         tool_name="pytest",
                         tool_version=sys.version.split()[0],
                         check_name="Python Pytest Suite",
                         check_type="unit_test",
-                        command=f"python -m pytest -v",
+                        command="python -m pytest -v",
                         exit_code=code,
                         duration_sec=dur,
                         stdout=out,
                         stderr=err,
                         status=CheckStatus.PASSED if code == 0 else CheckStatus.FAILED,
+                        execution_status=exec_status,
+                        gate_outcome=gate,
                     )
                 )
 

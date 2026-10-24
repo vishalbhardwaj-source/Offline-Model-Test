@@ -37,8 +37,16 @@ class OfflineStaticChecker:
             # 1. Hardcoded secrets check
             secret_hits = scan_for_secrets(content, f.path)
             for line_no, label, preview, fingerprint in secret_hits:
-                if "AWS" in label:
-                    impact = "Detected token matching AWS credential structure (prefix 'AKIA'). High risk of AWS cloud credential exposure if repository is shared."
+                severity = Severity.CRITICAL
+                title = f"{label} Detected"
+                
+                if "Example Key" in label:
+                    severity = Severity.INFORMATIONAL
+                    title = "Documented AWS Example Key (AKIA...EXAMPLE) Detected"
+                    impact = "Token matches public sample/example AWS Access Key ID from documentation (e.g. AWS SDK documentation). Low operational risk, but recommended to remove before production."
+                    suggested_action = "Remove documentation sample key and configure credentials via local environment variables."
+                elif "AWS" in label:
+                    impact = "Detected non-example token matching AWS credential structure (prefix 'AKIA'). High risk of AWS cloud credential exposure if repository is shared."
                     suggested_action = "Rotate AWS credentials immediately via AWS IAM and move secrets to local environment variables."
                 elif "Entropy" in label:
                     impact = "Detected high-entropy string exceeding randomness threshold. High likelihood of custom API key, token, or secret."
@@ -50,8 +58,8 @@ class OfflineStaticChecker:
                 findings.append(
                     Finding(
                         id=f"FIND-{counter:04d}",
-                        title=f"{label} Detected",
-                        severity=Severity.CRITICAL,
+                        title=title,
+                        severity=severity,
                         confidence=Confidence.HIGH,
                         status=EvidenceStatus.OBSERVED,
                         branch=branch,
@@ -131,14 +139,19 @@ class OfflineStaticChecker:
                             if any(k in route_path for k in ["login", "token", "signin", "authenticate"]):
                                 arg_names = [a.arg.lower() for a in node.args.args]
                                 has_pwd = any(c in arg_names for c in ["password", "secret", "passwd", "pwd"])
-                                extra_detail = f" Handler accepts credential arguments: {', '.join(arg_names)}." if has_pwd else " Authentication/token issuance endpoints must use HTTP POST with request body to avoid query-log leakage."
+                                if has_pwd:
+                                    conf = Confidence.HIGH
+                                    trigger = f"GET query parameters accept sensitive arguments: [{', '.join(arg_names)}]"
+                                else:
+                                    conf = Confidence.MEDIUM
+                                    trigger = f"Route-name heuristic matched authentication path '{dec.args[0].value}' on HTTP GET (handler arguments: [{', '.join(arg_names) or 'none'}]; no explicit password parameter detected)"
                                 self.issues.append((
                                     node.lineno,
                                     "Insecure Authentication Endpoint Defined via HTTP GET",
                                     Severity.HIGH,
-                                    Confidence.HIGH,
+                                    conf,
                                     "Authentication, login, and token issuance endpoints must not use HTTP GET. Query parameters in GET requests are persisted in plain text within web server access logs, browser history, and HTTP Referer headers.",
-                                    f"Line {node.lineno}: @app.get('{dec.args[0].value}') handler '{node.name}' uses HTTP GET for an authentication route.{extra_detail}",
+                                    f"Line {node.lineno}: @app.get('{dec.args[0].value}') handler '{node.name}' uses HTTP GET for an authentication route. Trigger: {trigger}.",
                                     "Change the HTTP route method from GET to POST and accept credentials/payload within the request body."
                                 ))
                 self.generic_visit(node)

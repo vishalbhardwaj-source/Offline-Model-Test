@@ -161,11 +161,12 @@ class DetailedReportGenerator:
         # 6. Checks & Test Execution Results
         lines.append("## 5. Checks & Test Execution Results")
         if self.ctx.check_results:
-            lines.append("| Check Name | Tool (Version) | Type | Status | Duration | Output / Blocker |")
-            lines.append("| :--- | :--- | :--- | :---: | :---: | :--- |")
+            lines.append("| Check Name | Tool (Version) | Type | Execution | Gate Policy | Duration | Output / Diagnostics |")
+            lines.append("| :--- | :--- | :---: | :---: | :---: | :---: | :--- |")
             for cr in self.ctx.check_results:
                 reason = cr.skip_or_blocked_reason or f"Exit code {cr.exit_code}"
-                lines.append(f"| **{cr.check_name}** | {cr.tool_name} (`{cr.tool_version}`) | {cr.check_type} | **{cr.status.value}** | {cr.duration_sec}s | {reason} |")
+                gate_badge = f"**{cr.gate_outcome.upper()}**"
+                lines.append(f"| **{cr.check_name}** | {cr.tool_name} (`{cr.tool_version}`) | {cr.check_type} | {cr.execution_status} | {gate_badge} | {cr.duration_sec}s | {reason} |")
         else:
             lines.append("_No checks were scheduled or executed._")
 

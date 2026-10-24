@@ -2,6 +2,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -13,6 +14,8 @@ class IsolatedRunner:
     def __init__(self, work_dir: Path, timeout_sec: int = OfflineConfig.COMMAND_TIMEOUT_SEC):
         self.work_dir = work_dir
         self.timeout_sec = timeout_sec
+        self.sandbox_home = Path(tempfile.gettempdir()) / f"offtest_sandbox_home_{os.getpid()}"
+        self.sandbox_home.mkdir(parents=True, exist_ok=True)
 
     def _kill_process_tree(self, proc: subprocess.Popen):
         """Kills the entire process tree to prevent orphan background worker leaks."""
@@ -52,6 +55,18 @@ class IsolatedRunner:
         }
         # Enforce offline overrides
         env.update(OfflineConfig.OFFLINE_ENV_OVERRIDES)
+
+        # Sandbox home redirection: shield host ~/.ssh, ~/.aws, and personal credentials from untrusted scripts
+        env["USERPROFILE"] = str(self.sandbox_home)
+        env["HOME"] = str(self.sandbox_home)
+        if sys.platform == "win32":
+            drive = self.sandbox_home.drive or "C:"
+            env["HOMEDRIVE"] = drive
+            env["HOMEPATH"] = str(self.sandbox_home)[len(drive):]
+            env["APPDATA"] = str(self.sandbox_home / "AppData" / "Roaming")
+            env["LOCALAPPDATA"] = str(self.sandbox_home / "AppData" / "Local")
+        env["PYTHONPYCACHEPREFIX"] = str(self.sandbox_home / "pycache")
+
         if env_extra:
             env.update(env_extra)
 
