@@ -448,6 +448,8 @@ def test_verify_kernel_sandbox_environment_handles_root_permission_error(monkeyp
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(iso_mod, "probe_kernel_network_isolation", lambda: (True, "OK"))
     monkeypatch.setattr(iso_mod, "_audit_mounts", lambda repo_path=None: (True, "OK"))
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.delenv("CONTAINER_HOST", raising=False)
 
     class FakeStatVFS:
         f_flag = 1  # ST_RDONLY
@@ -474,6 +476,14 @@ CapPrm:	0000000000000000
             if "/root/" in p_str:
                 # Simulate non-root user encountering 0700 permission on /root
                 raise PermissionError(13, f"Permission denied: '{p_str}'")
+            if p_str in (
+                "/var/run/docker.sock",
+                "/run/docker.sock",
+                "/run/podman/podman.sock",
+                "/var/run/podman/podman.sock",
+                "/run/containerd/containerd.sock",
+            ):
+                return False
             if p_str == "/proc/self/status":
                 return True
             if p_str.startswith("/fake_repo"):
@@ -491,7 +501,7 @@ CapPrm:	0000000000000000
 
     # Should pass without crashing on PermissionError
     ok, diag = verify_kernel_sandbox_environment(CustomPath("/fake_repo"))
-    assert ok is True
+    assert ok is True, f"Expected verification to pass, but failed: {diag}"
     assert "Verified: Hardened container environment" in diag
 
     # If credential artifact exists in home, it must refuse
