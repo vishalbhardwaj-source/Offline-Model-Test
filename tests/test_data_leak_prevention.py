@@ -417,6 +417,83 @@ def test_verify_kernel_sandbox_environment_linux_unit(monkeypatch, tmp_path):
     assert "Unauthorized writable mount" in diag_leak
 
 
+def test_verify_kernel_sandbox_environment_handles_root_permission_error(monkeypatch, tmp_path):
+    """
+    Verifies that when running in hardened non-root containers where /root has 0700 permissions,
+    PermissionError on /root/<cred> does not crash the verification and is safely treated as inaccessible.
+    Also verifies that if host credentials are affirmatively detected, the gate properly refuses.
+    """
+    import sys
+    import os
+    import offtest.checks.isolated_runner as iso_mod
+    from offtest.checks.isolated_runner import verify_kernel_sandbox_environment, _safe_exists
+
+    # 1. Test _safe_exists directly
+    class RaisingPath:
+        def exists(self):
+            raise PermissionError(13, "Permission denied: '/root/.ssh'")
+
+    assert _safe_exists(RaisingPath()) is False
+    assert _safe_exists(tmp_path) is True
+    assert _safe_exists(tmp_path / "non_existent_file") is False
+
+    # 2. Simulate complete Linux hardened environment
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(iso_mod, "probe_kernel_network_isolation", lambda: (True, "OK"))
+    monkeypatch.setattr(iso_mod, "_audit_mounts", lambda repo_path=None: (True, "OK"))
+
+    class FakeStatVFS:
+        f_flag = 1  # ST_RDONLY
+
+    monkeypatch.setattr(iso_mod.os, "statvfs", lambda path: FakeStatVFS(), raising=False)
+    monkeypatch.setattr(iso_mod.os, "getuid", lambda: 10001, raising=False)
+
+    status_content = """Name:	offtest
+NoNewPrivs:	1
+CapBnd:	0000000000000000
+CapEff:	0000000000000000
+CapPrm:	0000000000000000
+"""
+    status_file = tmp_path / "proc_status"
+    status_file.write_text(status_content, encoding="utf-8")
+
+    fake_home = tmp_path / "fake_home"
+    fake_home.mkdir()
+
+    orig_path = iso_mod.Path
+    class CustomPath(orig_path):
+        def exists(self, **kwargs):
+            p_str = str(self).replace("\\", "/")
+            if "/root/" in p_str:
+                # Simulate non-root user encountering 0700 permission on /root
+                raise PermissionError(13, f"Permission denied: '{p_str}'")
+            if p_str == "/proc/self/status":
+                return True
+            if p_str.startswith("/fake_repo"):
+                return True
+            return super().exists(**kwargs)
+
+        def read_text(self, *args, **kwargs):
+            p_str = str(self).replace("\\", "/")
+            if p_str == "/proc/self/status":
+                return status_content
+            return super().read_text(*args, **kwargs)
+
+    monkeypatch.setattr(iso_mod, "Path", CustomPath)
+    monkeypatch.setattr(iso_mod.Path, "home", classmethod(lambda cls: fake_home))
+
+    # Should pass without crashing on PermissionError
+    ok, diag = verify_kernel_sandbox_environment(CustomPath("/fake_repo"))
+    assert ok is True
+    assert "Verified: Hardened container environment" in diag
+
+    # If credential artifact exists in home, it must refuse
+    (fake_home / ".ssh").mkdir()
+    ok_leak, diag_leak = verify_kernel_sandbox_environment(CustomPath("/fake_repo"))
+    assert ok_leak is False
+    assert "Host credential artifact detected" in diag_leak
+
+
 def test_unc_path_rejection_prevents_smb_leak():
     """
     Verifies that UNC and SMB network paths are rejected immediately before

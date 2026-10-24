@@ -53,6 +53,14 @@ if sys.platform == "win32":
         ]
 
 
+def _safe_exists(p: Path) -> bool:
+    """Safely checks if a path exists without raising PermissionError on restricted ancestor directories."""
+    try:
+        return p.exists()
+    except OSError:
+        return False
+
+
 def probe_kernel_network_isolation() -> Tuple[bool, str]:
     """
     Actively verifies whether OS/kernel-level network isolation is enforced.
@@ -169,8 +177,8 @@ def probe_kernel_network_isolation() -> Tuple[bool, str]:
 
     # 4. Check container/namespace environment presence
     in_container = (
-        Path("/.dockerenv").exists()
-        or Path("/run/.containerenv").exists()
+        _safe_exists(Path("/.dockerenv"))
+        or _safe_exists(Path("/run/.containerenv"))
         or os.environ.get("OFFTEST_KERNEL_ISOLATION", "").lower() in ("1", "true", "yes")
     )
     if not in_container:
@@ -291,7 +299,7 @@ def verify_kernel_sandbox_environment(repo_path: Optional[Path] = None) -> Tuple
         "/run/containerd/containerd.sock",
     ]
     for s_path in dangerous_sockets:
-        if Path(s_path).exists():
+        if _safe_exists(Path(s_path)):
             return False, f"Dangerous container daemon socket mounted: '{s_path}'."
     if os.environ.get("DOCKER_HOST"):
         return False, f"External DOCKER_HOST control variable defined: '{os.environ['DOCKER_HOST']}'."
@@ -310,7 +318,7 @@ def verify_kernel_sandbox_environment(repo_path: Optional[Path] = None) -> Tuple
         if not (root_stat.f_flag & st_rdonly):
             return False, "Root filesystem '/' is mounted writable according to statvfs. Hardened container requires --read-only root."
 
-        if repo_path and Path(repo_path).exists():
+        if repo_path and _safe_exists(Path(repo_path)):
             repo_stat = os.statvfs(str(repo_path))
             if not (repo_stat.f_flag & st_rdonly):
                 return False, f"Repository directory '{repo_path}' is mounted writable according to statvfs. Container requires -v /path:/repo:ro."
@@ -322,7 +330,7 @@ def verify_kernel_sandbox_environment(repo_path: Optional[Path] = None) -> Tuple
         if hasattr(os, "getuid") and os.getuid() == 0:
             return False, "Process is running as root (UID 0). Hardened container requires non-root user (--user 10001)."
         status_file = Path("/proc/self/status")
-        if not status_file.exists():
+        if not _safe_exists(status_file):
             return False, "Privilege containment cannot be verified (/proc/self/status not found)."
 
         status_text = status_file.read_text(encoding="utf-8", errors="ignore")
@@ -373,9 +381,9 @@ def verify_kernel_sandbox_environment(repo_path: Optional[Path] = None) -> Tuple
         ".config/gh", ".npmrc", ".mozilla", ".config/google-chrome", ".config/chromium"
     ]
     for cred in credential_dirs:
-        if (home_dir / cred).exists():
+        if _safe_exists(home_dir / cred):
             return False, f"Host credential artifact detected ({home_dir / cred}). Host filesystem is not isolated."
-        if Path(f"/root/{cred}").exists():
+        if _safe_exists(Path(f"/root/{cred}")):
             return False, f"Host credential artifact detected in /root ({cred}). Host filesystem is not isolated."
 
     return True, "Verified: Hardened container environment (Zero interfaces, read-only root, CapBnd 0, credentials unmounted)."
