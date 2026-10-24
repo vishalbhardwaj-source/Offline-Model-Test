@@ -140,20 +140,28 @@ def test_allow_scripts_safety_gate_refusal_on_bare_host(tmp_path: Path):
     dummy_repo.mkdir()
     (dummy_repo / "server.py").write_text("x = 1\n", encoding="utf-8")
 
-    # 1. Running with allow_scripts=True on bare host without acceptance must raise SecurityError
-    orchestrator = AssessmentOrchestrator(
+    # 1. Running with allow_scripts=True on bare host omitting accept_no_kernel_isolation must raise SecurityError specifically
+    orchestrator_omitted = AssessmentOrchestrator(
+        repo_path_or_archive=str(dummy_repo),
+        allow_scripts=True,
+        # accept_no_kernel_isolation is intentionally omitted to verify default safety behavior
+    )
+    with pytest.raises(SecurityError) as exc_info:
+        orchestrator_omitted.run()
+    assert "Execution Refused" in str(exc_info.value)
+    assert "--accept-no-kernel-isolation" in str(exc_info.value)
+
+    # 2. Explicitly setting accept_no_kernel_isolation=False also raises SecurityError
+    orchestrator_explicit_false = AssessmentOrchestrator(
         repo_path_or_archive=str(dummy_repo),
         allow_scripts=True,
         accept_no_kernel_isolation=False,
     )
-    try:
-        orchestrator.run()
-        assert False, "Should have raised SecurityError on bare host --allow-scripts without acceptance"
-    except SecurityError as se:
-        assert "Execution Refused" in str(se)
-        assert "--accept-no-kernel-isolation" in str(se)
+    with pytest.raises(SecurityError) as exc_info2:
+        orchestrator_explicit_false.run()
+    assert "Execution Refused" in str(exc_info2.value)
 
-    # 2. Running with accept_no_kernel_isolation=True must proceed
+    # 3. Running with accept_no_kernel_isolation=True must proceed
     orchestrator_approved = AssessmentOrchestrator(
         repo_path_or_archive=str(dummy_repo),
         allow_scripts=True,
