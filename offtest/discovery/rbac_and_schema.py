@@ -99,14 +99,30 @@ class RBACAndSchemaExtractor:
                     break
 
             context_block = "\n".join(lines[start_idx : end_idx + 1])
+            block_lines = lines[start_idx : end_idx + 1]
 
-            login_m = login_req_pattern.search(context_block)
+            # In Flask-style web frameworks, auth guards must appear BETWEEN the route decorator and the def statement.
+            # A guard placed ABOVE @app.route is evaluated at module load time and does NOT wrap HTTP requests!
+            route_line_offset = None
+            for b_idx, b_line in enumerate(block_lines):
+                if route_dec_re.search(b_line):
+                    route_line_offset = b_idx
+                    break
+
+            if route_line_offset is not None:
+                active_guard_block = "\n".join(block_lines[route_line_offset:])
+                misplaced_guard_block = "\n".join(block_lines[:route_line_offset])
+            else:
+                active_guard_block = context_block
+                misplaced_guard_block = ""
+
+            login_m = login_req_pattern.search(active_guard_block)
             if login_m:
                 auth_required = True
                 roles.append("Authenticated")
                 guard_syntaxes.append(login_m.group(0).strip())
 
-            role_m = role_req_pattern.search(context_block)
+            role_m = role_req_pattern.search(active_guard_block)
             if role_m:
                 auth_required = True
                 explicit_role = role_m.group(1).capitalize()
@@ -115,14 +131,14 @@ class RBACAndSchemaExtractor:
                 if explicit_role not in role_to_endpoints:
                     role_to_endpoints[explicit_role] = []
 
-            admin_m = admin_pattern.search(context_block)
+            admin_m = admin_pattern.search(active_guard_block)
             if admin_m:
                 auth_required = True
                 if "Admin" not in roles:
                     roles.append("Admin")
                 guard_syntaxes.append(admin_m.group(0).strip())
 
-            js_auth_m = js_auth_middleware_pattern.search(context_block)
+            js_auth_m = js_auth_middleware_pattern.search(active_guard_block)
             if js_auth_m:
                 auth_required = True
                 roles.append("Authenticated")
@@ -132,6 +148,17 @@ class RBACAndSchemaExtractor:
                     roles.append(custom_role)
                     if custom_role not in role_to_endpoints:
                         role_to_endpoints[custom_role] = []
+
+            # Check if guard was misplaced above route decorator (Flask vulnerability)
+            has_misplaced_guard = bool(
+                misplaced_guard_block
+                and (
+                    login_req_pattern.search(misplaced_guard_block)
+                    or role_req_pattern.search(misplaced_guard_block)
+                    or admin_pattern.search(misplaced_guard_block)
+                )
+                and not auth_required
+            )
 
             # Public vs Unverified guard evaluation
             status = EvidenceStatus.OBSERVED
@@ -147,7 +174,12 @@ class RBACAndSchemaExtractor:
                     re.search(r"""@(?:public|allow_anonymous|permit_all)\b""", context_block, re.IGNORECASE)
                     or endpoint in ["/", "/health", "/login", "/register", "/api/v1/auth/login"]
                 )
-                if is_explicit_public:
+                if has_misplaced_guard:
+                    roles = ["Unverified (Misplaced guard above route decorator)"]
+                    status = EvidenceStatus.UNVERIFIED
+                    derived_guard_str = "insecure_decorator_order: guard placed above @app.route (bypassed in Flask)"
+                    role_to_endpoints.setdefault(roles[0], []).append(f"{method} {endpoint}")
+                elif is_explicit_public:
                     roles = ["Anonymous"]
                     status = EvidenceStatus.INFERRED
                     derived_guard_str = "inferred_public_endpoint"

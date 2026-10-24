@@ -149,6 +149,7 @@ class IsolatedRunner:
             env["LOCALAPPDATA"] = str(self.sandbox_home / "AppData" / "Local")
         env["PYTHONPYCACHEPREFIX"] = str(self.sandbox_home / "pycache")
         env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["PYTHONUSERBASE"] = str(self.sandbox_home / "userbase")
 
         # Python air-gap sandbox socket interceptor bootstrap
         import site

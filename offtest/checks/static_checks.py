@@ -20,13 +20,11 @@ RULE_CWE_CVSS_MAP: Dict[str, Tuple[str, str, float, str]] = {
     "High-Entropy Secret": ("CWE-798", "Use of Hard-coded Credentials", 7.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"),
     "Insecure Authentication Endpoint": ("CWE-598", "Use of GET Request Method With Sensitive Query Strings", 6.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N"),
     "eval": ("CWE-95", "Improper Neutralization of Directives in Dynamically Evaluated Code ('Eval Injection')", 9.8, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
-    "os.system": ("CWE-78", "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')", 9.8, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
-    "subprocess": ("CWE-78", "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')", 8.8, "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"),
+    "Command Execution via os.system": ("CWE-78", "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')", 9.8, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
+    "Command Injection via subprocess": ("CWE-78", "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')", 8.8, "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"),
     "DEBUG = True": ("CWE-489", "Active Debug Code", 5.3, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N"),
-    "Unpinned Python Dependency": ("CWE-1104", "Use of Unmaintained Third Party Components", 3.7, "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N"),
-    "Floating Node.js Dependency": ("CWE-1104", "Use of Unmaintained Third Party Components", 3.7, "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N"),
-    "Python Syntax Error": ("CWE-754", "Improper Check for Unusual or Exceptional Conditions", 5.3, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"),
-    "AST Parsing Error": ("CWE-754", "Improper Check for Unusual or Exceptional Conditions", 5.3, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"),
+    "Unpinned Python Dependency": ("CWE-1357", "Reliance on Insufficiently Trustworthy Component", 3.7, "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N"),
+    "Floating Node.js Dependency": ("CWE-1357", "Reliance on Insufficiently Trustworthy Component", 3.7, "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N"),
 }
 
 SANDBOX_ARTIFACT_PATTERNS = [
@@ -51,15 +49,15 @@ def classify_defect_confidence(
 ) -> Tuple[Confidence, bool]:
     """
     Evaluates defect confidence strictly against sandbox artifacts and oracle origin.
-    - If signature matches sandbox artifacts, demotes from Confirmed.
-    - If oracle is model_synthesized, cannot be Confirmed without symbolic/human oracle.
+    - If signature matches sandbox artifacts, demotes to Possible.
+    - If oracle is model_synthesized, demotes strictly to Possible (cannot be Likely or Confirmed).
     - Only reproducible findings from symbolic/human/static oracles receive Confirmed status.
     """
     matched_sandbox = is_sandbox_artifact or any(p.search(evidence_text) for p in SANDBOX_ARTIFACT_PATTERNS)
     if matched_sandbox:
         return Confidence.POSSIBLE, True
     if oracle_origin == "model_synthesized":
-        return Confidence.LIKELY if reproduced else Confidence.POSSIBLE, False
+        return Confidence.POSSIBLE, False
     if reproduced:
         return Confidence.CONFIRMED, False
     return Confidence.LIKELY, False
@@ -183,7 +181,6 @@ class OfflineStaticChecker:
             tree = ast.parse(content, filename=rel_path)
             return None, tree
         except SyntaxError as se:
-            cwe_id, cwe_name, cvss_score, cvss_vector = resolve_cwe_cvss("Python Syntax Error")
             finding = Finding(
                 id=f"FIND-{counter:04d}",
                 title=f"Python Syntax Error: {se.msg}",
@@ -194,22 +191,21 @@ class OfflineStaticChecker:
                 file_path=rel_path,
                 line_number=se.lineno,
                 file_sha256=f_sha,
-                impact="Code fails to compile or execute in Python runtime.",
+                impact="Code fails to compile or execute in Python runtime (code-quality defect).",
                 evidence=f"SyntaxError on line {se.lineno}: {se.text.strip() if se.text else se.msg}",
                 suggested_action="Fix syntax error to ensure valid Python execution.",
                 check_tool="python-ast-validator",
-                cwe_id=cwe_id,
-                cwe_name=cwe_name,
-                cvss_score_estimate=cvss_score,
-                cvss_vector_estimate=cvss_vector,
-                cvss_is_estimate=True,
+                cwe_id=None,
+                cwe_name=None,
+                cvss_score_estimate=None,
+                cvss_vector_estimate=None,
+                cvss_is_estimate=False,
                 oracle_origin="static_rule",
                 reproduced=True,
                 sandbox_artifact=False,
             )
             return finding, None
         except (RecursionError, MemoryError) as re:
-            cwe_id, cwe_name, cvss_score, cvss_vector = resolve_cwe_cvss("AST Parsing Error")
             finding = Finding(
                 id=f"FIND-{counter:04d}",
                 title="AST Parsing Error: Pathological nesting or resource limit exceeded",
@@ -220,15 +216,15 @@ class OfflineStaticChecker:
                 file_path=rel_path,
                 line_number=1,
                 file_sha256=f_sha,
-                impact="File contains pathological nesting or excessive token complexity that triggers parser memory/recursion limits.",
+                impact="File contains pathological nesting or excessive token complexity that triggers parser memory/recursion limits (code-quality defect).",
                 evidence=f"Parser resource exhaustion: {type(re).__name__}",
                 suggested_action="Refactor code structure to reduce excessive expression or block nesting.",
                 check_tool="python-ast-validator",
-                cwe_id=cwe_id,
-                cwe_name=cwe_name,
-                cvss_score_estimate=cvss_score,
-                cvss_vector_estimate=cvss_vector,
-                cvss_is_estimate=True,
+                cwe_id=None,
+                cwe_name=None,
+                cvss_score_estimate=None,
+                cvss_vector_estimate=None,
+                cvss_is_estimate=False,
                 oracle_origin="static_rule",
                 reproduced=True,
                 sandbox_artifact=False,
@@ -291,15 +287,31 @@ class OfflineStaticChecker:
                 elif isinstance(node.func, ast.Attribute):
                     if isinstance(node.func.value, ast.Name):
                         if node.func.value.id == "os" and node.func.attr == "system":
-                            self.issues.append((
-                                node.lineno,
-                                "Insecure Process Execution with 'os.system()'",
-                                Severity.HIGH,
-                                Confidence.HIGH,
-                                "os.system executes shell commands without argument escaping, risking command injection.",
-                                f"Line {node.lineno}: os.system(...)",
-                                "Replace os.system() with subprocess.run(..., shell=False) passing command arguments as a list."
-                            ))
+                            is_dynamic = False
+                            if node.args:
+                                arg0 = node.args[0]
+                                if not isinstance(arg0, ast.Constant):
+                                    is_dynamic = True
+                            if is_dynamic:
+                                self.issues.append((
+                                    node.lineno,
+                                    "Arbitrary Command Execution via os.system()",
+                                    Severity.CRITICAL,
+                                    Confidence.HIGH,
+                                    "os.system executes shell commands with dynamic or untrusted parameters without escaping, risking command injection.",
+                                    f"Line {node.lineno}: os.system(...)",
+                                    "Replace os.system() with subprocess.run(..., shell=False) passing command arguments as a list."
+                                ))
+                            else:
+                                self.issues.append((
+                                    node.lineno,
+                                    "Direct Shell Execution Present ('os.system()')",
+                                    Severity.LOW,
+                                    Confidence.HIGH,
+                                    "Process spawns an OS shell with fixed arguments. Advisory finding; not command injection unless untrusted input is supplied.",
+                                    f"Line {node.lineno}: os.system(...)",
+                                    "Replace os.system() with subprocess.run(..., shell=False) passing command arguments as a list."
+                                ))
                         # Check yaml.load without SafeLoader
                         elif node.func.value.id == "yaml" and node.func.attr == "load":
                             has_loader = False

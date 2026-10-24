@@ -1,14 +1,18 @@
 """offtest/generator/mutation.py
 
 AST-based mutation testing engine for validating generated test quality.
-Mutates source conditionals, return values, and comparison operators to measure
+Mutates source conditionals, boundary operators, and return values to measure
 whether generated tests actually catch defects or pass trivially (mutation score).
 """
 from __future__ import annotations
 
 import ast
 import copy
+import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 
@@ -28,46 +32,31 @@ class MutationReport:
     survived_mutants: int = 0
     mutation_score_pct: float = 0.0
     mutants: List[dict] = field(default_factory=list)
+    interpretation: str = "Empirical floor metric (equivalent mutants prevent theoretical 100% score)"
 
 
 class ASTMutator(ast.NodeTransformer):
     """
-    Generates single-point AST mutations:
-    - Comparison operator inversion (< to >=, == to !=, etc.)
-    - Boolean constant inversion (True to False)
+    Generates fine-grained boundary AST mutations:
+    - Off-by-one comparison mutations (< to <=, > to >=, <= to <, >= to >)
+    - Equality inversions (== to !=, != to ==)
+    - Boolean operator swapping (and to or, or to and)
+    - Constant value boundary offsets (+1, -1)
     - Return value nullification (return expr to return None)
     """
 
-    COMPARE_INVERSIONS = {
-        ast.Lt: ast.GtE,
-        ast.Gt: ast.LtE,
-        ast.LtE: ast.Gt,
-        ast.GtE: ast.Lt,
+    OFF_BY_ONE_COMPARISONS = {
+        ast.Lt: ast.LtE,
+        ast.Gt: ast.GtE,
+        ast.LtE: ast.Lt,
+        ast.GtE: ast.Gt,
         ast.Eq: ast.NotEq,
         ast.NotEq: ast.Eq,
     }
 
-    def __init__(self, target_function: Optional[str] = None):
-        self.target_function = target_function
-        self.current_function: Optional[str] = None
-
-    def visit_FunctionDef(self, node: ast.FunctionDef):
-        prev = self.current_function
-        self.current_function = node.name
-        res = self.generic_visit(node)
-        self.current_function = prev
-        return res
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
-        prev = self.current_function
-        self.current_function = node.name
-        res = self.generic_visit(node)
-        self.current_function = prev
-        return res
-
 
 def generate_mutants(source_code: str, target_function: Optional[str] = None) -> List[Mutant]:
-    """Generates valid AST mutants for a given source code string."""
+    """Generates fine-grained boundary mutants for a given source code string."""
     try:
         base_tree = ast.parse(source_code)
     except SyntaxError:
@@ -76,13 +65,12 @@ def generate_mutants(source_code: str, target_function: Optional[str] = None) ->
     mutants: List[Mutant] = []
     mutant_idx = 1
 
-    # 1. Comparison operator mutations
+    # 1. Boundary & off-by-one comparison mutations
     for node in ast.walk(base_tree):
         if isinstance(node, ast.Compare) and len(node.ops) == 1:
             op_cls = type(node.ops[0])
-            if op_cls in ASTMutator.COMPARE_INVERSIONS:
-                inverted_op = ASTMutator.COMPARE_INVERSIONS[op_cls]()
-                # Create a cloned tree with this single mutation
+            if op_cls in ASTMutator.OFF_BY_ONE_COMPARISONS:
+                mutated_op = ASTMutator.OFF_BY_ONE_COMPARISONS[op_cls]()
                 cloned = copy.deepcopy(base_tree)
                 for c_node in ast.walk(cloned):
                     if (
@@ -91,20 +79,71 @@ def generate_mutants(source_code: str, target_function: Optional[str] = None) ->
                         and len(c_node.ops) == 1
                         and isinstance(c_node.ops[0], op_cls)
                     ):
-                        c_node.ops = [inverted_op]
+                        c_node.ops = [mutated_op]
                         mutants.append(
                             Mutant(
                                 mutant_id=f"MUT-{mutant_idx:03d}",
                                 original_line=getattr(node, "lineno", 1),
-                                mutation_type="InvertComparison",
-                                description=f"Inverted comparison operator at line {getattr(node, 'lineno', 1)}",
+                                mutation_type=f"Boundary_{op_cls.__name__}_to_{type(mutated_op).__name__}",
+                                description=f"Mutated operator {op_cls.__name__} to {type(mutated_op).__name__} at line {getattr(node, 'lineno', 1)}",
                                 mutated_ast=cloned,
                             )
                         )
                         mutant_idx += 1
                         break
 
-        # 2. Return value nullification
+        # 2. Boolean operator swap (and <-> or)
+        elif isinstance(node, ast.BoolOp):
+            if isinstance(node.op, ast.And):
+                new_op = ast.Or()
+            elif isinstance(node.op, ast.Or):
+                new_op = ast.And()
+            else:
+                new_op = None
+
+            if new_op:
+                cloned = copy.deepcopy(base_tree)
+                for c_node in ast.walk(cloned):
+                    if (
+                        isinstance(c_node, ast.BoolOp)
+                        and getattr(c_node, "lineno", -1) == getattr(node, "lineno", -2)
+                    ):
+                        c_node.op = new_op
+                        mutants.append(
+                            Mutant(
+                                mutant_id=f"MUT-{mutant_idx:03d}",
+                                original_line=getattr(node, "lineno", 1),
+                                mutation_type=f"BoolOp_{type(node.op).__name__}_to_{type(new_op).__name__}",
+                                description=f"Swapped boolean operator at line {getattr(node, 'lineno', 1)}",
+                                mutated_ast=cloned,
+                            )
+                        )
+                        mutant_idx += 1
+                        break
+
+        # 3. Constant numeric boundary offset (+1)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+            cloned = copy.deepcopy(base_tree)
+            for c_node in ast.walk(cloned):
+                if (
+                    isinstance(c_node, ast.Constant)
+                    and getattr(c_node, "lineno", -1) == getattr(node, "lineno", -2)
+                    and c_node.value == node.value
+                ):
+                    c_node.value = node.value + 1
+                    mutants.append(
+                        Mutant(
+                            mutant_id=f"MUT-{mutant_idx:03d}",
+                            original_line=getattr(node, "lineno", 1),
+                            mutation_type="ConstantOffset_Plus1",
+                            description=f"Offset constant {node.value} to {node.value + 1} at line {getattr(node, 'lineno', 1)}",
+                            mutated_ast=cloned,
+                        )
+                    )
+                    mutant_idx += 1
+                    break
+
+        # 4. Return value nullification
         elif isinstance(node, ast.Return) and node.value is not None:
             if not (isinstance(node.value, ast.Constant) and node.value.value is None):
                 cloned = copy.deepcopy(base_tree)
@@ -134,11 +173,13 @@ def evaluate_test_against_mutants(
     source_code: str,
     test_code: str,
     target_function: Optional[str] = None,
+    timeout_sec: float = 3.0,
+    module_name: str = "target_module",
 ) -> MutationReport:
     """
-    Executes generated test assertions against synthesized mutants in an isolated namespace.
-    If the test fails on mutated code, the mutant is killed (effective test).
-    If the test passes on mutated code, the mutant survived (tautology / weak assertion).
+    Executes generated test assertions against synthesized mutants in an isolated temporary subprocess.
+    Uses subprocess execution with a strict timeout to ensure mutant infinite loops do not hang the runner,
+    and isolates sys.modules so the test imports the mutated code rather than a cached module.
     """
     mutants = generate_mutants(source_code, target_function)
     if not mutants:
@@ -154,36 +195,64 @@ def evaluate_test_against_mutants(
     survived = 0
     mutant_records = []
 
-    for m in mutants:
-        mutant_src = ast.unparse(m.mutated_ast)
-        # Execute in ephemeral sandbox namespace
-        ns = {}
-        passed = False
-        try:
-            exec(mutant_src, ns)
-            # Execute test code
-            exec(test_code, ns)
-            # Call any test functions found in namespace
-            for k, v in list(ns.items()):
-                if k.startswith("test_") and callable(v):
-                    v()
-            passed = True
-        except (AssertionError, Exception):
-            passed = False
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_p = Path(tmp_dir)
 
-        if passed:
-            survived += 1
-            status = "survived"
-        else:
-            killed += 1
-            status = "killed"
+        for m in mutants:
+            mutant_src = ast.unparse(m.mutated_ast)
+            module_file = tmp_p / f"{module_name}.py"
+            module_file.write_text(mutant_src, encoding="utf-8")
 
-        mutant_records.append({
-            "mutant_id": m.mutant_id,
-            "line": m.original_line,
-            "type": m.mutation_type,
-            "status": status,
-        })
+            # Harness script running the test against the mutated module
+            runner_script = tmp_p / "run_mutation_test.py"
+            runner_content = f"""
+import sys
+from pathlib import Path
+sys.path.insert(0, r"{str(tmp_p)}")
+import {module_name}
+from {module_name} import *
+
+# Injected test code
+{test_code}
+
+# Run all test functions defined
+current_ns = dict(locals())
+for k, v in current_ns.items():
+    if k.startswith("test_") and callable(v):
+        v()
+"""
+            runner_script.write_text(runner_content, encoding="utf-8")
+
+            try:
+                # Subprocess with timeout protects against mutant infinite loops
+                proc = subprocess.run(
+                    [sys.executable, "-B", str(runner_script)],
+                    cwd=tmp_dir,
+                    capture_output=True,
+                    timeout=timeout_sec,
+                )
+                if proc.returncode == 0:
+                    # Test passed against mutant -> mutant SURVIVED (weak/tautological test)
+                    survived += 1
+                    status = "survived"
+                else:
+                    # Test failed or raised AssertionError -> mutant KILLED (effective test)
+                    killed += 1
+                    status = "killed"
+            except subprocess.TimeoutExpired:
+                # Mutant introduced an infinite loop/hang caught by timeout -> KILLED
+                killed += 1
+                status = "killed (timeout)"
+            except Exception:
+                killed += 1
+                status = "killed"
+
+            mutant_records.append({
+                "mutant_id": m.mutant_id,
+                "line": m.original_line,
+                "type": m.mutation_type,
+                "status": status,
+            })
 
     total = len(mutants)
     score = round((killed / total) * 100.0, 1) if total > 0 else 0.0
