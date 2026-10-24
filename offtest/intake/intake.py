@@ -13,6 +13,34 @@ class SecurityError(Exception):
     pass
 
 
+def is_unc_or_remote_path(p: str) -> bool:
+    r"""
+    Detects UNC, SMB, and WebDAV remote network paths across all standard and alternate prefixes:
+    - Standard UNC: \\host\share, //host/share, mixed /\\host or \\/host
+    - NT / Win32 Device Namespaces: \\?\UNC\, \??\UNC\, \\.\UNC\
+    - File URLs: file://host/share (excluding local file:/// or file://localhost/)
+    - WebDAV shares: \\host@SSL\share, \\host@port\share
+    """
+    raw = str(p).strip()
+    if not raw:
+        return False
+    # Check alternate and standard prefixes
+    for prefix in [r"\\", r"//", r"/\ ", r"\/", r"\??\UNC", r"\\.\UNC", r"\\?\UNC", r"/??/UNC", r"//./UNC", r"//?/UNC"]:
+        if raw.startswith(prefix.strip()):
+            return True
+    # Check mixed slashes (e.g. /\host or \/host)
+    if len(raw) >= 2 and raw[0] in ("\\", "/") and raw[1] in ("\\", "/"):
+        return True
+    # Check WebDAV SSL forms
+    if "@SSL" in raw.upper() or "@80" in raw or "@443" in raw:
+        if raw.startswith(("\\", "/")):
+            return True
+    # Check remote file:// URLs
+    if raw.lower().startswith("file://") and not raw.lower().startswith(("file:///", "file://localhost/")):
+        return True
+    return False
+
+
 class RepositoryIntake:
     @staticmethod
     def prepare_target(path_or_archive: str) -> Tuple[Path, bool]:
@@ -20,19 +48,27 @@ class RepositoryIntake:
         Accepts a local repository path or offline archive (.zip, .tar.gz, .tgz).
         Returns (target_directory_path, is_temporary).
         Guards against:
+        - UNC / SMB remote paths (pre- and post-resolution)
         - Zip Slip / path traversal
         - Symlink & hardlink escapes outside sandbox
         - Device nodes / FIFOs
         - Decompression bombs (file count, single file size, total size, compression ratio)
         """
         norm_path = str(path_or_archive).strip()
-        # Prohibit remote UNC/SMB network paths to prevent outbound NTLM credential leaks (ports 445/139)
-        if norm_path.startswith(("\\\\", "//", "\\\\?\\UNC\\", "//?/UNC/")):
+        # 1. Pre-resolution check: Prohibit remote UNC/SMB network paths (ports 445/139)
+        if is_unc_or_remote_path(norm_path):
             raise SecurityError(
                 f"UNC / SMB remote network paths are strictly prohibited in offline air-gap mode: '{path_or_archive}'"
             )
 
         target = Path(path_or_archive).resolve()
+
+        # 2. Post-resolution check: Prevent symlinks/junctions resolving to UNC/SMB targets (TOCTOU defense)
+        if is_unc_or_remote_path(str(target)) or target.as_posix().startswith("//"):
+            raise SecurityError(
+                f"Path resolution resolves to a remote UNC/SMB network target: '{target}'"
+            )
+
         if not target.exists():
             raise FileNotFoundError(f"Input path '{path_or_archive}' does not exist.")
 

@@ -329,9 +329,60 @@ def test_unc_path_rejection_prevents_smb_leak():
         r"//remote-server/payload.zip",
         r"\\?\UNC\malicious-host\archive.tar.gz",
         r"//?/UNC/leak/test",
+        r"\??\UNC\host\share",
+        r"/\attacker\payload",
+        r"\/attacker\share",
+        r"\\corporate-share@SSL\repo",
+        "file://remote-smb-host/share/repo",
     ]
     for unc in unc_paths:
         with pytest.raises(SecurityError) as exc_info:
             RepositoryIntake.prepare_target(unc)
         assert "UNC / SMB" in str(exc_info.value)
+
+
+def test_sarif_snippet_stripping_option():
+    """Verifies that SARIFReportGenerator can strip raw code snippets to prevent exfiltration."""
+    from offtest.reports.sarif import SARIFReportGenerator
+    from offtest.core.models import Finding, Severity, Confidence, RunContext
+
+    finding = Finding(
+        id="FIND-9999",
+        title="Test Secret Found",
+        severity=Severity.HIGH,
+        confidence=Confidence.CONFIRMED,
+        impact="Secret in source code",
+        evidence="Line 42: const SECRET = 'sk-proj-superclassifiedkey'",
+        file_path="src/config.ts",
+        line_number=42,
+        suggested_action="Rotate secret immediately.",
+    )
+    ctx = RunContext.model_construct(findings=[finding])
+
+    # 1. Default keeps sanitized evidence
+    sarif_default = SARIFReportGenerator(ctx, strip_snippets=False).generate_sarif()
+    msg_default = sarif_default["runs"][0]["results"][0]["message"]["text"]
+    assert "Line 42" in msg_default
+
+    # 2. Strip snippets enabled replaces with placeholder
+    sarif_stripped = SARIFReportGenerator(ctx, strip_snippets=True).generate_sarif()
+    msg_stripped = sarif_stripped["runs"][0]["results"][0]["message"]["text"]
+    assert "[CODE SNIPPET STRIPPED FOR AIR-GAP EXPORT]" in msg_stripped
+    assert "sk-proj" not in msg_stripped
+
+
+def test_fail_closed_redaction():
+    """Verifies that redaction fails closed if an internal exception occurs."""
+    from offtest.intake.safety import redact_sensitive_data, RedactionError
+    import unittest.mock as mock
+
+    # Normal redaction works
+    assert redact_sensitive_data("API_KEY = 'sk-proj-12345678901234567890'") != ""
+
+    # When regex engine or internal routine raises, RedactionError is raised
+    with mock.patch("re.compile", side_effect=RuntimeError("Simulated engine fault")):
+        with pytest.raises(RedactionError) as exc:
+            redact_sensitive_data("Some text with potential secret sk-proj-12345678901234567890")
+        assert "failing closed" in str(exc.value)
+
 

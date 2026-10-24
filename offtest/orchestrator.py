@@ -24,6 +24,7 @@ from offtest.intake.git_manager import GitManager
 from offtest.intake.intake import RepositoryIntake, SecurityError
 from offtest.inventory.engine import InventoryEngine
 from offtest.inventory.sbom import SBOMGenerator
+from offtest.checks.isolated_runner import probe_kernel_network_isolation
 from offtest.reports.detailed import DetailedReportGenerator
 from offtest.reports.issue_focused import IssueFocusedReportGenerator
 from offtest.reports.sarif import SARIFReportGenerator
@@ -42,6 +43,7 @@ class AssessmentOrchestrator:
         quarantine_policy: str = "warn",
         generate_tests: bool = True,
         accept_no_kernel_isolation: bool = False,
+        strip_sarif_snippets: bool = False,
     ):
         self.input_target = repo_path_or_archive
         self.base_branch = base_branch
@@ -52,16 +54,13 @@ class AssessmentOrchestrator:
         self.quarantine_policy = quarantine_policy
         self.generate_tests = generate_tests
         self.accept_no_kernel_isolation = accept_no_kernel_isolation
+        self.strip_sarif_snippets = strip_sarif_snippets
 
     def run(self) -> Tuple[RunContext, Path, Path, Path]:
-        has_kernel_isolation = (
-            os.environ.get("OFFTEST_KERNEL_ISOLATION", "").lower() in ("1", "true", "yes")
-            or Path("/.dockerenv").exists()
-            or Path("/run/.containerenv").exists()
-        )
+        has_kernel_isolation, isolation_diag = probe_kernel_network_isolation()
         if self.allow_scripts and not has_kernel_isolation and not self.accept_no_kernel_isolation:
             raise SecurityError(
-                "Execution Refused: --allow-scripts was requested on a bare host without container/kernel-level network isolation. "
+                f"Execution Refused: --allow-scripts was requested on a bare host without container/kernel-level network isolation ({isolation_diag}). "
                 "Pass --accept-no-kernel-isolation to acknowledge bare-host execution, or execute inside a container (docker run --network none ...)."
             )
 
@@ -216,7 +215,7 @@ class AssessmentOrchestrator:
         issue_report_path = run_folder / "REPORT_2_ISSUES.md"
         issue_report_path.write_text(issue_md, encoding="utf-8")
 
-        sarif_gen = SARIFReportGenerator(context)
+        sarif_gen = SARIFReportGenerator(context, strip_snippets=self.strip_sarif_snippets)
         sarif_path = run_folder / "results.sarif"
         sarif_gen.save_sarif(sarif_path)
 

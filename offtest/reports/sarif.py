@@ -7,8 +7,9 @@ from offtest.core.models import Finding, RunContext, Severity
 class SARIFReportGenerator:
     """Generates an OASIS SARIF 2.1.0 report for CI/CD consumption."""
 
-    def __init__(self, context: RunContext):
+    def __init__(self, context: RunContext, strip_snippets: bool = False):
         self.ctx = context
+        self.strip_snippets = strip_snippets
 
     def generate_sarif(self) -> Dict[str, Any]:
         rules: Dict[str, Dict[str, Any]] = {}
@@ -48,11 +49,12 @@ class SARIFReportGenerator:
                     "startColumn": 1,
                 }
 
+            evidence_text = "[CODE SNIPPET STRIPPED FOR AIR-GAP EXPORT]" if self.strip_snippets else f.evidence
             results.append({
                 "ruleId": rule_id,
                 "level": level,
                 "message": {
-                    "text": f"{f.title}: {f.impact}\n\nEvidence:\n{f.evidence}\n\nSuggested Action: {f.suggested_action}"
+                    "text": f"{f.title}: {f.impact}\n\nEvidence:\n{evidence_text}\n\nSuggested Action: {f.suggested_action}"
                 },
                 "locations": [loc_dict],
             })

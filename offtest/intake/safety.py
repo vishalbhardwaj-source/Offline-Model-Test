@@ -70,63 +70,72 @@ def compute_secret_fingerprint(secret: str, salt: Optional[Union[str, bytes]] = 
     return hmac.new(key, secret.strip().encode("utf-8"), hashlib.sha256).hexdigest()[:16]
 
 
+class RedactionError(Exception):
+    """Raised when data redaction encounters an unexpected failure; triggers fail-closed protection."""
+    pass
+
+
 def redact_sensitive_data(text: str) -> str:
     """
     Redacts discovered credentials, tokens, passwords, and charset-aware high-entropy strings
     in text before writing to reports, logs, or passing to/from model layers.
     Operates strictly on the in-memory string copy, preserving underlying file integrity.
+    Fails closed: if an unexpected exception occurs, aborts with RedactionError rather than returning raw text.
     """
     if not text:
         return ""
     
-    redacted = text
-    # 1. Regex pattern scrubbing
-    for pattern in OfflineConfig.SENSITIVE_PATTERNS:
-        def _replace_match(match: re.Match) -> str:
-            full = match.group(0)
-            if match.lastindex and match.lastindex >= 1:
-                sensitive = match.group(match.lastindex)
-                return full.replace(sensitive, "[REDACTED_SECRET]")
-            return "[REDACTED_SECRET]"
+    try:
+        redacted = text
+        # 1. Regex pattern scrubbing
+        for pattern in OfflineConfig.SENSITIVE_PATTERNS:
+            def _replace_match(match: re.Match) -> str:
+                full = match.group(0)
+                if match.lastindex and match.lastindex >= 1:
+                    sensitive = match.group(match.lastindex)
+                    return full.replace(sensitive, "[REDACTED_SECRET]")
+                return "[REDACTED_SECRET]"
+                
+            redacted = pattern.sub(_replace_match, redacted)
+
+        # 2. Charset-aware Shannon entropy scrubbing for high-entropy tokens
+        # Strictly require exact expected cryptographic/telemetry shapes when safe context keys match
+        candidate_token_pattern = re.compile(r"""(?<=['"])([A-Za-z0-9_\-\.\+=/]{20,80})(?=['"])""")
+        for token_m in candidate_token_pattern.finditer(redacted):
+            token = token_m.group(1)
+            start_idx = token_m.start(1)
+            prefix_context = redacted[max(0, start_idx - 50) : start_idx].lower()
+
+            # Integrity hashes MUST strictly match exact Git SHA-1 (40 hex) or SHA-256 (64 hex) shape
+            if any(k in prefix_context for k in ["commit_hash", "file_sha256", "sha256", "checksum"]):
+                if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", token):
+                    continue
+
+            # Package URLs must match purl schema
+            if "purl" in prefix_context and token.startswith("pkg:"):
+                continue
+
+            # System telemetry must match valid platform or version shape
+            if any(k in prefix_context for k in ["platform", "operating_system", "os", "system", "arch"]):
+                if token.startswith(("Linux-", "Windows-", "Darwin-", "FreeBSD-", "OpenBSD-")) or re.fullmatch(r"[A-Za-z0-9_\.\-]+", token):
+                    continue
+
+            # Safe tool/run metadata
+            if any(k in prefix_context for k in ["run_id", "schema_version", "repo_path"]):
+                if token.startswith("run_") or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", token) or "/" in token or "\\" in token:
+                    continue
+
+            if token.startswith(("Linux-", "Windows-", "Darwin-", "FreeBSD-", "OpenBSD-")):
+                continue
+
+            if "[REDACTED" not in token:
+                is_secret, _, _ = is_high_entropy_secret(token)
+                if is_secret:
+                    redacted = redacted.replace(f'"{token}"', '"[REDACTED_SECRET]"').replace(f"'{token}'", "'[REDACTED_SECRET]'")
             
-        redacted = pattern.sub(_replace_match, redacted)
-
-    # 2. Charset-aware Shannon entropy scrubbing for high-entropy tokens
-    # Strictly require exact expected cryptographic/telemetry shapes when safe context keys match
-    candidate_token_pattern = re.compile(r"""(?<=['"])([A-Za-z0-9_\-\.\+=/]{20,80})(?=['"])""")
-    for token_m in candidate_token_pattern.finditer(redacted):
-        token = token_m.group(1)
-        start_idx = token_m.start(1)
-        prefix_context = redacted[max(0, start_idx - 50) : start_idx].lower()
-
-        # Integrity hashes MUST strictly match exact Git SHA-1 (40 hex) or SHA-256 (64 hex) shape
-        if any(k in prefix_context for k in ["commit_hash", "file_sha256", "sha256", "checksum"]):
-            if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", token):
-                continue
-
-        # Package URLs must match purl schema
-        if "purl" in prefix_context and token.startswith("pkg:"):
-            continue
-
-        # System telemetry must match valid platform or version shape
-        if any(k in prefix_context for k in ["platform", "operating_system", "os", "system", "arch"]):
-            if token.startswith(("Linux-", "Windows-", "Darwin-", "FreeBSD-", "OpenBSD-")) or re.fullmatch(r"[A-Za-z0-9_\.\-]+", token):
-                continue
-
-        # Safe tool/run metadata
-        if any(k in prefix_context for k in ["run_id", "schema_version", "repo_path"]):
-            if token.startswith("run_") or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", token) or "/" in token or "\\" in token:
-                continue
-
-        if token.startswith(("Linux-", "Windows-", "Darwin-", "FreeBSD-", "OpenBSD-")):
-            continue
-
-        if "[REDACTED" not in token:
-            is_secret, _, _ = is_high_entropy_secret(token)
-            if is_secret:
-                redacted = redacted.replace(f'"{token}"', '"[REDACTED_SECRET]"').replace(f"'{token}'", "'[REDACTED_SECRET]'")
-        
-    return redacted
+        return redacted
+    except Exception as e:
+        raise RedactionError(f"Redaction process failed ({e}); failing closed to prevent potential credential leakage.") from e
 
 
 def scrub_model_io(text: str) -> str:

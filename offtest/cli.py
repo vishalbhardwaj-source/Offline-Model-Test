@@ -52,22 +52,25 @@ def main():
 @click.option("--json-out", is_flag=True, default=False, help="Print summary JSON to stdout.")
 @click.option("--strict", is_flag=True, default=False, help="Fail with non-zero exit code on blocked checks.")
 @click.option(
+    "--strip-sarif-snippets",
+    is_flag=True,
+    default=False,
+    help="Omit raw source code snippets from SARIF export to prevent exfiltration across air gap.",
+)
+@click.option(
     "--accept-no-kernel-isolation",
     is_flag=True,
     default=False,
     help="Explicitly acknowledge and accept running scripts on bare host without container/kernel-level network isolation.",
 )
-def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_policy, generate_tests, out, sarif_out, json_out, strict, accept_no_kernel_isolation):
+def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_policy, generate_tests, out, sarif_out, json_out, strict, strip_sarif_snippets, accept_no_kernel_isolation):
     """
     Run offline repository intake, inventory, app mapping, checks, and generate reports.
     """
     click.echo(f"[*] Starting offline assessment for: {repo_path}")
     
-    has_kernel_iso = (
-        os.environ.get("OFFTEST_KERNEL_ISOLATION", "").lower() in ("1", "true", "yes")
-        or Path("/.dockerenv").exists()
-        or Path("/run/.containerenv").exists()
-    )
+    from offtest.checks.isolated_runner import probe_kernel_network_isolation
+    has_kernel_iso, iso_reason = probe_kernel_network_isolation()
 
     if allow_scripts:
         if not has_kernel_iso and not accept_no_kernel_isolation:
@@ -94,6 +97,7 @@ def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_poli
         quarantine_policy=quarantine_policy,
         generate_tests=generate_tests,
         accept_no_kernel_isolation=accept_no_kernel_isolation,
+        strip_sarif_snippets=strip_sarif_snippets,
     )
 
     context, detailed_path, issue_path, sarif_path = orchestrator.run()

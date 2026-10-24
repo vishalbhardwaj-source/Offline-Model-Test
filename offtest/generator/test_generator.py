@@ -177,7 +177,9 @@ class ConstrainedTestGenerator:
             suite_file = suite_dir / "test_offline_generated_suite.py"
             content = "# Automatically synthesized by offtest constrained AST generator\n# Status: synthesized, unverified (demonstrates branch reachability only)\nimport pytest\n\n"
             content += "\n\n".join(tc.test_code for tc in test_cases) + "\n"
-            suite_file.write_text(content, encoding="utf-8")
+            from offtest.intake.safety import redact_sensitive_data
+            sanitized_content = redact_sensitive_data(content)
+            suite_file.write_text(sanitized_content, encoding="utf-8")
             suite_path_str = str(suite_file)
 
         compile_rate = 100.0 if test_cases else None
