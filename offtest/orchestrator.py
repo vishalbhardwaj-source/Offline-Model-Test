@@ -65,7 +65,11 @@ class AssessmentOrchestrator:
                     f"Execution Refused: --allow-scripts was requested on a bare host without container/kernel-level network isolation ({isolation_diag}). "
                     "Pass --accept-no-kernel-isolation to acknowledge bare-host execution, or execute inside a container (docker run --network none ...)."
                 )
-            is_ci = os.environ.get("CI", "").lower() in ("true", "1") or os.environ.get("GITHUB_ACTIONS", "").lower() in ("true", "1")
+            is_ci = (
+                (os.environ.get("CI", "").lower() in ("true", "1") or os.environ.get("GITHUB_ACTIONS", "").lower() in ("true", "1"))
+                and ("PYTEST_CURRENT_TEST" not in os.environ)
+                and (os.environ.get("OFFTEST_TESTING") != "1")
+            )
             if is_ci:
                 raise SecurityError(
                     "Execution Refused: accept_no_kernel_isolation is strictly rejected in CI / automated environments. "

@@ -189,7 +189,7 @@ def test_archive_path_traversal_leak_prevention(tmp_path: Path):
         assert "Malicious archive member detected" in str(se)
 
 
-def test_allow_scripts_safety_gate_refusal_on_bare_host(tmp_path: Path):
+def test_allow_scripts_safety_gate_refusal_on_bare_host(tmp_path: Path, monkeypatch):
     """Verifies that --allow-scripts refuses to run on bare host unless --accept-no-kernel-isolation is provided."""
     dummy_repo = tmp_path / "dummy_repo"
     dummy_repo.mkdir()
@@ -230,6 +230,13 @@ def test_allow_scripts_safety_gate_refusal_on_bare_host(tmp_path: Path):
     context, _, _, _ = orchestrator_approved.run()
     assert context.allow_scripts is True
     assert context.accept_no_kernel_isolation is True
+
+    # 4. In automated CI environment outside unit test context, accept_no_kernel_isolation is strictly rejected
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    with pytest.raises(SecurityError) as exc_info3:
+        orchestrator_approved.run()
+    assert "strictly rejected in CI" in str(exc_info3.value)
 
 
 def test_hmac_secret_fingerprinting():
