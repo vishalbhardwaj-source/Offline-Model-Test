@@ -112,7 +112,7 @@ class ConstrainedTestGenerator:
                 try:
                     full_p = self.repo_dir / f.path
                     if full_p.is_file() and f.size_bytes < 500_000:
-                        content = full_p.read_text(encoding="utf-8", errors="ignore")
+                        content = full_p.read_text(encoding="utf-8-sig", errors="ignore")
                         tree = ast.parse(content, filename=f.path)
                         visitor = BranchConditionVisitor(f.path)
                         visitor.visit(tree)

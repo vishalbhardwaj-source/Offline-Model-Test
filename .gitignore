@@ -10,6 +10,7 @@ build/
 # Test runs and temporary artifacts
 .offtest_runs/
 reproduced_reports/
+*_reports/
 sample_repos/sample_web_app/
 
 # Virtual environments

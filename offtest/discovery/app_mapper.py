@@ -32,7 +32,7 @@ class ApplicationMapper:
             try:
                 full_path = self.repo_dir / tf.path
                 if full_path.is_file() and tf.size_bytes < 500000:
-                    test_file_contents[tf.path] = full_path.read_text(encoding="utf-8", errors="ignore")
+                    test_file_contents[tf.path] = full_path.read_text(encoding="utf-8-sig", errors="ignore")
             except Exception:
                 pass
 
@@ -73,7 +73,7 @@ class ApplicationMapper:
                 continue
 
             try:
-                content = full_path.read_text(encoding="utf-8", errors="ignore")
+                content = full_path.read_text(encoding="utf-8-sig", errors="ignore")
             except Exception:
                 continue
 

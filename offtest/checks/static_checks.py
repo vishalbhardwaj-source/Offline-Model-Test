@@ -93,11 +93,44 @@ class OfflineStaticChecker:
                 continue
 
             try:
-                content = full_path.read_text(encoding="utf-8", errors="ignore")
+                raw_bytes = full_path.read_bytes()
+                has_bom = raw_bytes.startswith(b"\xef\xbb\xbf")
+                content = raw_bytes.decode("utf-8-sig", errors="ignore")
             except Exception:
                 continue
 
             f_sha256 = self.file_hashes.get(f.path)
+
+            # 0. File encoding check (e.g. Windows UTF-8 BOM)
+            if has_bom and f.language in ("Python", "JavaScript", "TypeScript", "JSON", "YAML"):
+                findings.append(
+                    Finding(
+                        id=f"FIND-{counter:04d}",
+                        title="Non-Standard UTF-8 BOM (Byte Order Mark) Detected",
+                        severity=Severity.LOW,
+                        confidence=Confidence.CONFIRMED,
+                        provenance="rule",
+                        status=EvidenceStatus.OBSERVED,
+                        branch=branch,
+                        file_path=f.path,
+                        line_number=1,
+                        file_sha256=f_sha256,
+                        impact="File begins with a UTF-8 Byte Order Mark (0xEF 0xBB 0xBF / U+FEFF). While standard Python runtimes strip the BOM automatically when running files from disk, strict CI linters, non-Windows compilers, or string-based AST parsers may flag or mishandle BOM characters.",
+                        evidence="Line 1: File starts with 3-byte UTF-8 BOM sequence (0xEF 0xBB 0xBF)",
+                        suggested_action="Re-save file as standard UTF-8 without BOM to ensure universal cross-platform and linter compatibility.",
+                        check_tool="file-encoding-checker",
+                        cwe_id=None,
+                        cwe_name=None,
+                        cvss_score_estimate=None,
+                        cvss_vector_estimate=None,
+                        cvss_is_estimate=False,
+                        environmental_context_assumed="Assumes standard source repository formatting expectations.",
+                        oracle_origin="static_rule",
+                        reproduced=True,
+                        sandbox_artifact=False,
+                    )
+                )
+                counter += 1
 
             # 1. Hardcoded secrets check
             secret_hits = scan_for_secrets(content, f.path)
@@ -464,11 +497,22 @@ class OfflineStaticChecker:
                 continue
             # Check for unpinned dependencies (e.g. 'requests' or 'flask>=2.0' without exact pin '==')
             if "==" not in stripped and "@" not in stripped and not stripped.startswith("-"):
+                is_min_constraint = any(op in stripped for op in [">=", "<=", "~=", ">", "<"])
+                title = "Minimum Version Constraint (Unpinned Python Dependency)" if is_min_constraint else "Unpinned Python Dependency"
+                impact = (
+                    f"Dependency specifies a minimum or range constraint ('{stripped}') rather than an exact pinned version ('=='). While standard during local development, unpinned builds can pull unexpected upstream changes and cause non-deterministic offline environments."
+                    if is_min_constraint else
+                    "Unpinned dependencies without version constraints can introduce breaking changes or untracked upstream supply-chain differences when running offline."
+                )
+                pkg_base = stripped.split(">=")[0].split("<=")[0].split("~=")[0].split(">")[0].split("<")[0].strip()
+                suggested_action = (
+                    f"Pin exact version in requirements.txt (e.g. {pkg_base}==x.y.z) for deterministic offline builds."
+                )
                 cwe_id, cwe_name, cvss_score, cvss_vector = resolve_cwe_cvss("Unpinned Python Dependency")
                 findings.append(
                     Finding(
                         id=f"FIND-{c:04d}",
-                        title="Unpinned Python Dependency",
+                        title=title,
                         severity=Severity.LOW,
                         confidence=Confidence.CONFIRMED,
                         provenance="rule",
@@ -477,9 +521,9 @@ class OfflineStaticChecker:
                         file_path=rel_path,
                         line_number=idx,
                         file_sha256=f_sha,
-                        impact="Unpinned dependencies can introduce breaking changes or untracked upstream supply-chain differences when running offline.",
+                        impact=impact,
                         evidence=f"Line {idx}: {stripped}",
-                        suggested_action=f"Pin exact version in requirements.txt (e.g. {stripped.split('>')[0].split('<')[0]}==x.y.z) for deterministic offline builds.",
+                        suggested_action=suggested_action,
                         check_tool="dependency-pin-checker",
                         cwe_id=cwe_id,
                         cwe_name=cwe_name,

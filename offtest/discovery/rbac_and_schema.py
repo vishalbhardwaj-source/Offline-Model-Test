@@ -46,7 +46,7 @@ class RBACAndSchemaExtractor:
                 try:
                     full_p = self.repo_dir / f.path
                     if full_p.is_file():
-                        file_lines[f.path] = full_p.read_text(encoding="utf-8", errors="ignore").splitlines()
+                        file_lines[f.path] = full_p.read_text(encoding="utf-8-sig", errors="ignore").splitlines()
                 except Exception:
                     pass
 

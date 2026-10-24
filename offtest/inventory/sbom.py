@@ -144,7 +144,7 @@ class SBOMGenerator:
             if "requirements" in f.path.lower() and f.path.endswith(".txt"):
                 try:
                     full_path = self.repo_dir / f.path
-                    lines = full_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+                    lines = full_path.read_text(encoding="utf-8-sig", errors="ignore").splitlines()
                     for line in lines:
                         line = line.strip()
                         if not line or line.startswith("#") or line.startswith("-"):
