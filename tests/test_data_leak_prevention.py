@@ -342,11 +342,41 @@ def test_unc_path_rejection_prevents_smb_leak():
         r"\/attacker\share",
         r"\\corporate-share@SSL\repo",
         "file://remote-smb-host/share/repo",
+        "%255C%255Cdouble-encoded-host/share",
+        "%5C%5Cencoded-host/payload",
     ]
     for unc in unc_paths:
         with pytest.raises(SecurityError) as exc_info:
             RepositoryIntake.prepare_target(unc)
         assert "UNC / SMB" in str(exc_info.value)
+
+
+def test_requirements_remote_unc_reference_flagged():
+    r"""Verifies that -r \\host\share or file:// in requirements.txt is flagged as High severity finding."""
+    from offtest.checks.static_checks import OfflineStaticChecker
+    from offtest.core.models import FileRecord, FileDisposition, Severity
+
+    req_content = "requests==2.31.0\n-r \\\\attacker-host\\malicious\\internal.txt\nurllib3==2.0.7\n"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        req_file = tmp_path / "requirements.txt"
+        req_file.write_text(req_content, encoding="utf-8")
+
+        f_rec = FileRecord(
+            path="requirements.txt",
+            size_bytes=len(req_content),
+            language="Text",
+            sha256="dummy_sha",
+            disposition=FileDisposition.ANALYZED,
+            disposition_reason="Eligible configuration",
+        )
+        checker = OfflineStaticChecker(tmp_path, [f_rec])
+        findings = checker.run_all()
+
+        remote_findings = [f for f in findings if "Remote UNC or Network Reference" in f.title]
+        assert len(remote_findings) == 1
+        assert remote_findings[0].severity == Severity.HIGH
+        assert "attacker-host" in remote_findings[0].evidence
 
 
 def test_sarif_snippet_stripping_option():

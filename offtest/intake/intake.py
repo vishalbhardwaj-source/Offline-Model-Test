@@ -27,8 +27,12 @@ def is_unc_or_remote_path(p: str) -> bool:
     raw = str(p).strip()
     if not raw:
         return False
-    # Decode percent-encoding (e.g. %5C -> \, %2F -> /)
-    raw = urllib.parse.unquote(raw)
+    # Decode percent-encoding in a loop (since %255C survives a single pass)
+    for _ in range(5):
+        nxt = urllib.parse.unquote(raw)
+        if nxt == raw:
+            break
+        raw = nxt
 
     # Check alternate and standard prefixes
     for prefix in [r"\\", r"//", r"/\ ", r"\/", r"\??\UNC", r"\\.\UNC", r"\\?\UNC", r"/??/UNC", r"//./UNC", r"//?/UNC"]:

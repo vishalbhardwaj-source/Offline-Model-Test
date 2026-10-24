@@ -495,6 +495,43 @@ class OfflineStaticChecker:
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
+
+            # Check for remote UNC or Network references in requirements.txt (e.g. -r \\host\x, -e \\host\x, file://)
+            from offtest.intake.intake import is_unc_or_remote_path
+            target_arg = stripped
+            if stripped.startswith(("-r", "-e")):
+                target_arg = stripped[2:].strip()
+            if is_unc_or_remote_path(target_arg):
+                findings.append(
+                    Finding(
+                        id=f"FIND-{c:04d}",
+                        title="Remote UNC or Network Reference in Dependency Specification",
+                        severity=Severity.HIGH,
+                        confidence=Confidence.CONFIRMED,
+                        provenance="rule",
+                        status=EvidenceStatus.OBSERVED,
+                        branch=branch,
+                        file_path=rel_path,
+                        line_number=idx,
+                        file_sha256=f_sha,
+                        impact="Dependency file specifies a remote UNC, SMB, or external network target. Installing or resolving this requirement can trigger an outbound connection or NTLM credential leak.",
+                        evidence=f"Line {idx}: {stripped}",
+                        suggested_action="Remove remote network reference and vendor dependency locally inside the repository.",
+                        check_tool="dependency-pin-checker",
+                        cwe_id="CWE-829",
+                        cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
+                        cvss_score_estimate=7.5,
+                        cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+                        cvss_is_estimate=True,
+                        environmental_context_assumed="Assumes strict offline air-gap build requirements.",
+                        oracle_origin="static_rule",
+                        reproduced=True,
+                        sandbox_artifact=False,
+                    )
+                )
+                c += 1
+                continue
+
             # Check for unpinned dependencies (e.g. 'requests' or 'flask>=2.0' without exact pin '==')
             if "==" not in stripped and "@" not in stripped and not stripped.startswith("-"):
                 is_min_constraint = any(op in stripped for op in [">=", "<=", "~=", ">", "<"])

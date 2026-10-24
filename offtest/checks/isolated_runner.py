@@ -60,44 +60,61 @@ def probe_kernel_network_isolation() -> Tuple[bool, str]:
     a container can be started with host or bridge networking.
 
     Uses strictly connectionless UDP routing table queries (sends ZERO packets/SYNs over the wire):
-    1. IPv4 Route Resolution: probes RFC 5737 documentation block (192.0.2.1:53).
-    2. IPv6 Route Resolution: probes RFC 3849 documentation prefix (2001:db8::1:53).
-    3. Handles Windows Winsock WSA error codes (WSAENETUNREACH 10051, WSAEHOSTUNREACH 10065).
+    1. Interface Address Enumeration: rejects any bound non-loopback IP on the host.
+    2. LAN Route Probing: probes RFC 1918 LAN subnets (10.x, 172.x, 192.168.x) to catch hosts with local LAN routes but no default gateway.
+    3. IPv4 & IPv6 Documentation Probes: probes RFC 5737 (192.0.2.1) and RFC 3849 (2001:db8::1).
+    4. Handles Windows Winsock WSA error codes (WSAENETUNREACH 10051, WSAEHOSTUNREACH 10065).
     Returns: (is_isolated, diagnostic_reason)
     """
     import socket
 
-    # 1. IPv4 Connectionless Route Probe (UDP connect only queries the local routing table)
+    # 1. Host Interface Enumeration
     try:
-        s4 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s4.settimeout(0.2)
-        s4.connect(("192.0.2.1", 53))
-        sock_name = s4.getsockname()
-        s4.close()
-        if sock_name[0] and not sock_name[0].startswith("127."):
-            return False, f"Host IPv4 network interface is active ({sock_name[0]}). Outbound routes present."
-    except OSError as e:
-        # Expected in --network none: ENETUNREACH (101) or WSAENETUNREACH (10051)
-        pass
+        hostname = socket.gethostname()
+        for _, _, _, _, sockaddr in socket.getaddrinfo(hostname, None):
+            ip = sockaddr[0]
+            if not ip.startswith("127.") and ip != "::1":
+                return False, f"Host network interface is bound ({ip}). Non-loopback interface active."
     except Exception:
         pass
 
-    # 2. IPv6 Connectionless Route Probe
+    # 2. Connectionless Route Probes (checks kernel routing tables for active subnets)
+    lan_probes = ["192.0.2.1", "10.255.255.1", "172.31.255.1", "192.168.1.1", "169.254.1.1"]
+    for test_ip in lan_probes:
+        try:
+            s4 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s4.settimeout(0.1)
+            s4.connect((test_ip, 53))
+            local_ip = s4.getsockname()[0]
+            s4.close()
+            if local_ip and not local_ip.startswith("127."):
+                return False, f"Host IPv4 network interface is active ({local_ip}). Outbound route to {test_ip} present."
+        except OSError:
+            # Expected in --network none: ENETUNREACH (101) or WSAENETUNREACH (10051)
+            pass
+        except Exception:
+            pass
+
+    # 3. IPv6 Connectionless Route Probe
     try:
         if socket.has_ipv6:
-            s6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
-            s6.settimeout(0.2)
-            s6.connect(("2001:db8::1", 53))
-            sock_name6 = s6.getsockname()
-            s6.close()
-            if sock_name6[0] and sock_name6[0] != "::1":
-                return False, f"Host IPv6 network interface is active ({sock_name6[0]}). IPv6 egress present."
-    except OSError:
-        pass
+            for v6_ip in ["2001:db8::1", "fe80::1"]:
+                try:
+                    s6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+                    s6.settimeout(0.1)
+                    s6.connect((v6_ip, 53))
+                    sock_name6 = s6.getsockname()
+                    s6.close()
+                    if sock_name6[0] and sock_name6[0] != "::1":
+                        return False, f"Host IPv6 network interface is active ({sock_name6[0]}). IPv6 egress present."
+                except OSError:
+                    pass
+                except Exception:
+                    pass
     except Exception:
         pass
 
-    # 3. Check container/namespace environment presence
+    # 4. Check container/namespace environment presence
     in_container = (
         Path("/.dockerenv").exists()
         or Path("/run/.containerenv").exists()
