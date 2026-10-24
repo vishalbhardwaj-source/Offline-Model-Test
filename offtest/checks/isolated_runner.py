@@ -68,15 +68,25 @@ def probe_kernel_network_isolation() -> Tuple[bool, str]:
     """
     import socket
 
-    # 1. Host Interface Enumeration
-    try:
-        hostname = socket.gethostname()
-        for _, _, _, _, sockaddr in socket.getaddrinfo(hostname, None):
-            ip = sockaddr[0]
-            if not ip.startswith("127.") and ip != "::1":
-                return False, f"Host network interface is bound ({ip}). Non-loopback interface active."
-    except Exception:
-        pass
+    # 1. Native OS Interface Enumeration (Fail-Safe)
+    if sys.platform != "win32" and Path("/sys/class/net").is_dir():
+        try:
+            for iface in Path("/sys/class/net").iterdir():
+                if iface.name != "lo":
+                    return False, f"Non-loopback Linux network interface attached: '{iface.name}'."
+        except Exception as e:
+            return False, f"Failed to inspect /sys/class/net ({e}); failing closed."
+    elif sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            buf_len = wintypes.ULONG(0)
+            res = ctypes.windll.iphlpapi.GetAdaptersInfo(None, ctypes.byref(buf_len))
+            # ERROR_BUFFER_OVERFLOW (111) indicates network adapter interfaces are bound on the host
+            if res == 111 and buf_len.value > 0:
+                return False, f"Active Windows network adapter(s) detected via Win32 iphlpapi (buffer {buf_len.value} bytes). Host is not air-gapped."
+        except Exception as e:
+            return False, f"Win32 adapter inspection failed ({e}); failing closed."
 
     # 2. Connectionless Route Probes (checks kernel routing tables for active subnets)
     lan_probes = ["192.0.2.1", "10.255.255.1", "172.31.255.1", "192.168.1.1", "169.254.1.1"]

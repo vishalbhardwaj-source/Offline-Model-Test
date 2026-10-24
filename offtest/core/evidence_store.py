@@ -13,6 +13,7 @@ def atomic_write_text(dest: Path, content: str, encoding: str = "utf-8") -> None
     Ensures that interrupted writes or RedactionErrors never leave partial or
     unredacted raw files on disk.
     """
+    import time
     import uuid
     temp_file = dest.with_name(f".{dest.name}.tmp_{os.getpid()}_{uuid.uuid4().hex[:6]}")
     success = False
@@ -21,8 +22,17 @@ def atomic_write_text(dest: Path, content: str, encoding: str = "utf-8") -> None
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(temp_file, dest)
-        success = True
+        # Windows sharing-violation retry loop (handles transient indexer/antivirus locks)
+        for attempt in range(4):
+            try:
+                os.replace(temp_file, dest)
+                success = True
+                break
+            except PermissionError:
+                if attempt < 3:
+                    time.sleep(0.05 * (attempt + 1))
+                else:
+                    raise
     finally:
         if not success and temp_file.exists():
             try:
