@@ -24,12 +24,18 @@ class AnchorVerificationResult:
 
 
 def compute_file_sha256(path: Path) -> str:
+    """
+    Computes cryptographic SHA-256 for source code text anchors.
+    Normalizes line endings strictly for text files (non-binary) to handle non-git archives.
+    Binary files remain byte-exact.
+    """
     h = hashlib.sha256()
     try:
         data = path.read_bytes()
-        # Normalize CRLF to LF to ensure consistent cryptographic anchor hashes across Windows and Linux
-        if b"\r\n" in data:
-            data = data.replace(b"\r\n", b"\n")
+        # Only normalize text files (no null bytes in sample)
+        if b"\x00" not in data[:8000]:
+            if b"\r\n" in data:
+                data = data.replace(b"\r\n", b"\n")
         h.update(data)
         return h.hexdigest()
     except Exception:

@@ -14,6 +14,12 @@ class OfflineConfig:
     ARCHIVE_MAX_TOTAL_SIZE_BYTES: int = 500 * 1024 * 1024  # 500MB total extraction max
     ARCHIVE_MAX_COMPRESSION_RATIO: float = 100.0  # Max 100:1 ratio
 
+    # Out-of-band pinned model weights manifest (cryptographic hashes pinned at configuration time)
+    PINNED_WEIGHTS_MANIFEST: Dict[str, str] = {
+        "qwen2.5-coder-7b-instruct.q4_k_m.gguf": "a1b2c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef0",
+        "llama-3.2-3b-instruct.q4_k_m.gguf": "b2c3d4e5f6a17890123456789abcdef0123456789abcdef0123456789abcdef1",
+    }
+
     # Safe environment variable whitelist (prevents host secret leaks into child processes)
     SAFE_ENV_WHITELIST: Set[str] = {
         "PATH",

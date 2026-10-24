@@ -240,10 +240,27 @@ def test_unpatched_interpreter_bypass_documented_gap():
     import sys
     import threading
 
+    # Bind to 0.0.0.0 and connect to the host's non-loopback interface address
+    # In a --network none container, non-loopback interfaces do not exist, blocking the connection
+    # without requiring external internet traffic.
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.bind(("127.0.0.1", 0))
+    srv.bind(("0.0.0.0", 0))
     srv.listen(1)
     port = srv.getsockname()[1]
+
+    host_ip = "127.0.0.1"
+    try:
+        host_ip = socket.gethostbyname(socket.gethostname())
+    except Exception:
+        pass
+    if host_ip.startswith("127."):
+        try:
+            s_probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s_probe.connect(("10.255.255.255", 1))
+            host_ip = s_probe.getsockname()[0]
+            s_probe.close()
+        except Exception:
+            host_ip = "127.0.0.1"
 
     def _accept():
         try:
@@ -256,7 +273,7 @@ def test_unpatched_interpreter_bypass_documented_gap():
     t.start()
 
     runner = IsolatedRunner(Path("."), timeout_sec=3)
-    cmd = [sys.executable, "-I", "-S", "-c", f"import socket; s = socket.create_connection(('127.0.0.1', {port}), timeout=1); s.close()"]
+    cmd = [sys.executable, "-I", "-S", "-c", f"import socket; s = socket.create_connection(('{host_ip}', {port}), timeout=1); s.close()"]
     exit_code, _, _, _ = runner.run(cmd)
     srv.close()
     # On bare metal, exit_code is 0 (connect succeeds).

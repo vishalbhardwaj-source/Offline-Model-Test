@@ -310,11 +310,11 @@ class OfflineStaticChecker:
                                 self.issues.append((
                                     node.lineno,
                                     "Direct Shell Execution Present ('os.system()')",
-                                    Severity.LOW,
-                                    Confidence.CONFIRMED,
-                                    "Process spawns an OS shell with fixed constant arguments. Advisory finding; not command injection unless external untrusted input is supplied.",
+                                    Severity.INFORMATIONAL,
+                                    Confidence.POSSIBLE,
+                                    "Advisory observation: Process spawns an OS shell with fixed constant arguments. Not a defect or command injection; informational observation only.",
                                     f"Line {node.lineno}: os.system(...)",
-                                    "Replace os.system() with subprocess.run(..., shell=False) passing command arguments as a list."
+                                    "Consider replacing os.system() with subprocess.run(..., shell=False) passing arguments as a list."
                                 ))
                         # Check yaml.load without SafeLoader
                         elif node.func.value.id == "yaml" and node.func.attr == "load":
@@ -333,22 +333,20 @@ class OfflineStaticChecker:
                                     node.lineno,
                                     "Unsafe YAML Deserialization ('yaml.load' without SafeLoader)",
                                     Severity.HIGH,
-                                    Confidence.LIKELY,
-                                    "Calling yaml.load() without SafeLoader allows arbitrary Python object instantiation.",
+                                    Confidence.POSSIBLE,
+                                    "Calling yaml.load() without SafeLoader allows arbitrary Python object instantiation (AST rule match; exploitability unconfirmed).",
                                     f"Line {node.lineno}: yaml.load(...)",
                                     "Use yaml.safe_load(...) or specify Loader=yaml.SafeLoader."
                                 ))
                         # Check pickle.loads
                         elif node.func.value.id == "pickle" and node.func.attr in ("load", "loads"):
                             is_fixture = any(t in rel_path.lower() for t in ["test", "fixture", "mock"])
-                            conf = Confidence.POSSIBLE if is_fixture else Confidence.LIKELY
-                            sev = Severity.LOW if is_fixture else Severity.MEDIUM
                             self.issues.append((
                                 node.lineno,
                                 "Insecure Object Deserialization ('pickle.loads')",
-                                sev,
-                                conf,
-                                "Pickle deserialization enables arbitrary code execution if untrusted input is supplied.",
+                                Severity.LOW if is_fixture else Severity.MEDIUM,
+                                Confidence.POSSIBLE,
+                                "Pickle deserialization AST call detected. Rule match on call syntax; exploitability depends on whether external untrusted data reaches the call.",
                                 f"Line {node.lineno}: pickle.{node.func.attr}(...)",
                                 "Use safer serialization formats like JSON or Protocol Buffers for untrusted payloads."
                             ))

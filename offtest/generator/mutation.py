@@ -267,8 +267,21 @@ for k, v in current_ns.items():
             pass
 
         c_exit, _, _, _ = _execute_harness(canary_src)
-        # Canary is verified if modifying the return values broke at least one assertion
+        # Canary is verified if modifying return values broke at least one assertion
         canary_verified = (c_exit != 0)
+        if not canary_verified:
+            return MutationReport(
+                total_mutants=len(mutants),
+                killed_mutants=0,
+                survived_mutants=len(mutants),
+                timed_out_mutants=0,
+                invalid_mutants=0,
+                mutation_score_pct=0.0,
+                baseline_passed=True,
+                canary_verified=False,
+                mutants=[],
+                interpretation="Canary mutant survived: test suite does not exercise target module or imported unmutated host module.",
+            )
 
         # 3. Evaluate Mutants
         for m in mutants:

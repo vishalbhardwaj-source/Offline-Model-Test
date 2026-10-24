@@ -478,3 +478,49 @@ def test_cwe_map_entries_comprehensive():
     assert resolve_cwe_cvss("eval")[0] == "CWE-95"
     assert resolve_cwe_cvss("Insecure Authentication Endpoint")[0] == "CWE-598"
 
+
+def test_canary_mutant_survival_fails_run():
+    source = """
+def multiply(a, b):
+    return a * b
+"""
+    # A test that does not call or assert on multiply() at all
+    disconnected_test = """
+def test_something_else():
+    assert 2 + 2 == 4
+"""
+    report = evaluate_test_against_mutants(source, disconnected_test)
+    assert report.canary_verified is False
+    assert report.mutation_score_pct == 0.0
+    assert "Canary mutant survived" in report.interpretation
+
+
+def test_verify_against_pinned_manifest(tmp_path: Path):
+    from offtest.intake.safety import verify_against_pinned_manifest
+    from offtest.core.config import OfflineConfig
+
+    # Add temporary pinned hash entry
+    model_name = "test_custom_pinned.gguf"
+    model_file = tmp_path / model_name
+    model_file.write_bytes(b"TRUSTED_MODEL_WEIGHTS_CONTENT")
+    import hashlib
+    trusted_hash = hashlib.sha256(b"TRUSTED_MODEL_WEIGHTS_CONTENT").hexdigest()
+    OfflineConfig.PINNED_WEIGHTS_MANIFEST[model_name] = trusted_hash
+
+    # Verification with out-of-band pinned hash
+    is_valid, copy_path = verify_against_pinned_manifest(
+        model_name,
+        model_file,
+        copy_to_private_sandbox=True,
+        sandbox_dir=tmp_path / "private_sandbox",
+    )
+    assert is_valid is True
+    assert copy_path is not None
+    assert copy_path.exists()
+    assert copy_path.read_bytes() == b"TRUSTED_MODEL_WEIGHTS_CONTENT"
+
+    # Unknown model name rejection
+    is_valid_unknown, _ = verify_against_pinned_manifest("unknown_model.gguf", model_file)
+    assert is_valid_unknown is False
+
+

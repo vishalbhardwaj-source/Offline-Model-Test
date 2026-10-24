@@ -7,13 +7,12 @@ from offtest.inventory.classifier import classify_file
 
 
 def compute_sha256(path: Path) -> str:
+    """Computes byte-exact SHA-256 for repository files (including binary and model weights)."""
     h = hashlib.sha256()
     try:
-        data = path.read_bytes()
-        # Normalize CRLF to LF for consistent text hashing across Windows/Linux checkouts
-        if b"\r\n" in data:
-            data = data.replace(b"\r\n", b"\n")
-        h.update(data)
+        with open(path, "rb") as f:
+            while chunk := f.read(65536):
+                h.update(chunk)
         return h.hexdigest()
     except Exception:
         return "error_reading_hash"

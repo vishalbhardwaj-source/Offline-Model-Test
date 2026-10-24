@@ -206,12 +206,40 @@ def verify_model_weights_manifest(
                 dest_path = p
 
         is_valid = (h.hexdigest().lower() == expected_sha256.lower().strip())
-        if not is_valid and copy_to_private_sandbox and dest_path and dest_path.exists():
+        if is_valid and copy_to_private_sandbox and dest_path:
+            try:
+                import stat
+                # Set read-only permissions to prevent same-user tampering
+                os.chmod(dest_path, stat.S_IREAD)
+            except Exception:
+                pass
+        elif not is_valid and copy_to_private_sandbox and dest_path and dest_path.exists():
             dest_path.unlink()
             dest_path = None
         return is_valid, (dest_path if is_valid else None)
     except Exception:
         return False, None
+
+
+def verify_against_pinned_manifest(
+    model_name: str,
+    model_path: Union[str, Path],
+    copy_to_private_sandbox: bool = True,
+    sandbox_dir: Optional[Path] = None,
+) -> Tuple[bool, Optional[Path]]:
+    """
+    Verifies model weights strictly against the out-of-band pinned manifest in OfflineConfig.
+    Guarantees out-of-band integrity without accepting caller-supplied or repo-controlled hashes.
+    """
+    pinned_hash = OfflineConfig.PINNED_WEIGHTS_MANIFEST.get(model_name)
+    if not pinned_hash:
+        return False, None
+    return verify_model_weights_manifest(
+        model_path=model_path,
+        expected_sha256=pinned_hash,
+        copy_to_private_sandbox=copy_to_private_sandbox,
+        sandbox_dir=sandbox_dir,
+    )
 
 
 def scan_for_secrets(content: str, file_path: str) -> List[Tuple[int, str, str, str]]:
