@@ -11,6 +11,7 @@ from offtest.core.models import CheckStatus, Severity
 from offtest.orchestrator import AssessmentOrchestrator
 from offtest.reports.detailed import DetailedReportGenerator
 from offtest.reports.issue_focused import IssueFocusedReportGenerator
+from offtest.reports.workflow import WorkflowReportGenerator
 
 
 @click.group()
@@ -111,7 +112,9 @@ def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_poli
         strip_sarif_snippets=strip_sarif_snippets,
     )
 
-    context, detailed_path, issue_path, sarif_path = orchestrator.run()
+    orchestrator_res = orchestrator.run()
+    context, detailed_path, issue_path, sarif_path = orchestrator_res
+    workflow_path = getattr(orchestrator_res, "workflow_report_path", None) or (Path(detailed_path).parent / "REPORT_3_WORKFLOWS.md")
 
     if sarif_out:
         shutil.copyfile(str(sarif_path), sarif_out)
@@ -126,6 +129,7 @@ def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_poli
     click.echo(f"[+] Total findings: {len(context.findings)}")
     click.echo(f"[+] Report 1 (Detailed): {detailed_path}")
     click.echo(f"[+] Report 2 (Issue-focused): {issue_path}")
+    click.echo(f"[+] Report 3 (Workflows): {workflow_path}")
     click.echo(f"[+] SARIF Report: {sarif_path}")
 
     if json_out:
@@ -140,6 +144,7 @@ def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_poli
             "generated_tests": context.generated_test_suite.total_generated,
             "detailed_report": str(detailed_path),
             "issue_report": str(issue_path),
+            "workflow_report": str(workflow_path),
             "sarif_report": str(sarif_path),
         }
         click.echo(json.dumps(summary, indent=2))
@@ -163,26 +168,30 @@ def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_poli
 @click.option("--out", default=None, help="Directory to write reproduced reports to.")
 def report(run_id_or_file, out):
     """
-    Reproduce Report 1 & Report 2 directly from saved evidence store without re-running tests.
+    Reproduce Report 1, Report 2 & Report 3 directly from saved evidence store without re-running tests.
     """
     store = EvidenceStore()
     context = store.load_run(run_id_or_file)
 
     detailed_gen = DetailedReportGenerator(context)
     issue_gen = IssueFocusedReportGenerator(context)
+    workflow_gen = WorkflowReportGenerator(context)
 
     target_dir = Path(out) if out else Path(".offtest_runs") / context.run_id
     target_dir.mkdir(parents=True, exist_ok=True)
 
     det_path = target_dir / "REPORT_1_DETAILED.md"
     iss_path = target_dir / "REPORT_2_ISSUES.md"
+    wf_path = target_dir / "REPORT_3_WORKFLOWS.md"
 
     det_path.write_text(detailed_gen.generate_markdown(), encoding="utf-8")
     iss_path.write_text(issue_gen.generate_markdown(), encoding="utf-8")
+    wf_path.write_text(workflow_gen.generate_markdown(), encoding="utf-8")
 
     click.echo(f"[+] Successfully reproduced reports from run '{context.run_id}'!")
     click.echo(f"[+] Detailed report: {det_path}")
     click.echo(f"[+] Issue-focused report: {iss_path}")
+    click.echo(f"[+] Workflow report: {wf_path}")
 
 
 @main.command("manifest")

@@ -160,7 +160,7 @@ python -m offtest manifest
 
 ## 📂 Generated Report Outputs
 
-Every assessment produces three synchronized artifacts:
+Every assessment produces four synchronized artifacts:
 
 1. **`REPORT_1_DETAILED.md` (Technical Investigation Report):**  
    Exhaustive 10-section report detailing file dispositions, complete CycloneDX SBOM, OpenAPI specifications, RBAC matrix, local git branch diffs, execution logs, and the 7-dimension coverage breakdown.
@@ -168,7 +168,10 @@ Every assessment produces three synchronized artifacts:
 2. **`REPORT_2_ISSUES.md` (Actionable Issue-Focused Report):**  
    Prioritized remediation punch-list grouped by severity (`Critical`, `High`, `Medium`, `Low`, `Informational`) with exact file paths, line numbers, CWE taxonomy, CVSS estimates, reproduction evidence, and suggested fixes.
 
-3. **`results.sarif` (OASIS SARIF 2.1.0):**  
+3. **`REPORT_3_WORKFLOWS.md` (Application Workflow & Journey Report):**  
+   Catalog of end-to-end user journeys, reactive state management pipelines (NgRx / Redux / Store), routing transitions, interactive Mermaid diagrams, failure-mode analysis, and workflow test coverage gaps.
+
+4. **`results.sarif` (OASIS SARIF 2.1.0):**  
    Standard static analysis results format compatible with GitHub Code Scanning, SonarQube, and CI/CD security dashboards.
 
 ---

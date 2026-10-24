@@ -27,8 +27,26 @@ from offtest.inventory.sbom import SBOMGenerator
 from offtest.checks.isolated_runner import verify_kernel_sandbox_environment
 from offtest.reports.detailed import DetailedReportGenerator
 from offtest.reports.issue_focused import IssueFocusedReportGenerator
+from offtest.reports.workflow import WorkflowReportGenerator
 from offtest.reports.sarif import SARIFReportGenerator
 from offtest.intake.safety import redact_sensitive_data
+
+
+class OrchestratorResult(tuple):
+    """
+    4-element tuple (context, detailed_report_path, issue_report_path, sarif_path)
+    for seamless backward compatibility with unpacking, plus .workflow_report_path attribute.
+    """
+    def __new__(cls, context, detailed_path, issue_path, sarif_path, workflow_path=None):
+        return super().__new__(cls, (context, detailed_path, issue_path, sarif_path))
+
+    def __init__(self, context, detailed_path, issue_path, sarif_path, workflow_path=None):
+        self.context = context
+        self.detailed_report_path = detailed_path
+        self.issue_report_path = issue_path
+        self.sarif_path = sarif_path
+        self.workflow_report_path = workflow_path
+        self.workflow_path = workflow_path
 
 
 class AssessmentOrchestrator:
@@ -227,8 +245,13 @@ class AssessmentOrchestrator:
         issue_report_path = run_folder / "REPORT_2_ISSUES.md"
         atomic_write_text(issue_report_path, issue_md, encoding="utf-8")
 
+        workflow_gen = WorkflowReportGenerator(context)
+        workflow_md = redact_sensitive_data(workflow_gen.generate_markdown())
+        workflow_report_path = run_folder / "REPORT_3_WORKFLOWS.md"
+        atomic_write_text(workflow_report_path, workflow_md, encoding="utf-8")
+
         sarif_gen = SARIFReportGenerator(context, strip_snippets=self.strip_sarif_snippets)
         sarif_path = run_folder / "results.sarif"
         sarif_gen.save_sarif(sarif_path)
 
-        return context, detailed_report_path, issue_report_path, sarif_path
+        return OrchestratorResult(context, detailed_report_path, issue_report_path, sarif_path, workflow_report_path)

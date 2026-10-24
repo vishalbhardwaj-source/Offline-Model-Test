@@ -64,15 +64,27 @@ class EvidenceStore:
 
     def load_run(self, run_id_or_path: str) -> RunContext:
         path = Path(run_id_or_path)
-        if not path.is_file():
-            # Check inside base_dir/run_id/evidence.json
-            candidate = self.base_dir / run_id_or_path / "evidence.json"
-            if candidate.is_file():
-                path = candidate
+
+        if path.is_file():
+            target_file = path
+        elif (path / "evidence.json").is_file():
+            target_file = path / "evidence.json"
+        elif (self.base_dir / run_id_or_path / "evidence.json").is_file():
+            target_file = self.base_dir / run_id_or_path / "evidence.json"
+        else:
+            # Fallback: scan working directory and known report folders for matching run_id
+            clean_run_id = Path(run_id_or_path).name
+            found_candidates = list(Path.cwd().glob(f"**/{clean_run_id}/evidence.json"))
+            if not found_candidates:
+                # Also search parent/workspace if cwd is subfolder
+                found_candidates = list(Path.cwd().parent.glob(f"**/{clean_run_id}/evidence.json")) if Path.cwd().parent else []
+            
+            if found_candidates:
+                target_file = found_candidates[0]
             else:
                 raise FileNotFoundError(f"Run evidence not found for '{run_id_or_path}'")
                 
-        with open(path, "r", encoding="utf-8") as f:
+        with open(target_file, "r", encoding="utf-8") as f:
             data = json.load(f)
             
         return RunContext.model_validate(data)

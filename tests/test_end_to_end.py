@@ -74,9 +74,16 @@ def test_end_to_end_assessment():
         assert det_path.exists()
         assert iss_path.exists()
         assert sarif_path.exists()
+        wf_path = Path(det_path).parent / "REPORT_3_WORKFLOWS.md"
+        assert wf_path.exists()
 
         det_content = det_path.read_text(encoding="utf-8")
         iss_content = iss_path.read_text(encoding="utf-8")
+        wf_content = wf_path.read_text(encoding="utf-8")
+
+        # Verify Report 3 structure
+        assert "Application Workflow & Journey Report" in wf_content
+        assert "Executive Workflow Summary" in wf_content
 
         # Verify Report 1 structure
         assert "## 1. Executive Summary" in det_content
