@@ -9,9 +9,11 @@ from offtest.inventory.classifier import classify_file
 def compute_sha256(path: Path) -> str:
     h = hashlib.sha256()
     try:
-        with open(path, "rb") as f:
-            for chunk in iter(lambda: f.read(65536), b""):
-                h.update(chunk)
+        data = path.read_bytes()
+        # Normalize CRLF to LF for consistent text hashing across Windows/Linux checkouts
+        if b"\r\n" in data:
+            data = data.replace(b"\r\n", b"\n")
+        h.update(data)
         return h.hexdigest()
     except Exception:
         return "error_reading_hash"

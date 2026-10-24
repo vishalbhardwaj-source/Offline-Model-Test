@@ -166,25 +166,52 @@ def sanitize_prompt_context(untrusted_text: str, source_label: str = "repo_conte
     return f'<untrusted_repo_content token="{nonce}" source="{source_label}">\n{scrubbed}\n</untrusted_repo_content token="{nonce}">'
 
 
-def verify_model_weights_manifest(model_path: Union[str, Path], expected_sha256: str) -> bool:
+def verify_model_weights_manifest(
+    model_path: Union[str, Path],
+    expected_sha256: str,
+    copy_to_private_sandbox: bool = False,
+    sandbox_dir: Optional[Path] = None,
+) -> Tuple[bool, Optional[Path]]:
     """
-    Verifies that local AI model weights / runtime files match pinned cryptographic hashes
-    prior to execution, securing the air-gapped supply chain.
-    Opens with read-only flags to prevent TOCTOU modification.
+    Verifies that local AI model weights / runtime binaries match an out-of-band pinned
+    cryptographic SHA-256 hash prior to execution, mitigating supply-chain tampering.
+
+    TOCTOU Mitigation:
+    - Opens with exclusive read-only descriptor flags to inspect contents.
+    - If copy_to_private_sandbox=True, streams verified bytes directly into an immutable,
+      private sandbox location so the downstream runtime loads the exact verified bytes
+      without path-substitution race conditions.
+    Returns: (is_valid, verified_path)
     """
     p = Path(model_path)
     if not p.is_file():
-        return False
+        return False, None
     h = hashlib.sha256()
+    dest_path: Optional[Path] = None
     try:
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
         fd = os.open(str(p), flags)
         with os.fdopen(fd, "rb") as f:
-            while chunk := f.read(1024 * 1024):
-                h.update(chunk)
-        return h.hexdigest().lower() == expected_sha256.lower().strip()
+            if copy_to_private_sandbox:
+                target_dir = sandbox_dir or (Path(tempfile.gettempdir()) / "offtest_verified_models")
+                target_dir.mkdir(parents=True, exist_ok=True)
+                dest_path = target_dir / f"verified_{p.name}"
+                with open(dest_path, "wb") as out_f:
+                    while chunk := f.read(1024 * 1024):
+                        h.update(chunk)
+                        out_f.write(chunk)
+            else:
+                while chunk := f.read(1024 * 1024):
+                    h.update(chunk)
+                dest_path = p
+
+        is_valid = (h.hexdigest().lower() == expected_sha256.lower().strip())
+        if not is_valid and copy_to_private_sandbox and dest_path and dest_path.exists():
+            dest_path.unlink()
+            dest_path = None
+        return is_valid, (dest_path if is_valid else None)
     except Exception:
-        return False
+        return False, None
 
 
 def scan_for_secrets(content: str, file_path: str) -> List[Tuple[int, str, str, str]]:

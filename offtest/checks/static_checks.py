@@ -318,44 +318,80 @@ class OfflineStaticChecker:
                                 ))
                         # Check yaml.load without SafeLoader
                         elif node.func.value.id == "yaml" and node.func.attr == "load":
-                            has_loader = False
+                            safe_loader = False
                             for kw in node.keywords:
                                 if kw.arg == "Loader":
-                                    has_loader = True
-                            if not has_loader:
+                                    loader_name = ""
+                                    if isinstance(kw.value, ast.Name):
+                                        loader_name = kw.value.id
+                                    elif isinstance(kw.value, ast.Attribute):
+                                        loader_name = kw.value.attr
+                                    if "safe" in loader_name.lower():
+                                        safe_loader = True
+                            if not safe_loader:
                                 self.issues.append((
                                     node.lineno,
                                     "Unsafe YAML Deserialization ('yaml.load' without SafeLoader)",
                                     Severity.HIGH,
-                                    Confidence.HIGH,
-                                    "Calling yaml.load() without explicit SafeLoader can allow arbitrary Python object instantiations.",
+                                    Confidence.LIKELY,
+                                    "Calling yaml.load() without SafeLoader allows arbitrary Python object instantiation.",
                                     f"Line {node.lineno}: yaml.load(...)",
-                                    "Use yaml.safe_load(...) instead."
+                                    "Use yaml.safe_load(...) or specify Loader=yaml.SafeLoader."
                                 ))
                         # Check pickle.loads
                         elif node.func.value.id == "pickle" and node.func.attr in ("load", "loads"):
+                            is_fixture = any(t in rel_path.lower() for t in ["test", "fixture", "mock"])
+                            conf = Confidence.POSSIBLE if is_fixture else Confidence.LIKELY
+                            sev = Severity.LOW if is_fixture else Severity.MEDIUM
                             self.issues.append((
                                 node.lineno,
                                 "Insecure Object Deserialization ('pickle.loads')",
-                                Severity.MEDIUM,
-                                Confidence.MEDIUM,
-                                "Pickle deserialization of untrusted payloads enables arbitrary code execution.",
+                                sev,
+                                conf,
+                                "Pickle deserialization enables arbitrary code execution if untrusted input is supplied.",
                                 f"Line {node.lineno}: pickle.{node.func.attr}(...)",
-                                "Use safer serialization formats like JSON or Protocol Buffers for untrusted data."
+                                "Use safer serialization formats like JSON or Protocol Buffers for untrusted payloads."
                             ))
                         # Check verify=False in requests
                         elif node.func.value.id == "requests" and node.func.attr in ("get", "post", "put", "delete", "request"):
                             for kw in node.keywords:
                                 if kw.arg == "verify" and isinstance(kw.value, ast.Constant) and kw.value.value is False:
+                                    is_fixture = any(t in rel_path.lower() for t in ["test", "fixture", "mock"])
+                                    conf = Confidence.POSSIBLE if is_fixture else Confidence.LIKELY
                                     self.issues.append((
                                         node.lineno,
                                         "Disabled SSL Certificate Verification (verify=False)",
-                                        Severity.HIGH,
-                                        Confidence.HIGH,
+                                        Severity.MEDIUM if is_fixture else Severity.HIGH,
+                                        conf,
                                         "Disabling SSL verification allows man-in-the-middle attacks.",
                                         f"Line {node.lineno}: requests.{node.func.attr}(..., verify=False)",
                                         "Remove verify=False and ensure valid local CA certificates are provided."
                                     ))
+                        # Check ssl._create_unverified_context
+                        elif node.func.value.id == "ssl" and node.func.attr == "_create_unverified_context":
+                            self.issues.append((
+                                node.lineno,
+                                "Disabled SSL Certificate Verification (ssl._create_unverified_context)",
+                                Severity.HIGH,
+                                Confidence.LIKELY,
+                                "Creating unverified SSL context disables server certificate validation.",
+                                f"Line {node.lineno}: ssl._create_unverified_context()",
+                                "Use ssl.create_default_context() with trusted certificates."
+                            ))
+
+                # Check CERT_NONE in any function call keyword
+                for kw in node.keywords:
+                    if kw.arg in ("cert_reqs", "verify_mode"):
+                        if isinstance(kw.value, ast.Attribute) and kw.value.attr == "CERT_NONE":
+                            self.issues.append((
+                                node.lineno,
+                                "Disabled SSL Certificate Verification (CERT_NONE)",
+                                Severity.HIGH,
+                                Confidence.LIKELY,
+                                "Setting SSL verify_mode to CERT_NONE bypasses certificate checks.",
+                                f"Line {node.lineno}: {kw.arg}=ssl.CERT_NONE",
+                                "Require valid certificates (ssl.CERT_REQUIRED)."
+                            ))
 
                 self.generic_visit(node)
 
@@ -381,6 +417,10 @@ class OfflineStaticChecker:
         f_sha = self.file_hashes.get(rel_path)
         for line_no, title, sev, conf, impact, ev, action in visitor.issues:
             cwe_id, cwe_name, cvss_score, cvss_vector = resolve_cwe_cvss(title)
+            # Principle: CVSS base estimates MUST NOT be attached to unverified / Possible findings
+            if conf == Confidence.POSSIBLE:
+                cvss_score = None
+                cvss_vector = None
             findings.append(
                 Finding(
                     id=f"FIND-{c:04d}",

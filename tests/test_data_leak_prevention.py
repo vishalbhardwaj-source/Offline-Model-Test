@@ -233,14 +233,34 @@ _has_kernel_isolation = (
 def test_unpatched_interpreter_bypass_documented_gap():
     """
     Documents known bare-metal boundary: an unpatched interpreter spawned with -I -S
-    bypasses sitecustomize and can reach the host network unless in an OS container.
+    bypasses sitecustomize and can reach host sockets unless in an OS container.
+    Uses a local loopback listener to avoid external internet routing dependencies.
     """
+    import socket
     import sys
+    import threading
+
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+
+    def _accept():
+        try:
+            conn, _ = srv.accept()
+            conn.close()
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_accept, daemon=True)
+    t.start()
+
     runner = IsolatedRunner(Path("."), timeout_sec=3)
-    cmd = [sys.executable, "-I", "-S", "-c", "import socket; s = socket.create_connection(('1.1.1.1', 53), timeout=1); s.close()"]
+    cmd = [sys.executable, "-I", "-S", "-c", f"import socket; s = socket.create_connection(('127.0.0.1', {port}), timeout=1); s.close()"]
     exit_code, _, _, _ = runner.run(cmd)
-    # On bare metal with open network, exit_code is 0 (connect succeeds).
-    # In strict xfail mode, this test must fail (exit_code != 0 must be False), proving the gap is documented!
+    srv.close()
+    # On bare metal, exit_code is 0 (connect succeeds).
+    # In strict xfail mode, this test fails (exit_code != 0 is False), documenting the airgap boundary.
     assert exit_code != 0, "Expected bare host to allow connection unless inside kernel sandbox"
 
 

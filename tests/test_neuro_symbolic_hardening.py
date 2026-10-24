@@ -363,8 +363,28 @@ def test_verify_model_weights_manifest(tmp_path: Path):
     import hashlib
     actual_hash = hashlib.sha256(b"GGUF_MODEL_WEIGHTS_MOCK").hexdigest()
 
-    assert verify_model_weights_manifest(fake_model, actual_hash) is True
-    assert verify_model_weights_manifest(fake_model, "bad_hash_0000") is False
+    # In-place descriptor verification
+    is_valid, verified_path = verify_model_weights_manifest(fake_model, actual_hash)
+    assert is_valid is True
+    assert verified_path == fake_model
+
+    # Bad hash rejection
+    is_bad, _ = verify_model_weights_manifest(fake_model, "bad_hash_0000")
+    assert is_bad is False
+
+    # TOCTOU-resistant private copy binding
+    sandbox_dir = tmp_path / "sandbox_models"
+    is_valid_copy, copy_path = verify_model_weights_manifest(
+        fake_model,
+        actual_hash,
+        copy_to_private_sandbox=True,
+        sandbox_dir=sandbox_dir,
+    )
+    assert is_valid_copy is True
+    assert copy_path is not None
+    assert copy_path.exists()
+    assert copy_path != fake_model
+    assert copy_path.read_bytes() == b"GGUF_MODEL_WEIGHTS_MOCK"
 
 
 # --- 7. Measurement & Mutation Testing Tests ---

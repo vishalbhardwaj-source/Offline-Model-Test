@@ -25,10 +25,15 @@ class AnchorVerificationResult:
 
 def compute_file_sha256(path: Path) -> str:
     h = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(65536):
-            h.update(chunk)
-    return h.hexdigest()
+    try:
+        data = path.read_bytes()
+        # Normalize CRLF to LF to ensure consistent cryptographic anchor hashes across Windows and Linux
+        if b"\r\n" in data:
+            data = data.replace(b"\r\n", b"\n")
+        h.update(data)
+        return h.hexdigest()
+    except Exception:
+        return "error_reading_hash"
 
 
 def verify_source_anchor(

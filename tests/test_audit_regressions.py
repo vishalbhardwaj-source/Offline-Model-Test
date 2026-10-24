@@ -376,4 +376,36 @@ def test_all_offtest_modules_import_cleanly_without_undefined_names():
         importlib.import_module(rel_mod)
 
 
+def test_target_repo_assessment_runs_pytest_under_isolated_runner_and_passes(tmp_path: Path):
+    """
+    Verifies that when allow_scripts=True and accept_no_kernel_isolation=True,
+    the target repository pytest suite successfully executes inside IsolatedRunner
+    with redirected PYTHONUSERBASE, without failing with 'No module named pytest',
+    and records CheckStatus.PASSED with exit_code 0.
+    """
+    from offtest.orchestrator import AssessmentOrchestrator
+    from offtest.core.models import CheckStatus
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    (repo_dir / "test_sample.py").write_text("def test_ok(): assert 1 + 1 == 2\n", encoding="utf-8")
+    (repo_dir / "server.py").write_text("x = 1\n", encoding="utf-8")
+
+    orchestrator = AssessmentOrchestrator(
+        repo_path_or_archive=str(repo_dir),
+        base_branch="main",
+        allow_scripts=True,
+        accept_no_kernel_isolation=True,
+        output_dir=str(tmp_path / "runs"),
+        generate_tests=False,
+    )
+    context, _, _, _ = orchestrator.run()
+    pytest_checks = [c for c in context.check_results if c.check_name == "Python Pytest Suite"]
+    assert len(pytest_checks) == 1
+    pytest_res = pytest_checks[0]
+    assert pytest_res.status == CheckStatus.PASSED, f"Pytest failed with exit {pytest_res.exit_code}: {pytest_res.stderr}"
+    assert pytest_res.exit_code == 0
+
+
+
 
