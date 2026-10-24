@@ -37,3 +37,30 @@ jobs:
       - name: Run Test Suite
         run: |
           python -m pytest -v
+
+  hardened-container-verification:
+    name: Hardened Container Air-Gap Verification (--network none)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build offtest test image
+        run: |
+          docker build -t offtest:test .
+
+      - name: Assert Air-Gap Container Security Boundaries
+        run: |
+          mkdir -p /tmp/test_out
+          chmod 777 /tmp/test_out
+          # Execute assessment inside hardened container with zero network and read-only repo
+          docker run --rm \
+            --network none \
+            --read-only \
+            --tmpfs /tmp:rw,nosuid,size=512m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --user 10001:10001 \
+            -v $GITHUB_WORKSPACE/sample_repos/sample_web_app:/repo:ro \
+            -v /tmp/test_out:/out:rw \
+            offtest:test assess /repo --out /out

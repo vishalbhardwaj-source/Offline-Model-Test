@@ -69,8 +69,8 @@ def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_poli
     """
     click.echo(f"[*] Starting offline assessment for: {repo_path}")
     
-    from offtest.checks.isolated_runner import probe_kernel_network_isolation
-    has_kernel_iso, iso_reason = probe_kernel_network_isolation()
+    from offtest.checks.isolated_runner import verify_kernel_sandbox_environment
+    has_kernel_iso, iso_reason = verify_kernel_sandbox_environment()
 
     if allow_scripts:
         if not has_kernel_iso and not accept_no_kernel_isolation:

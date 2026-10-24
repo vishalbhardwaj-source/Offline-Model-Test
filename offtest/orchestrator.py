@@ -24,7 +24,7 @@ from offtest.intake.git_manager import GitManager
 from offtest.intake.intake import RepositoryIntake, SecurityError
 from offtest.inventory.engine import InventoryEngine
 from offtest.inventory.sbom import SBOMGenerator
-from offtest.checks.isolated_runner import probe_kernel_network_isolation
+from offtest.checks.isolated_runner import verify_kernel_sandbox_environment
 from offtest.reports.detailed import DetailedReportGenerator
 from offtest.reports.issue_focused import IssueFocusedReportGenerator
 from offtest.reports.sarif import SARIFReportGenerator
@@ -57,7 +57,7 @@ class AssessmentOrchestrator:
         self.strip_sarif_snippets = strip_sarif_snippets
 
     def run(self) -> Tuple[RunContext, Path, Path, Path]:
-        has_kernel_isolation, isolation_diag = probe_kernel_network_isolation()
+        has_kernel_isolation, isolation_diag = verify_kernel_sandbox_environment()
         if self.allow_scripts and not has_kernel_isolation and not self.accept_no_kernel_isolation:
             raise SecurityError(
                 f"Execution Refused: --allow-scripts was requested on a bare host without container/kernel-level network isolation ({isolation_diag}). "

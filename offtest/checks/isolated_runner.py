@@ -83,19 +83,51 @@ def probe_kernel_network_isolation() -> Tuple[bool, str]:
         try:
             import ctypes
             from ctypes import wintypes
+
+            class IP_ADAPTER_ADDRESSES(ctypes.Structure):
+                pass
+
+            IP_ADAPTER_ADDRESSES._fields_ = [
+                ("Length", wintypes.ULONG),
+                ("IfIndex", wintypes.DWORD),
+                ("Next", ctypes.POINTER(IP_ADAPTER_ADDRESSES)),
+                ("AdapterName", ctypes.c_char_p),
+                ("FirstUnicastAddress", ctypes.c_void_p),
+                ("FirstAnycastAddress", ctypes.c_void_p),
+                ("FirstMulticastAddress", ctypes.c_void_p),
+                ("FirstDnsServerAddress", ctypes.c_void_p),
+                ("DnsSuffix", ctypes.c_wchar_p),
+                ("Description", ctypes.c_wchar_p),
+                ("FriendlyName", ctypes.c_wchar_p),
+                ("PhysicalAddress", ctypes.c_ubyte * 8),
+                ("PhysicalAddressLength", wintypes.DWORD),
+                ("Flags", wintypes.DWORD),
+                ("Mtu", wintypes.DWORD),
+                ("IfType", wintypes.DWORD),
+                ("OperStatus", wintypes.DWORD),
+            ]
+
             AF_UNSPEC = 0
-            # GAA_FLAG_SKIP_ANYCAST (2) | GAA_FLAG_SKIP_MULTICAST (4) | GAA_FLAG_SKIP_DNS_SERVER (8)
-            flags = 0x000E
+            flags = 0x000E  # GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER
             out_buf_len = wintypes.ULONG(15000)
             buf = ctypes.create_string_buffer(out_buf_len.value)
             ret = ctypes.windll.iphlpapi.GetAdaptersAddresses(AF_UNSPEC, flags, None, buf, ctypes.byref(out_buf_len))
-            if ret == 111:  # ERROR_BUFFER_OVERFLOW: buffer too small, reallocate exact required size
+            if ret == 111:  # ERROR_BUFFER_OVERFLOW
                 buf = ctypes.create_string_buffer(out_buf_len.value)
                 ret = ctypes.windll.iphlpapi.GetAdaptersAddresses(AF_UNSPEC, flags, None, buf, ctypes.byref(out_buf_len))
 
-            # ret == 0 (ERROR_SUCCESS) indicates active adapter structures were populated
-            if ret == 0:
-                return False, f"Active Windows network adapter(s) detected via Win32 GetAdaptersAddresses (AF_UNSPEC). Host is not air-gapped."
+            # ret == 232 (ERROR_NO_DATA): no adapters exist at all (pass)
+            if ret == 232:
+                pass
+            elif ret == 0:
+                # Walk adapter list; skip IF_TYPE_SOFTWARE_LOOPBACK (24) and disconnected adapters
+                curr = ctypes.cast(buf, ctypes.POINTER(IP_ADAPTER_ADDRESSES))
+                while curr:
+                    adapter = curr.contents
+                    if adapter.IfType != 24 and adapter.OperStatus == 1:
+                        name = adapter.FriendlyName or "network adapter"
+                        return False, f"Active Windows network adapter detected: '{name}' (Type {adapter.IfType}). Host is not air-gapped."
+                    curr = adapter.Next
         except Exception as e:
             return False, f"Win32 adapter inspection failed ({e}); failing closed."
 
@@ -145,6 +177,44 @@ def probe_kernel_network_isolation() -> Tuple[bool, str]:
         return False, "Running on bare host without container or network namespace isolation."
 
     return True, "Verified: OS container with zero non-loopback network interfaces."
+
+
+def verify_kernel_sandbox_environment(repo_path: Optional[Path] = None) -> Tuple[bool, str]:
+    """
+    Verifies full kernel sandbox properties (network, filesystem, and privileges)
+    before approving untrusted script execution:
+    1. Zero non-loopback network interfaces (network isolation).
+    2. Unix socket containment: /var/run/docker.sock does NOT exist.
+    3. Linux capability containment: non-root (UID != 0), NoNewPrivs: 1.
+    4. Host credential absence: ~/.ssh and ~/.aws do NOT exist in the container environment.
+    """
+    net_ok, net_diag = probe_kernel_network_isolation()
+    if not net_ok:
+        return False, net_diag
+
+    # B. Docker socket check (prevents container escapes via mounted docker daemon socket)
+    if Path("/var/run/docker.sock").exists():
+        return False, "Dangerous Unix socket mounted: '/var/run/docker.sock' is present inside container."
+
+    # C. Linux privilege and capability check (non-root, NoNewPrivs)
+    if sys.platform != "win32":
+        try:
+            if hasattr(os, "getuid") and os.getuid() == 0:
+                return False, "Process is running as root (UID 0). Hardened container requires non-root user (--user 10001)."
+            status_file = Path("/proc/self/status")
+            if status_file.exists():
+                status_text = status_file.read_text(encoding="utf-8", errors="ignore")
+                if "NoNewPrivs:\t1" not in status_text and "NoNewPrivs: 1" not in status_text:
+                    return False, "Kernel privilege escalation restriction missing (NoNewPrivs != 1). Pass --security-opt no-new-privileges."
+        except Exception:
+            pass
+
+    # D. Host credential isolation (verify ~/.ssh and ~/.aws do not exist in container root)
+    home_dir = Path.home()
+    if (home_dir / ".ssh").exists() or (home_dir / ".aws").exists():
+        return False, f"Host credential directory detected ({home_dir / '.ssh'}). Host filesystem is not isolated."
+
+    return True, "Verified: Hardened container environment (Zero interfaces, non-root, credentials unmounted)."
 
 
 class IsolatedRunner:
