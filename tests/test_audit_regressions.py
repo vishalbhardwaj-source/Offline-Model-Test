@@ -120,8 +120,8 @@ def test_synthesized_test_never_increases_coverage(tmp_path: Path):
     assert dims_passed["Feature Coverage"].value_pct == 0.0
 
 
-def test_dimension_1_numerator_equals_analyzed_count():
-    """Verifies that Dimension 1 reports analyzed_count / eligible_count, matching the design formula."""
+def test_dimension_1_disposition_breakdown():
+    """Verifies that Dimension 1 reports analyzed_count out of total discovered files with full disposition breakdown."""
     files = [
         FileRecord(path="a.py", size_bytes=10, sha256="1", disposition=FileDisposition.ANALYZED, disposition_reason="code"),
         FileRecord(path="b.py", size_bytes=10, sha256="2", disposition=FileDisposition.ANALYZED, disposition_reason="code"),
@@ -137,11 +137,12 @@ def test_dimension_1_numerator_equals_analyzed_count():
         check_results=[],
     )
     dims = {d.name: d for d in report.dimensions}
-    dim1 = dims["Repository Inventory Coverage"]
-    # Total = 4, excluded = 1, eligible = 3, analyzed = 2
+    dim1 = dims["Repository Inventory Disposition"]
+    # Total = 4, analyzed = 2, excluded = 1, binary = 1
     assert dim1.numerator == 2
-    assert dim1.denominator == 3
-    assert dim1.value_pct == 66.7
+    assert dim1.denominator == 4
+    assert dim1.value_pct is None
+    assert "2 analyzed, 1 excluded, 0 generated, 1 binary" in dim1.explanation
 
 
 def test_unmerged_non_base_branch_not_assessed():
@@ -200,3 +201,46 @@ def test_unpinned_dependencies_appear_in_sbom(tmp_path: Path):
     assert "pydantic" in comp_map
     assert comp_map["pydantic"].version == "unspecified"
     assert comp_map["pydantic"].is_approximate_range is True
+
+
+def test_windows_git_hardening_prevents_fsmonitor_and_hooks(tmp_path: Path):
+    """Verifies that GitManager suppresses malicious core.fsmonitor and hooks on Windows."""
+    import subprocess
+    from offtest.intake.git_manager import GitManager
+
+    # Initialize a test git repository
+    res = subprocess.run(["git", "init", str(tmp_path)], capture_output=True)
+    if res.returncode != 0:
+        return
+
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(tmp_path), capture_output=True)
+    (tmp_path / "init.txt").write_text("hello", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), capture_output=True)
+
+    marker = tmp_path / "attack_marker.txt"
+    attack_script = tmp_path / "malicious.bat"
+    attack_script.write_text(f'echo hacked > "{marker}"\n', encoding="utf-8")
+
+    # Plant malicious fsmonitor in .git/config
+    git_cfg = tmp_path / ".git" / "config"
+    with open(git_cfg, "a", encoding="utf-8") as f:
+        attack_path_fwd = str(attack_script).replace("\\", "/")
+        f.write(f'\n[core]\n    fsmonitor = "{attack_path_fwd}"\n')
+
+    # Plant malicious hook in .git/hooks/
+    hooks_dir = tmp_path / ".git" / "hooks"
+    hooks_dir.mkdir(exist_ok=True)
+    hook_file = hooks_dir / "post-checkout"
+    marker_fwd = str(marker).replace("\\", "/")
+    hook_file.write_text(f'#!/bin/sh\necho hacked > "{marker_fwd}"\n', encoding="utf-8")
+
+    # Test GitManager with hardened flags
+    gm = GitManager(str(tmp_path))
+    gm._run_git(["status"])
+    assert not marker.exists(), "Hardened GitManager unexpectedly executed malicious core.fsmonitor!"
+
+    gm._run_git(["checkout", "-b", "hardened_branch"])
+    assert not marker.exists(), "Hardened GitManager unexpectedly executed malicious .git/hooks/post-checkout!"
+

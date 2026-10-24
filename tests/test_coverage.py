@@ -74,10 +74,9 @@ def test_coverage_dimensions():
     dims = {d.name: d for d in report.dimensions}
 
     # All 7 dimensions must exist!
-    assert "Repository Inventory Coverage" in dims
-    assert dims["Repository Inventory Coverage"].value_pct == 50.0
-    assert dims["Repository Inventory Coverage"].numerator == 1
-    assert dims["Repository Inventory Coverage"].denominator == 2
+    assert "Repository Inventory Disposition" in dims
+    assert dims["Repository Inventory Disposition"].numerator == 1
+    assert dims["Repository Inventory Disposition"].denominator == 2
 
     assert "Static Analysis Coverage" in dims
     assert dims["Static Analysis Coverage"].value_pct == 100.0

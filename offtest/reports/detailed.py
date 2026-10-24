@@ -19,7 +19,7 @@ class DetailedReportGenerator:
         lines.append(f"**Commit Revision:** `{self.ctx.commit_hash or 'Non-git or Uncommitted'}` (Working Tree Clean: {self.ctx.working_tree_clean})  ")
         lines.append(f"**Active Branch:** `{self.ctx.active_branch or 'N/A'}` | **Comparison Base:** `{self.ctx.comparison_base or 'N/A'}`  ")
         lines.append(f"**Operating System / Platform:** `{self.ctx.platform}` | **Python:** `{self.ctx.python_version}`  ")
-        lines.append(f"**Offline Enforced:** `{self.ctx.offline_enforced}` | **Script Execution Approved:** `{self.ctx.allow_scripts}`  ")
+        lines.append(f"**Network Isolation:** `Environment-level, best effort (proxy sinkholes & scrubbed env; container/firewall required for kernel air-gap)` | **Script Execution Approved:** `{self.ctx.allow_scripts}`  ")
         lines.append("\n---\n")
 
         # 2. Executive Summary
@@ -54,6 +54,35 @@ class DetailedReportGenerator:
         lines.append(f"| **Unsupported** | {self.ctx.inventory_summary.unsupported_count} | Formats not mapped to an active offline language parser |")
         lines.append(f"| **Failed to Inspect** | {self.ctx.inventory_summary.failed_to_inspect_count} | Files unreadable due to I/O or permissions |")
         lines.append(f"| **Total Discovered** | **{self.ctx.inventory_summary.total_files}** | **100% cataloged** |")
+
+        # Excluded files breakdown by reason
+        excluded_files = [f for f in self.ctx.files if f.disposition.value == "excluded"]
+        if excluded_files:
+            lines.append("\n### Excluded Files by Reason")
+            lines.append("| Excluded File Path | Reason / Matched Pattern |")
+            lines.append("| :--- | :--- |")
+            for ef in excluded_files:
+                lines.append(f"| `{ef.path}` | {ef.disposition_reason} |")
+
+        # Inspected source files and analyzer attribution
+        analyzed_files = [f for f in self.ctx.files if f.disposition.value == "analyzed"]
+        if analyzed_files:
+            lines.append("\n### Inspected Source Files & Assigned Analyzers")
+            lines.append("| File Path | Language | Category | Assigned Offline Analyzer | Lines |")
+            lines.append("| :--- | :--- | :--- | :--- | :---: |")
+            for af in analyzed_files:
+                if af.language == "Python":
+                    analyzer = "Python AST Validator & Security AST Visitor"
+                elif af.language == "HTML":
+                    analyzer = "HTML DOM Template & Route Structure Mapper"
+                elif af.language in ["Requirements", "JSON", "YAML", "TOML"]:
+                    analyzer = "Offline SBOM & Dependency Configuration Inspector"
+                elif af.language in ["JavaScript", "TypeScript"]:
+                    analyzer = "JavaScript/TypeScript Static Route & Syntax Inspector"
+                else:
+                    analyzer = f"Offline {af.language or 'Text'} Inspector"
+                lc_str = str(af.line_count) if af.line_count is not None else "N/A"
+                lines.append(f"| `{af.path}` | {af.language or 'Plain Text'} | {af.category} | {analyzer} | {lc_str} |")
 
         lines.append("\n### Offline Software Bill of Materials (SBOM) Summary")
         lines.append(f"- **Total Tracked Dependencies:** {self.ctx.sbom.total_dependencies}")
@@ -185,7 +214,12 @@ class DetailedReportGenerator:
         lines.append("| Dimension | Value | Formula / Denominator | Status | Details |")
         lines.append("| :--- | :---: | :---: | :---: | :--- |")
         for dim in self.ctx.coverage.dimensions:
-            val_str = f"**{dim.value_pct}%**" if dim.value_pct is not None else "_Unavailable_"
+            if dim.value_pct is not None:
+                val_str = f"**{dim.value_pct}%**"
+            elif dim.name == "Repository Inventory Disposition":
+                val_str = "_N/A (Breakdown)_"
+            else:
+                val_str = "_Unavailable_"
             denom_str = f"{dim.numerator}/{dim.denominator} {dim.unit}" if dim.numerator is not None and dim.denominator is not None else "N/A"
             status_str = "Available" if dim.is_available else "**UNAVAILABLE**"
             lines.append(f"| **{dim.name}** | {val_str} | {denom_str} | {status_str} | {dim.explanation} |")

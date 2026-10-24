@@ -58,8 +58,13 @@ class ApplicationMapper:
 
         detected_integrations: Dict[str, Tuple[str, Set[str]]] = {}
 
-        # 1. Inspect source files
-        for f in self.files:
+        # 1. Inspect source files (backend code before static HTML templates)
+        sorted_files = sorted(
+            [f for f in self.files if f.disposition.value == "analyzed"],
+            key=lambda x: (1 if x.language == "HTML" else 0, x.path)
+        )
+
+        for f in sorted_files:
             if f.disposition.value != "analyzed":
                 continue
 
@@ -155,13 +160,16 @@ class ApplicationMapper:
                                 )
                             )
 
-            # HTML files as routes / screens
+            # HTML files as routes / screens (only registered if not already served or if purely static site)
             elif f.language == "HTML":
                 page_route = "/" + f.path.replace("\\", "/")
                 if page_route.endswith("/index.html"):
                     page_route = page_route[:-10] or "/"
-                # Deduplicate: do not add duplicate GET route if already declared by server route handler
-                if not any(r.path == page_route and r.method == "GET" for r in routes):
+                
+                # In backend apps, HTML files are templates/screens; only register if no server handler covers this path
+                has_server_endpoints = any(r.notes and "route detected" in r.notes for r in routes) or len(apis) > 0
+                already_handled = any(r.path == page_route for r in routes) or any(a.endpoint == page_route for a in apis)
+                if not already_handled and not has_server_endpoints:
                     routes.append(
                         RouteRecord(
                             path=page_route,

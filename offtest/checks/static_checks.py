@@ -122,24 +122,25 @@ class OfflineStaticChecker:
                 self.issues = []
 
             def visit_FunctionDef(self, node: ast.FunctionDef):
-                # Check decorators for GET method with auth/login route and credential parameters
+                # Check decorators for GET method with auth/login route
                 for dec in node.decorator_list:
                     # e.g. @app.get("/api/v1/auth/login")
                     if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute) and dec.func.attr.lower() == "get":
                         if dec.args and isinstance(dec.args[0], ast.Constant) and isinstance(dec.args[0].value, str):
                             route_path = dec.args[0].value.lower()
-                            if any(k in route_path for k in ["login", "auth", "token"]):
+                            if any(k in route_path for k in ["login", "token", "signin", "authenticate"]):
                                 arg_names = [a.arg.lower() for a in node.args.args]
-                                if any(c in arg_names for c in ["password", "secret", "passwd", "pwd"]):
-                                    self.issues.append((
-                                        node.lineno,
-                                        "Insecure Credential Transmission via GET Method",
-                                        Severity.HIGH,
-                                        Confidence.HIGH,
-                                        "Credentials (passwords) accepted via GET query parameters appear in web server access logs, browser history, and HTTP Referer headers.",
-                                        f"Line {node.lineno}: @app.get('{dec.args[0].value}') handler '{node.name}' receives sensitive arguments: {', '.join(arg_names)}",
-                                        "Change the HTTP route method from GET to POST and accept credentials within the request body."
-                                    ))
+                                has_pwd = any(c in arg_names for c in ["password", "secret", "passwd", "pwd"])
+                                extra_detail = f" Handler accepts credential arguments: {', '.join(arg_names)}." if has_pwd else " Authentication/token issuance endpoints must use HTTP POST with request body to avoid query-log leakage."
+                                self.issues.append((
+                                    node.lineno,
+                                    "Insecure Authentication Endpoint Defined via HTTP GET",
+                                    Severity.HIGH,
+                                    Confidence.HIGH,
+                                    "Authentication, login, and token issuance endpoints must not use HTTP GET. Query parameters in GET requests are persisted in plain text within web server access logs, browser history, and HTTP Referer headers.",
+                                    f"Line {node.lineno}: @app.get('{dec.args[0].value}') handler '{node.name}' uses HTTP GET for an authentication route.{extra_detail}",
+                                    "Change the HTTP route method from GET to POST and accept credentials/payload within the request body."
+                                ))
                 self.generic_visit(node)
 
             def visit_Call(self, node: ast.Call):

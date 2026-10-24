@@ -158,6 +158,7 @@ class AssessmentOrchestrator:
             platform=platform.platform(),
             python_version=sys.version.split()[0],
             offline_enforced=True,
+            network_isolation_mode="environment_level_best_effort",
             allow_scripts=self.allow_scripts,
             tools_manifest=get_tool_manifest(),
             inventory_summary=inv_summary,
@@ -182,7 +183,7 @@ class AssessmentOrchestrator:
             generated_test_suite=generated_test_suite,
         )
 
-        # 9. Save Evidence Store & Tamper-Proof Checksum
+        # 9. Save Evidence Store & Cryptographic Integrity Checksum (SHA-256)
         evidence_store = EvidenceStore(base_dir=str(self.output_dir))
         evidence_path = evidence_store.save_run(context)
         evidence_sha = hashlib.sha256(evidence_path.read_bytes()).hexdigest()

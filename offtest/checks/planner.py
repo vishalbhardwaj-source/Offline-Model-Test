@@ -106,6 +106,19 @@ class CheckPlanner:
         static_findings = static_checker.run_all(branch=branch)
         findings.extend(static_findings)
 
+        crit_count = len([f for f in static_findings if f.severity.value == "Critical"])
+        high_count = len([f for f in static_findings if f.severity.value == "High"])
+        has_critical_or_high = (crit_count + high_count) > 0
+
+        failure_reason = None
+        if has_critical_or_high:
+            reasons = []
+            if crit_count > 0:
+                reasons.append(f"{crit_count} Critical")
+            if high_count > 0:
+                reasons.append(f"{high_count} High")
+            failure_reason = f"{', '.join(reasons)} security defect(s) detected"
+
         check_results.append(
             CheckResult(
                 tool_name="offtest-static-scanner",
@@ -113,11 +126,12 @@ class CheckPlanner:
                 check_name="Static AST, Security & Secret Analysis",
                 check_type="security",
                 command="internal static ast inspection",
-                exit_code=1 if any(f.severity.value in ["Critical", "High"] for f in static_findings) else 0,
+                exit_code=1 if has_critical_or_high else 0,
                 duration_sec=0.15,
                 stdout=f"Processed eligible source files. Generated {len(static_findings)} findings.",
                 stderr="",
-                status=CheckStatus.PASSED,
+                status=CheckStatus.FAILED if has_critical_or_high else CheckStatus.PASSED,
+                skip_or_blocked_reason=failure_reason,
             )
         )
 

@@ -302,6 +302,7 @@ class RunContext(BaseModel):
     platform: str
     python_version: str
     offline_enforced: bool = True
+    network_isolation_mode: str = "environment_level_best_effort"
     allow_scripts: bool = False
     
     tools_manifest: List[ToolManifestItem] = Field(default_factory=list)

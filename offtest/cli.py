@@ -166,7 +166,8 @@ def verify_offline():
     Verify that the environment executes analysis without network dependencies
     using raw socket, DNS, and HTTP probes executed inside the IsolatedRunner.
     """
-    click.echo("[*] Executing deep offline isolation verification probes inside IsolatedRunner...")
+    click.echo("[*] Executing offline network isolation probes from INSIDE child sandbox processes via IsolatedRunner...")
+    click.echo("    (Probes execute in scrubbed subprocess environments with proxy sinkholes and host secrets stripped)")
     from offtest.checks.isolated_runner import IsolatedRunner
     runner = IsolatedRunner(Path("."), timeout_sec=5)
 

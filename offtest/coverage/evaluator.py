@@ -25,7 +25,7 @@ class CoverageEvaluator:
         dimensions: List[CoverageDimension] = []
         summary_notes: List[str] = []
 
-        # 1. Repository inventory coverage
+        # 1. Repository inventory disposition (reported as breakdown, percentages reserved for verifiable test dimensions)
         total_discovered = len(files)
         analyzed_count = len([f for f in files if f.disposition == FileDisposition.ANALYZED])
         excluded_count = len([f for f in files if f.disposition == FileDisposition.EXCLUDED])
@@ -34,25 +34,21 @@ class CoverageEvaluator:
         unsupported_count = len([f for f in files if f.disposition == FileDisposition.UNSUPPORTED])
         failed_count = len([f for f in files if f.disposition == FileDisposition.FAILED_TO_INSPECT])
 
-        eligible_count = total_discovered - excluded_count
-        inv_pct = round((analyzed_count / eligible_count) * 100, 1) if eligible_count > 0 else 0.0
         dimensions.append(
             CoverageDimension(
-                name="Repository Inventory Coverage",
-                value_pct=inv_pct,
+                name="Repository Inventory Disposition",
+                value_pct=None,
                 numerator=analyzed_count,
-                denominator=eligible_count,
-                unit="eligible non-excluded files",
+                denominator=total_discovered,
+                unit="total cataloged files",
                 is_available=True,
-                explanation=f"{analyzed_count} analyzed of {total_discovered} discovered files ({eligible_count} eligible non-excluded). Breakdown: {analyzed_count} analyzed, {excluded_count} excluded, {generated_count} generated, {binary_count} binary, {unsupported_count} unsupported.",
+                explanation=f"Cataloged {total_discovered} total repository files: {analyzed_count} analyzed, {excluded_count} excluded, {generated_count} generated, {binary_count} binary, {unsupported_count} unsupported, {failed_count} unreadable. (Percentages reserved for actionable test dimensions).",
             )
         )
 
-        # 2. Static-analysis coverage
-        # Eligible files are those with disposition == ANALYZED
+        # 2. Static-analysis coverage (with per-analyzer attribution)
         analyzed_files = [f for f in files if f.disposition == FileDisposition.ANALYZED]
         total_eligible = len(analyzed_files)
-        # Files without analysis failure
         failed_files = [f for f in files if f.disposition == FileDisposition.FAILED_TO_INSPECT]
         successfully_processed = total_eligible
         static_pct = (
@@ -60,6 +56,19 @@ class CoverageEvaluator:
             if total_eligible > 0
             else 0.0
         )
+
+        # Breakdown by analyzer
+        py_cnt = len([f for f in analyzed_files if f.language == "Python"])
+        html_cnt = len([f for f in analyzed_files if f.language == "HTML"])
+        req_cnt = len([f for f in analyzed_files if f.language in ["Requirements", "JSON", "YAML", "TOML"]])
+        js_cnt = len([f for f in analyzed_files if "JavaScript" in (f.language or "") or "TypeScript" in (f.language or "")])
+        parts = []
+        if py_cnt: parts.append(f"{py_cnt} Python (AST security & syntax parsing)")
+        if html_cnt: parts.append(f"{html_cnt} HTML (DOM template & route mapper)")
+        if req_cnt: parts.append(f"{req_cnt} Manifest/Config (SBOM & pin inspector)")
+        if js_cnt: parts.append(f"{js_cnt} JS/TS (syntax & regex route extractor)")
+        analyzer_desc = f": {', '.join(parts)}" if parts else ""
+
         dimensions.append(
             CoverageDimension(
                 name="Static Analysis Coverage",
@@ -69,7 +78,7 @@ class CoverageEvaluator:
                 unit="eligible source files",
                 is_available=total_eligible > 0,
                 explanation=(
-                    f"{successfully_processed} of {total_eligible} eligible source files successfully parsed and inspected."
+                    f"{successfully_processed} of {total_eligible} eligible source files inspected across offline analyzers{analyzer_desc}. 0 parse failures."
                     if total_eligible > 0
                     else "No eligible source files discovered for static analysis."
                 ),
