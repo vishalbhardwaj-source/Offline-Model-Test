@@ -1,0 +1,12 @@
+.git/
+.env
+.env.*
+.offtest_runs/
+reproduced_reports/
+*_reports/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+tests/
+sample_repos/

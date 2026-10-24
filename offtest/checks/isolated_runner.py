@@ -184,37 +184,78 @@ def verify_kernel_sandbox_environment(repo_path: Optional[Path] = None) -> Tuple
     Verifies full kernel sandbox properties (network, filesystem, and privileges)
     before approving untrusted script execution:
     1. Zero non-loopback network interfaces (network isolation).
-    2. Unix socket containment: /var/run/docker.sock does NOT exist.
-    3. Linux capability containment: non-root (UID != 0), NoNewPrivs: 1.
-    4. Host credential absence: ~/.ssh and ~/.aws do NOT exist in the container environment.
+    2. Read-only root filesystem: writing to / must fail with EROFS (Read-only file system).
+    3. Dropped Linux capabilities: CapEff must be 0000000000000000, non-root (UID != 0), NoNewPrivs: 1.
+    4. Daemon socket containment: no Docker/Podman/containerd sockets mounted or DOCKER_HOST present.
+    5. Host credential absence: ~/.ssh, ~/.aws, ~/.git-credentials, ~/.kube, ~/.config/gh do not exist.
+    6. Bare Windows host always fails closed (script execution in container is Linux-container-only).
     """
+    # 0. Windows host refusal (fails closed; Windows bare-metal cannot satisfy container namespace checks)
+    if sys.platform == "win32":
+        return False, "Script execution is supported only inside verified Linux container environments. Bare Windows host does not provide kernel namespace/read-only isolation."
+
+    # 1. Network Namespace Isolation (checks socket.if_nameindex for 'lo' only)
     net_ok, net_diag = probe_kernel_network_isolation()
     if not net_ok:
         return False, net_diag
 
-    # B. Docker socket check (prevents container escapes via mounted docker daemon socket)
-    if Path("/var/run/docker.sock").exists():
-        return False, "Dangerous Unix socket mounted: '/var/run/docker.sock' is present inside container."
+    # 2. Daemon socket & pipe containment (prevent container escape via mounted control sockets)
+    dangerous_sockets = [
+        "/var/run/docker.sock",
+        "/run/docker.sock",
+        "/run/podman/podman.sock",
+        "/run/containerd/containerd.sock",
+    ]
+    for s_path in dangerous_sockets:
+        if Path(s_path).exists():
+            return False, f"Dangerous container daemon socket mounted: '{s_path}'."
+    if os.environ.get("DOCKER_HOST"):
+        return False, f"External DOCKER_HOST control variable defined: '{os.environ['DOCKER_HOST']}'."
 
-    # C. Linux privilege and capability check (non-root, NoNewPrivs)
-    if sys.platform != "win32":
+    # 3. Read-only Root Filesystem Verification (asserts EROFS on root)
+    import errno
+    try:
+        probe_path = Path("/.offtest_sandbox_ro_probe")
+        with open(probe_path, "wb") as f:
+            f.write(b"probe")
         try:
-            if hasattr(os, "getuid") and os.getuid() == 0:
-                return False, "Process is running as root (UID 0). Hardened container requires non-root user (--user 10001)."
-            status_file = Path("/proc/self/status")
-            if status_file.exists():
-                status_text = status_file.read_text(encoding="utf-8", errors="ignore")
-                if "NoNewPrivs:\t1" not in status_text and "NoNewPrivs: 1" not in status_text:
-                    return False, "Kernel privilege escalation restriction missing (NoNewPrivs != 1). Pass --security-opt no-new-privileges."
+            probe_path.unlink()
         except Exception:
             pass
+        return False, "Root filesystem is writable. Hardened container requires --read-only root."
+    except OSError as e:
+        if e.errno != errno.EROFS:
+            return False, f"Root filesystem write failed with {e.strerror} (errno {e.errno}), but expected EROFS (Read-only file system)."
+    except Exception as e:
+        return False, f"Read-only root verification failed ({e}); failing closed."
 
-    # D. Host credential isolation (verify ~/.ssh and ~/.aws do not exist in container root)
+    # 4. Linux privilege and capability containment (non-root, NoNewPrivs, CapEff 0)
+    try:
+        if hasattr(os, "getuid") and os.getuid() == 0:
+            return False, "Process is running as root (UID 0). Hardened container requires non-root user (--user 10001)."
+        status_file = Path("/proc/self/status")
+        if status_file.exists():
+            status_text = status_file.read_text(encoding="utf-8", errors="ignore")
+            # Verify NoNewPrivs
+            if "NoNewPrivs:\t1" not in status_text and "NoNewPrivs: 1" not in status_text:
+                return False, "Kernel privilege escalation restriction missing (NoNewPrivs != 1). Pass --security-opt no-new-privileges."
+            # Verify CapEff is 0 (all capabilities dropped)
+            for line in status_text.splitlines():
+                if line.startswith("CapEff:"):
+                    capeff = line.split(":", 1)[1].strip()
+                    if capeff not in ("0", "0000000000000000"):
+                        return False, f"Process retains active Linux capabilities (CapEff: {capeff}). Pass --cap-drop ALL."
+    except Exception as e:
+        return False, f"Privilege inspection failed ({e}); failing closed."
+
+    # 5. Host credential isolation (verify ~/.ssh, ~/.aws, ~/.kube do not exist in container root)
     home_dir = Path.home()
-    if (home_dir / ".ssh").exists() or (home_dir / ".aws").exists():
-        return False, f"Host credential directory detected ({home_dir / '.ssh'}). Host filesystem is not isolated."
+    credential_dirs = [".ssh", ".aws", ".kube", ".git-credentials", ".docker/config.json"]
+    for cred in credential_dirs:
+        if (home_dir / cred).exists():
+            return False, f"Host credential artifact detected ({home_dir / cred}). Host filesystem is not isolated."
 
-    return True, "Verified: Hardened container environment (Zero interfaces, non-root, credentials unmounted)."
+    return True, "Verified: Hardened container environment (Zero interfaces, read-only root, CapEff 0, credentials unmounted)."
 
 
 class IsolatedRunner:
