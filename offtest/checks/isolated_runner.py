@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from offtest.core.config import OfflineConfig
 from offtest.intake.safety import redact_sensitive_data
+from offtest.checks.sandbox_interceptor import SANDBOX_BOOTSTRAP_CODE
 
 
 class IsolatedRunner:
@@ -16,6 +17,15 @@ class IsolatedRunner:
         self.timeout_sec = timeout_sec
         self.sandbox_home = Path(tempfile.gettempdir()) / f"offtest_sandbox_home_{os.getpid()}"
         self.sandbox_home.mkdir(parents=True, exist_ok=True)
+        self._setup_interceptor()
+
+    def _setup_interceptor(self):
+        """Installs the offline socket interceptor in the sandbox environment."""
+        sitecustomize_path = self.sandbox_home / "sitecustomize.py"
+        try:
+            sitecustomize_path.write_text(SANDBOX_BOOTSTRAP_CODE, encoding="utf-8")
+        except Exception:
+            pass
 
     def _kill_process_tree(self, proc: subprocess.Popen):
         """Kills the entire process tree to prevent orphan background worker leaks."""
@@ -66,6 +76,14 @@ class IsolatedRunner:
             env["APPDATA"] = str(self.sandbox_home / "AppData" / "Roaming")
             env["LOCALAPPDATA"] = str(self.sandbox_home / "AppData" / "Local")
         env["PYTHONPYCACHEPREFIX"] = str(self.sandbox_home / "pycache")
+
+        # Python air-gap sandbox socket interceptor bootstrap
+        curr_pythonpath = env.get("PYTHONPATH", "")
+        if curr_pythonpath:
+            env["PYTHONPATH"] = f"{str(self.sandbox_home)}{os.pathsep}{curr_pythonpath}"
+        else:
+            env["PYTHONPATH"] = str(self.sandbox_home)
+        env["PYTHONSTARTUP"] = str(self.sandbox_home / "sitecustomize.py")
 
         if env_extra:
             env.update(env_extra)

@@ -75,6 +75,51 @@ def test_network_isolation_and_telemetry_blocking():
     assert overrides["NEXT_TELEMETRY_DISABLED"] == "1"
 
 
+def test_raw_socket_egress_blocked_in_child_sandbox():
+    """
+    Verifies that raw TCP, UDP, and DNS outbound attempts are strictly blocked
+    inside the IsolatedRunner child environment, while loopback remains allowed.
+    """
+    import sys
+    runner = IsolatedRunner(Path("."), timeout_sec=5)
+
+    # 1. Raw TCP connection to remote IP must fail with PermissionError / non-zero code
+    tcp_cmd = [sys.executable, "-c", "import socket; s = socket.create_connection(('1.1.1.1', 53), timeout=2); s.close()"]
+    c_tcp, out_tcp, err_tcp, _ = runner.run(tcp_cmd)
+    assert c_tcp != 0
+    assert "AIR-GAP ENFORCEMENT" in err_tcp or "blocked" in err_tcp.lower()
+
+    # 2. Raw UDP transmission to remote IP must fail with PermissionError / non-zero code
+    udp_cmd = [sys.executable, "-c", "import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.sendto(b'data', ('8.8.8.8', 53)); s.close()"]
+    c_udp, out_udp, err_udp, _ = runner.run(udp_cmd)
+    assert c_udp != 0
+    assert "AIR-GAP ENFORCEMENT" in err_udp or "blocked" in err_udp.lower()
+
+    # 3. External DNS resolution must fail with socket.gaierror / non-zero code
+    dns_cmd = [sys.executable, "-c", "import socket; socket.getaddrinfo('example.com', 80)"]
+    c_dns, out_dns, err_dns, _ = runner.run(dns_cmd)
+    assert c_dns != 0
+    assert "AIR-GAP ENFORCEMENT" in err_dns or "blocked" in err_dns.lower()
+
+    # 4. Local loopback socket must succeed (required for local mock / test servers)
+    loopback_code = (
+        "import socket\n"
+        "s = socket.socket()\n"
+        "s.bind(('127.0.0.1', 0))\n"
+        "s.listen(1)\n"
+        "port = s.getsockname()[1]\n"
+        "c = socket.socket()\n"
+        "c.connect(('127.0.0.1', port))\n"
+        "c.close()\n"
+        "s.close()\n"
+        "print('LOOPBACK_SUCCESS')\n"
+    )
+    loop_cmd = [sys.executable, "-c", loopback_code]
+    c_loop, out_loop, err_loop, _ = runner.run(loop_cmd)
+    assert c_loop == 0
+    assert "LOOPBACK_SUCCESS" in out_loop
+
+
 def test_archive_path_traversal_leak_prevention(tmp_path: Path):
     """Verifies that malicious zip files attempting path traversal are rejected before extraction."""
     malicious_zip = tmp_path / "exploit.zip"

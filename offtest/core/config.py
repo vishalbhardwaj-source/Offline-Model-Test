@@ -31,6 +31,7 @@ class OfflineConfig:
         "PATHEXT",
         "PYTHONPATH",
         "PYTHONHOME",
+        "PYTHONSTARTUP",
     }
 
     # Default file exclusion patterns

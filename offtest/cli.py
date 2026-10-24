@@ -183,9 +183,13 @@ def verify_offline():
     dns_probe = [sys.executable, "-c", "import socket; socket.getaddrinfo('example.com', 80)"]
     c3, _, _, d3 = runner.run(dns_probe)
 
+    # 4. Raw UDP Datagram Probe (direct IP egress attempt)
+    udp_probe = [sys.executable, "-c", "import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.sendto(b'leak', ('8.8.8.8', 53)); s.close()"]
+    c4, _, _, d4 = runner.run(udp_probe)
+
     click.echo(f"  - HTTP Proxy Sinkhole Probe: {'BLOCKED / SAFE' if c1 != 0 else 'UNPROTECTED'} ({d1}s)")
     if c2 != 0:
-        click.echo(f"  - Raw TCP Socket Probe: BLOCKED / SAFE (Kernel/Network isolation active) ({d2}s)")
+        click.echo(f"  - Raw TCP Socket Probe: BLOCKED / SAFE (Offline interceptor / network boundary active) ({d2}s)")
     else:
         click.echo(f"  - Raw TCP Socket Probe: [!] WARNING: Connected to raw socket! (Host network interface is open)")
 
@@ -194,10 +198,15 @@ def verify_offline():
     else:
         click.echo(f"  - Direct DNS Resolution Probe: [!] NOTICE: DNS resolved via host resolver.")
 
-    if c1 != 0 and c2 != 0 and c3 != 0:
-        click.echo("[+] Full air-gap verified: All HTTP, TCP, and DNS outbound attempts blocked.")
+    if c4 != 0:
+        click.echo(f"  - Raw UDP Datagram Egress: BLOCKED / SAFE ({d4}s)")
+    else:
+        click.echo(f"  - Raw UDP Datagram Egress: [!] WARNING: UDP egress allowed.")
+
+    if c1 != 0 and c2 != 0 and c3 != 0 and c4 != 0:
+        click.echo("[+] Full air-gap verified: All HTTP, TCP, UDP, and DNS outbound attempts blocked.")
     elif c1 != 0:
-        click.echo("[i] Standard isolation active (Env-var sinkholing). Note: Raw socket access is permitted on host unless OS firewall/network namespace is active.")
+        click.echo("[i] Partial isolation active. Some raw socket egress is permitted on host.")
     else:
         click.echo("[!] WARNING: Network isolation is not functioning.")
 

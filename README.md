@@ -8,7 +8,11 @@ Designed directly against the **[Master Blueprint](file:///c:/Users/visha/Downlo
 
 ## Key Capabilities
 
-- **Strict Offline Operation:** Analyzes repositories with network access blocked. Disables network resolution in package runners (`PIP_NO_INDEX=1`, `npm_config_offline=true`, null proxy).
+- **Strict Offline Operation & Air-Gap Enforcement:**
+  - Multi-layer defense: Environment proxy sinkholes (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `PIP_NO_INDEX=1`, `npm_config_offline=true`).
+  - Child-process Python socket interceptor (`sitecustomize.py`) blocking raw TCP (`connect`), UDP (`sendto`), and DNS (`getaddrinfo`) calls to non-loopback addresses while allowing safe local mock servers (`127.0.0.1`, `localhost`).
+  - Host secret shielding: Redirects `USERPROFILE`, `HOME`, and `APPDATA` to an ephemeral sandbox to protect host credentials (`~/.ssh`, `~/.aws`).
+  - Process tree kill on timeout (`taskkill /F /T` on Windows, `killpg` on Unix) to prevent orphaned background processes.
 - **Offline Software Bill of Materials (SBOM):** Automatically extracts and catalogs all dependencies from `package-lock.json`, `package.json`, `poetry.lock`, `Cargo.lock`, and `requirements.txt` into a CycloneDX 1.5-compatible schema offline.
 - **RBAC Permission Matrix & OpenAPI 3.1 Spec Generator:** Inters role-based access control policies (`Anonymous`, `Authenticated`, `Admin`) and automatically reconstructs an offline OpenAPI 3.1 specification from route signatures.
 - **Constrained Branch Test Generator:** Parses AST conditional branches (comparisons, null checks, boolean expressions) and synthesizes syntax-validated, self-healing unit test suites.
@@ -104,6 +108,7 @@ python -m offtest verify-offline
 │   │   └── test_generator.py   # Constrained branch predicate analysis & test synthesizer
 │   ├── checks/
 │   │   ├── isolated_runner.py  # Subprocess isolation with offline env variables & timeouts
+│   │   ├── sandbox_interceptor.py # Socket/DNS interceptor blocking outbound TCP/UDP
 │   │   ├── static_checks.py    # AST syntax, security flaws (eval, os.system, debug), dependency pins
 │   │   ├── test_adapter.py     # Test discovery & execution with explicit script approval guard
 │   │   ├── flakiness.py        # Multi-run bisection & flakiness quarantine runner
