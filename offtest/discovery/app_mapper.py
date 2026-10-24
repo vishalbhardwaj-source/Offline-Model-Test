@@ -98,6 +98,7 @@ class ApplicationMapper:
                                     method=method,
                                     file_path=f.path,
                                     line_number=line_idx,
+                                    file_sha256=getattr(f, "sha256", None),
                                     status=EvidenceStatus.OBSERVED,
                                     notes="FastAPI/Flask API route detected",
                                 )
@@ -109,6 +110,7 @@ class ApplicationMapper:
                                     method=method,
                                     file_path=f.path,
                                     line_number=line_idx,
+                                    file_sha256=getattr(f, "sha256", None),
                                     status=EvidenceStatus.OBSERVED,
                                     notes="FastAPI/Flask web route detected",
                                 )
@@ -124,6 +126,7 @@ class ApplicationMapper:
                                 method="ANY",
                                 file_path=f.path,
                                 line_number=line_idx,
+                                file_sha256=getattr(f, "sha256", None),
                                 status=EvidenceStatus.OBSERVED,
                                 notes="Django URL route detected",
                             )
@@ -144,6 +147,7 @@ class ApplicationMapper:
                                     method=method,
                                     file_path=f.path,
                                     line_number=line_idx,
+                                    file_sha256=getattr(f, "sha256", None),
                                     status=EvidenceStatus.OBSERVED,
                                     notes="Express / Node API endpoint detected",
                                 )
@@ -155,6 +159,7 @@ class ApplicationMapper:
                                     method=method,
                                     file_path=f.path,
                                     line_number=line_idx,
+                                    file_sha256=getattr(f, "sha256", None),
                                     status=EvidenceStatus.OBSERVED,
                                     notes="Express / Node web route detected",
                                 )
@@ -176,6 +181,7 @@ class ApplicationMapper:
                             method="GET",
                             file_path=f.path,
                             line_number=1,
+                            file_sha256=getattr(f, "sha256", None),
                             status=EvidenceStatus.OBSERVED,
                             notes="Static HTML page / screen",
                         )
@@ -200,6 +206,7 @@ class ApplicationMapper:
                                 flag_key=flag_name,
                                 file_path=f.path,
                                 line_number=line_idx,
+                                file_sha256=getattr(f, "sha256", None),
                                 status=EvidenceStatus.OBSERVED,
                                 linked_tests=linked,
                             )
@@ -264,12 +271,14 @@ class ApplicationMapper:
             workflows.append(
                 WorkflowRecord(
                     name="User Authentication & Session Management",
-                    description="User login, registration, and credential validation workflow",
+                    description="User login, registration, and credential validation workflow (inferred advisory journey)",
                     entry_point=auth_routes[0],
                     related_files=[r.file_path for r in routes if r.path.lower() in auth_routes] + [a.file_path for a in apis if a.endpoint.lower() in auth_routes],
                     linked_tests=linked_auth_tests,
                     status=EvidenceStatus.INFERRED,
                     steps=["Submit credentials", "Validate password/token", "Establish session"],
+                    is_advisory=True,
+                    symbolic_edges_verified=False,
                 )
             )
 
@@ -283,12 +292,14 @@ class ApplicationMapper:
             workflows.append(
                 WorkflowRecord(
                     name="Checkout & Order Processing",
-                    description="User cart management, order submission, and payment flow",
+                    description="User cart management, order submission, and payment flow (inferred advisory journey)",
                     entry_point=checkout_routes[0],
                     related_files=[r.file_path for r in routes if r.path.lower() in checkout_routes],
                     linked_tests=linked_cart_tests,
                     status=EvidenceStatus.INFERRED,
                     steps=["View cart", "Initiate checkout", "Process payment", "Confirm order"],
+                    is_advisory=True,
+                    symbolic_edges_verified=False,
                 )
             )
 

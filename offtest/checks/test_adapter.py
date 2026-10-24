@@ -53,10 +53,8 @@ class TestAdapter:
                 )
             else:
                 # Run with offline isolated runner (shield repo from .pytest_cache and __pycache__)
-                sandbox_pytest_cache = str(self.runner.sandbox_home / ".pytest_cache").replace("\\", "/")
                 pytest_cmd = [
-                    sys.executable, "-m", "pytest", "-v",
-                    "-o", f"cache_dir={sandbox_pytest_cache}",
+                    sys.executable, "-B", "-m", "pytest", "-v",
                     "-p", "no:cacheprovider",
                 ]
                 code, out, err, dur = self.runner.run(pytest_cmd)

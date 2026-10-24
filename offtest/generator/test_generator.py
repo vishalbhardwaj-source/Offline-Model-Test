@@ -8,6 +8,14 @@ from offtest.core.models import (
     GeneratedTestCase,
     GeneratedTestSuite,
 )
+from offtest.generator.heal_gate import (
+    GateResult,
+    HealIterationRecord,
+    HealSessionResult,
+    check_patch,
+    run_healing_loop,
+)
+from offtest.generator.mutation import evaluate_test_against_mutants
 
 
 class BranchConditionVisitor(ast.NodeVisitor):
@@ -172,11 +180,30 @@ class ConstrainedTestGenerator:
             suite_file.write_text(content, encoding="utf-8")
             suite_path_str = str(suite_file)
 
+        compile_rate = 100.0 if test_cases else None
+
         return GeneratedTestSuite(
             total_generated=len(test_cases),
             verified_count=len(test_cases),
             repaired_count=0,
+            healed_count=0,
             target_branches_covered=len(test_cases),
             test_cases=test_cases,
             suite_file_path=suite_path_str,
+            compile_rate_pct=compile_rate,
+            mutation_score_pct=None,
         )
+
+    def validate_heal_patch(
+        self,
+        before: str,
+        after: str,
+        target_symbol: str,
+        protected_asserts: frozenset[str] = frozenset(),
+    ) -> GateResult:
+        """
+        Runs deterministic AST gating on a candidate test patch.
+        Rejects patches that drop assertions, introduce tautologies, swallow exceptions,
+        add skip/xfail, or mock out the unit under test.
+        """
+        return check_patch(before, after, target_symbol, protected_asserts)

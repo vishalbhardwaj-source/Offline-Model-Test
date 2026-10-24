@@ -38,8 +38,9 @@ class RBACAndSchemaExtractor:
         admin_pattern = re.compile(r"""\b(?:is_admin|admin_required|require_admin|@admin)\b""", re.IGNORECASE)
         js_auth_middleware_pattern = re.compile(r"""(?:authMiddleware|passport\.authenticate|verifyToken|checkRole\(['"](\w+)['"]\))""")
 
-        # Cache file lines for context lookups
+        # Cache file lines and hashes for context lookups
         file_lines: Dict[str, List[str]] = {}
+        file_hashes: Dict[str, str] = {f.path: f.sha256 for f in self.files if getattr(f, "sha256", None)}
         for f in self.files:
             if f.disposition.value == "analyzed" and f.language in ["Python", "JavaScript", "TypeScript"]:
                 try:
@@ -67,33 +68,65 @@ class RBACAndSchemaExtractor:
             lines = file_lines.get(file_path, [])
             auth_required = False
             roles: List[str] = []
+            guard_syntaxes: List[str] = []
 
-            # Check surrounding lines (e.g. 5 lines above handler definition)
-            start_look = max(0, line_num - 6)
-            end_look = min(len(lines), line_num + 3)
-            context_block = "\n".join(lines[start_look:end_look])
+            # Identify contiguous decorator and definition block for this handler without bleeding into adjacent routes
+            idx = max(0, min(line_num - 1, len(lines) - 1)) if lines else 0
+            start_idx = idx
+            route_dec_re = re.compile(r"@\w+\.(?:route|get|post|put|delete|patch)\b")
+            while start_idx > 0:
+                prev_line = lines[start_idx - 1].strip()
+                if prev_line.startswith("@") and not route_dec_re.search(prev_line):
+                    start_idx -= 1
+                elif route_dec_re.search(prev_line) and lines[idx].strip().startswith("def"):
+                    # line_num was pointing to def, include preceding route decorator
+                    start_idx -= 1
+                    break
+                else:
+                    break
 
-            if login_req_pattern.search(context_block):
+            end_idx = idx
+            while end_idx < len(lines) - 1:
+                next_line = lines[end_idx + 1].strip()
+                if next_line.startswith("@"):
+                    if route_dec_re.search(next_line):
+                        break
+                    end_idx += 1
+                elif next_line.startswith("def ") or next_line.startswith("async def "):
+                    end_idx += 1
+                    break
+                else:
+                    break
+
+            context_block = "\n".join(lines[start_idx : end_idx + 1])
+
+            login_m = login_req_pattern.search(context_block)
+            if login_m:
                 auth_required = True
                 roles.append("Authenticated")
+                guard_syntaxes.append(login_m.group(0).strip())
 
             role_m = role_req_pattern.search(context_block)
             if role_m:
                 auth_required = True
                 explicit_role = role_m.group(1).capitalize()
                 roles.append(explicit_role)
+                guard_syntaxes.append(role_m.group(0).strip())
                 if explicit_role not in role_to_endpoints:
                     role_to_endpoints[explicit_role] = []
 
-            if admin_pattern.search(context_block) or "admin" in endpoint.lower():
+            admin_m = admin_pattern.search(context_block)
+            if admin_m:
                 auth_required = True
                 if "Admin" not in roles:
                     roles.append("Admin")
+                guard_syntaxes.append(admin_m.group(0).strip())
 
             js_auth_m = js_auth_middleware_pattern.search(context_block)
             if js_auth_m:
                 auth_required = True
                 roles.append("Authenticated")
+                guard_syntaxes.append(js_auth_m.group(0).strip())
                 if js_auth_m.group(1):
                     custom_role = js_auth_m.group(1).capitalize()
                     roles.append(custom_role)
@@ -102,6 +135,7 @@ class RBACAndSchemaExtractor:
 
             # Public vs Unverified guard evaluation
             status = EvidenceStatus.OBSERVED
+            derived_guard_str = "; ".join(guard_syntaxes) if guard_syntaxes else None
             if auth_required:
                 for r in roles:
                     if f"{method} {endpoint}" not in role_to_endpoints.get(r, []):
@@ -116,6 +150,7 @@ class RBACAndSchemaExtractor:
                 if is_explicit_public:
                     roles = ["Anonymous"]
                     status = EvidenceStatus.INFERRED
+                    derived_guard_str = "inferred_public_endpoint"
                     role_to_endpoints.setdefault("Anonymous", []).append(f"{method} {endpoint}")
                 else:
                     # Do not assume unguarded routes are public: global middleware or CBVs may apply
@@ -131,6 +166,8 @@ class RBACAndSchemaExtractor:
                     required_roles=roles,
                     file_path=file_path,
                     line_number=line_num,
+                    file_sha256=file_hashes.get(file_path),
+                    derived_guard_syntax=derived_guard_str,
                     status=status,
                 )
             )

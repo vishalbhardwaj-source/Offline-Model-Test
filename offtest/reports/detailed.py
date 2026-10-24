@@ -226,7 +226,15 @@ class DetailedReportGenerator:
                 branch_tag = f" | Branch: `{f.branch}`" if f.branch else ""
                 lines.append(f"\n### [{f.id}] {f.title}")
                 lines.append(f"- **Severity:** **{f.severity.value}** | **Confidence:** **{f.confidence.value}** | **Status:** **{f.status.value}**{branch_tag}")
+                if f.cwe_id:
+                    lines.append(f"- **Taxonomy:** `{f.cwe_id}` ({f.cwe_name})")
+                if f.cvss_score_estimate is not None:
+                    lines.append(f"- **Estimated CVSS Base:** `{f.cvss_score_estimate}` ({f.cvss_vector_estimate or 'N/A'}) _[Heuristic Estimate]_")
                 lines.append(f"- **Location:** {loc}")
+                if f.file_sha256:
+                    lines.append(f"- **Source Anchor Content Hash:** `{f.file_sha256[:16]}...` (verified)")
+                if f.oracle_origin:
+                    lines.append(f"- **Oracle Origin:** `{f.oracle_origin}`")
                 lines.append(f"- **Tool:** `{f.check_tool or 'offtest'}`")
                 lines.append(f"- **User / System Impact:** {f.impact}")
                 lines.append(f"- **Evidence / Reproduction:**\n```\n{f.evidence}\n```")

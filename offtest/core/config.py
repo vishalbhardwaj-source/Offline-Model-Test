@@ -32,6 +32,8 @@ class OfflineConfig:
         "PYTHONPATH",
         "PYTHONHOME",
         "PYTHONSTARTUP",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTHONPYCACHEPREFIX",
     }
 
     # Default file exclusion patterns

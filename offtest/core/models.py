@@ -15,6 +15,9 @@ class Severity(str, Enum):
 
 
 class Confidence(str, Enum):
+    CONFIRMED = "Confirmed"
+    LIKELY = "Likely"
+    POSSIBLE = "Possible"
     HIGH = "High"
     MEDIUM = "Medium"
     LOW = "Low"
@@ -59,6 +62,7 @@ class RouteRecord(BaseModel):
     handler: Optional[str] = None
     file_path: str
     line_number: Optional[int] = None
+    file_sha256: Optional[str] = None
     status: EvidenceStatus = EvidenceStatus.OBSERVED
     notes: Optional[str] = None
 
@@ -69,6 +73,7 @@ class APIRecord(BaseModel):
     handler: Optional[str] = None
     file_path: str
     line_number: Optional[int] = None
+    file_sha256: Optional[str] = None
     status: EvidenceStatus = EvidenceStatus.OBSERVED
     auth_required: Optional[bool] = None
     notes: Optional[str] = None
@@ -79,6 +84,7 @@ class FeatureRecord(BaseModel):
     flag_key: Optional[str] = None
     file_path: str
     line_number: Optional[int] = None
+    file_sha256: Optional[str] = None
     status: EvidenceStatus = EvidenceStatus.OBSERVED
     linked_tests: List[str] = Field(default_factory=list)
     description: Optional[str] = None
@@ -92,6 +98,8 @@ class WorkflowRecord(BaseModel):
     linked_tests: List[str] = Field(default_factory=list)
     status: EvidenceStatus = EvidenceStatus.INFERRED
     steps: List[str] = Field(default_factory=list)
+    is_advisory: bool = True
+    symbolic_edges_verified: bool = False
 
 
 class IntegrationRecord(BaseModel):
@@ -147,10 +155,20 @@ class Finding(BaseModel):
     branch: Optional[str] = None
     file_path: Optional[str] = None
     line_number: Optional[int] = None
+    file_sha256: Optional[str] = None
     impact: str
     evidence: str
     suggested_action: str
     check_tool: Optional[str] = None
+    cwe_id: Optional[str] = None
+    cwe_name: Optional[str] = None
+    cvss_score_estimate: Optional[float] = None
+    cvss_vector_estimate: Optional[str] = None
+    cvss_is_estimate: bool = True
+    environmental_context_assumed: Optional[str] = None
+    oracle_origin: Optional[str] = None
+    reproduced: bool = True
+    sandbox_artifact: bool = False
 
 
 class CoverageDimension(BaseModel):
@@ -222,6 +240,8 @@ class RBACPermissionRecord(BaseModel):
     required_roles: List[str] = Field(default_factory=list)
     file_path: str
     line_number: Optional[int] = None
+    file_sha256: Optional[str] = None
+    derived_guard_syntax: Optional[str] = None
     status: EvidenceStatus = EvidenceStatus.OBSERVED
 
 
@@ -277,16 +297,23 @@ class GeneratedTestCase(BaseModel):
     test_type: str  # boundary, null_check, negative_auth, type_check
     description: str
     test_code: str
-    validation_status: str = "verified"  # verified, repaired, failed_syntax
+    validation_status: str = "synthesized, unverified"  # synthesized, unverified; synthesized, healed; failed_syntax
+    heal_iterations: int = 0
+    heal_diff: Optional[str] = None
+    oracle_type: str = "predicate_reachability"
 
 
 class GeneratedTestSuite(BaseModel):
     total_generated: int = 0
     verified_count: int = 0
     repaired_count: int = 0
+    healed_count: int = 0
     target_branches_covered: int = 0
     test_cases: List[GeneratedTestCase] = Field(default_factory=list)
     suite_file_path: Optional[str] = None
+    heal_diffs: List[str] = Field(default_factory=list)
+    mutation_score_pct: Optional[float] = None
+    compile_rate_pct: Optional[float] = None
 
 
 class RunContext(BaseModel):

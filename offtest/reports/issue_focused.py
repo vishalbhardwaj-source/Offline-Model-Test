@@ -57,6 +57,10 @@ class IssueFocusedReportGenerator:
                 branch_str = f" | Branch: `{f.branch}`" if f.branch else ""
                 lines.append(f"\n### [{f.id}] {f.title}")
                 lines.append(f"- **Severity:** `{f.severity.value}` | **Confidence:** `{f.confidence.value}` | **Status:** `{f.status.value}`{branch_str}")
+                if f.cwe_id:
+                    lines.append(f"- **Taxonomy:** `{f.cwe_id}` ({f.cwe_name})")
+                if f.cvss_score_estimate is not None:
+                    lines.append(f"- **Estimated CVSS Base:** `{f.cvss_score_estimate}` _[Heuristic Estimate]_")
                 lines.append(f"- **Location:** {loc}")
                 lines.append(f"- **Impact:** {f.impact}")
                 lines.append(f"- **Evidence / Reproduction:**\n```\n{f.evidence}\n```")

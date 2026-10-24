@@ -1,7 +1,7 @@
 import ast
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 from offtest.core.models import (
     Confidence,
     EvidenceStatus,
@@ -9,13 +9,74 @@ from offtest.core.models import (
     Finding,
     Severity,
 )
+from offtest.discovery.anchor_verifier import verify_source_anchor
 from offtest.intake.safety import scan_for_secrets
+
+# Curated deterministic rule-to-CWE mapping table with estimated CVSS baselines
+RULE_CWE_CVSS_MAP: Dict[str, Tuple[str, str, float, str]] = {
+    "Documented AWS Example Key": ("CWE-798", "Use of Hard-coded Credentials", 0.0, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N"),
+    "AWS Access Key ID": ("CWE-798", "Use of Hard-coded Credentials", 8.2, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:N"),
+    "Hardcoded Secret": ("CWE-798", "Use of Hard-coded Credentials", 7.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"),
+    "High-Entropy Secret": ("CWE-798", "Use of Hard-coded Credentials", 7.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"),
+    "Insecure Authentication Endpoint": ("CWE-598", "Use of GET Request Method With Sensitive Query Strings", 6.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N"),
+    "eval": ("CWE-95", "Improper Neutralization of Directives in Dynamically Evaluated Code ('Eval Injection')", 9.8, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
+    "os.system": ("CWE-78", "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')", 9.8, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
+    "subprocess": ("CWE-78", "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')", 8.8, "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"),
+    "DEBUG = True": ("CWE-489", "Active Debug Code", 5.3, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N"),
+    "Unpinned Python Dependency": ("CWE-1104", "Use of Unmaintained Third Party Components", 3.7, "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N"),
+    "Floating Node.js Dependency": ("CWE-1104", "Use of Unmaintained Third Party Components", 3.7, "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N"),
+    "Python Syntax Error": ("CWE-754", "Improper Check for Unusual or Exceptional Conditions", 5.3, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"),
+    "AST Parsing Error": ("CWE-754", "Improper Check for Unusual or Exceptional Conditions", 5.3, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"),
+}
+
+SANDBOX_ARTIFACT_PATTERNS = [
+    re.compile(r"ConnectionRefusedError", re.IGNORECASE),
+    re.compile(r"OfflineNetworkBlockedError", re.IGNORECASE),
+    re.compile(r"socket\.gaierror", re.IGNORECASE),
+    re.compile(r"getaddrinfo failed", re.IGNORECASE),
+    re.compile(r"URLError", re.IGNORECASE),
+    re.compile(r"NewConnectionError", re.IGNORECASE),
+    re.compile(r"MaxRetryError", re.IGNORECASE),
+    re.compile(r"PermissionError.*(?:APPDATA|USERPROFILE|\.offtest_sandbox)", re.IGNORECASE),
+    re.compile(r"Read-only file system", re.IGNORECASE),
+    re.compile(r"ModuleNotFoundError.*(?:pytest|sitecustomize)", re.IGNORECASE),
+]
+
+
+def classify_defect_confidence(
+    evidence_text: str,
+    oracle_origin: str = "static_rule",
+    reproduced: bool = True,
+    is_sandbox_artifact: Optional[bool] = None,
+) -> Tuple[Confidence, bool]:
+    """
+    Evaluates defect confidence strictly against sandbox artifacts and oracle origin.
+    - If signature matches sandbox artifacts, demotes from Confirmed.
+    - If oracle is model_synthesized, cannot be Confirmed without symbolic/human oracle.
+    - Only reproducible findings from symbolic/human/static oracles receive Confirmed status.
+    """
+    matched_sandbox = is_sandbox_artifact or any(p.search(evidence_text) for p in SANDBOX_ARTIFACT_PATTERNS)
+    if matched_sandbox:
+        return Confidence.POSSIBLE, True
+    if oracle_origin == "model_synthesized":
+        return Confidence.LIKELY if reproduced else Confidence.POSSIBLE, False
+    if reproduced:
+        return Confidence.CONFIRMED, False
+    return Confidence.LIKELY, False
+
+
+def resolve_cwe_cvss(title: str) -> Tuple[Optional[str], Optional[str], Optional[float], Optional[str]]:
+    for key, (cwe_id, cwe_name, cvss_score, cvss_vector) in RULE_CWE_CVSS_MAP.items():
+        if key.lower() in title.lower():
+            return cwe_id, cwe_name, cvss_score, cvss_vector
+    return None, None, None, None
 
 
 class OfflineStaticChecker:
     def __init__(self, repo_dir: Path, files: List[FileRecord]):
         self.repo_dir = repo_dir
         self.files = files
+        self.file_hashes: Dict[str, str] = {f.path: f.sha256 for f in files if getattr(f, "sha256", None)}
 
     def run_all(self, branch: Optional[str] = None) -> List[Finding]:
         findings: List[Finding] = []
@@ -33,6 +94,8 @@ class OfflineStaticChecker:
                 content = full_path.read_text(encoding="utf-8", errors="ignore")
             except Exception:
                 continue
+
+            f_sha256 = self.file_hashes.get(f.path)
 
             # 1. Hardcoded secrets check
             secret_hits = scan_for_secrets(content, f.path)
@@ -55,20 +118,34 @@ class OfflineStaticChecker:
                     impact = "High risk of credential exposure if repository is shared or breached."
                     suggested_action = "Rotate credentials immediately and move secrets to local environment variables or an offline vault."
 
+                evidence_str = f"Line {line_no} [detector: {label}, fingerprint: {fingerprint}]: {preview}"
+                conf, is_sandbox = classify_defect_confidence(evidence_str, oracle_origin="static_rule", reproduced=True)
+                cwe_id, cwe_name, cvss_score, cvss_vector = resolve_cwe_cvss(title)
+
                 findings.append(
                     Finding(
                         id=f"FIND-{counter:04d}",
                         title=title,
                         severity=severity,
-                        confidence=Confidence.HIGH,
+                        confidence=conf,
                         status=EvidenceStatus.OBSERVED,
                         branch=branch,
                         file_path=f.path,
                         line_number=line_no,
+                        file_sha256=f_sha256,
                         impact=impact,
-                        evidence=f"Line {line_no} [detector: {label}, fingerprint: {fingerprint}]: {preview}",
+                        evidence=evidence_str,
                         suggested_action=suggested_action,
                         check_tool="offtest-secret-scanner",
+                        cwe_id=cwe_id,
+                        cwe_name=cwe_name,
+                        cvss_score_estimate=cvss_score,
+                        cvss_vector_estimate=cvss_vector,
+                        cvss_is_estimate=True,
+                        environmental_context_assumed="Assumes standard exposure; static scan cannot evaluate live environmental firewall/auth controls.",
+                        oracle_origin="static_rule",
+                        reproduced=True,
+                        sandbox_artifact=is_sandbox,
                     )
                 )
                 counter += 1
@@ -101,39 +178,60 @@ class OfflineStaticChecker:
         return findings
 
     def _check_python_syntax(self, rel_path: str, content: str, counter: int, branch: Optional[str]):
+        f_sha = self.file_hashes.get(rel_path)
         try:
             tree = ast.parse(content, filename=rel_path)
             return None, tree
         except SyntaxError as se:
+            cwe_id, cwe_name, cvss_score, cvss_vector = resolve_cwe_cvss("Python Syntax Error")
             finding = Finding(
                 id=f"FIND-{counter:04d}",
                 title=f"Python Syntax Error: {se.msg}",
                 severity=Severity.HIGH,
-                confidence=Confidence.HIGH,
+                confidence=Confidence.CONFIRMED,
                 status=EvidenceStatus.OBSERVED,
                 branch=branch,
                 file_path=rel_path,
                 line_number=se.lineno,
+                file_sha256=f_sha,
                 impact="Code fails to compile or execute in Python runtime.",
                 evidence=f"SyntaxError on line {se.lineno}: {se.text.strip() if se.text else se.msg}",
                 suggested_action="Fix syntax error to ensure valid Python execution.",
                 check_tool="python-ast-validator",
+                cwe_id=cwe_id,
+                cwe_name=cwe_name,
+                cvss_score_estimate=cvss_score,
+                cvss_vector_estimate=cvss_vector,
+                cvss_is_estimate=True,
+                oracle_origin="static_rule",
+                reproduced=True,
+                sandbox_artifact=False,
             )
             return finding, None
         except (RecursionError, MemoryError) as re:
+            cwe_id, cwe_name, cvss_score, cvss_vector = resolve_cwe_cvss("AST Parsing Error")
             finding = Finding(
                 id=f"FIND-{counter:04d}",
                 title="AST Parsing Error: Pathological nesting or resource limit exceeded",
                 severity=Severity.HIGH,
-                confidence=Confidence.HIGH,
+                confidence=Confidence.CONFIRMED,
                 status=EvidenceStatus.OBSERVED,
                 branch=branch,
                 file_path=rel_path,
                 line_number=1,
+                file_sha256=f_sha,
                 impact="File contains pathological nesting or excessive token complexity that triggers parser memory/recursion limits.",
                 evidence=f"Parser resource exhaustion: {type(re).__name__}",
                 suggested_action="Refactor code structure to reduce excessive expression or block nesting.",
                 check_tool="python-ast-validator",
+                cwe_id=cwe_id,
+                cwe_name=cwe_name,
+                cvss_score_estimate=cvss_score,
+                cvss_vector_estimate=cvss_vector,
+                cvss_is_estimate=True,
+                oracle_origin="static_rule",
+                reproduced=True,
+                sandbox_artifact=False,
             )
             return finding, None
 
@@ -264,7 +362,9 @@ class OfflineStaticChecker:
         visitor = SecurityVisitor()
         visitor.visit(tree)
 
+        f_sha = self.file_hashes.get(rel_path)
         for line_no, title, sev, conf, impact, ev, action in visitor.issues:
+            cwe_id, cwe_name, cvss_score, cvss_vector = resolve_cwe_cvss(title)
             findings.append(
                 Finding(
                     id=f"FIND-{c:04d}",
@@ -275,10 +375,20 @@ class OfflineStaticChecker:
                     branch=branch,
                     file_path=rel_path,
                     line_number=line_no,
+                    file_sha256=f_sha,
                     impact=impact,
                     evidence=ev,
                     suggested_action=action,
                     check_tool="python-ast-security-checker",
+                    cwe_id=cwe_id,
+                    cwe_name=cwe_name,
+                    cvss_score_estimate=cvss_score,
+                    cvss_vector_estimate=cvss_vector,
+                    cvss_is_estimate=True,
+                    environmental_context_assumed="Assumes standard network exposure; offline static analysis cannot determine local firewall/VPC boundary or runtime auth middleware without environmental configuration.",
+                    oracle_origin="symbolic_invariant",
+                    reproduced=True,
+                    sandbox_artifact=False,
                 )
             )
             c += 1
@@ -288,6 +398,7 @@ class OfflineStaticChecker:
     def _check_requirements(self, rel_path: str, content: str, counter_start: int, branch: Optional[str]) -> List[Finding]:
         findings = []
         c = counter_start
+        f_sha = self.file_hashes.get(rel_path)
         lines = content.splitlines()
         for idx, line in enumerate(lines, start=1):
             stripped = line.strip()
@@ -295,20 +406,30 @@ class OfflineStaticChecker:
                 continue
             # Check for unpinned dependencies (e.g. 'requests' or 'flask>=2.0' without exact pin '==')
             if "==" not in stripped and "@" not in stripped and not stripped.startswith("-"):
+                cwe_id, cwe_name, cvss_score, cvss_vector = resolve_cwe_cvss("Unpinned Python Dependency")
                 findings.append(
                     Finding(
                         id=f"FIND-{c:04d}",
                         title="Unpinned Python Dependency",
                         severity=Severity.LOW,
-                        confidence=Confidence.HIGH,
+                        confidence=Confidence.CONFIRMED,
                         status=EvidenceStatus.OBSERVED,
                         branch=branch,
                         file_path=rel_path,
                         line_number=idx,
+                        file_sha256=f_sha,
                         impact="Unpinned dependencies can introduce breaking changes or untracked upstream supply-chain differences when running offline.",
                         evidence=f"Line {idx}: {stripped}",
                         suggested_action=f"Pin exact version in requirements.txt (e.g. {stripped.split('>')[0].split('<')[0]}==x.y.z) for deterministic offline builds.",
                         check_tool="dependency-pin-checker",
+                        cwe_id=cwe_id,
+                        cwe_name=cwe_name,
+                        cvss_score_estimate=cvss_score,
+                        cvss_vector_estimate=cvss_vector,
+                        cvss_is_estimate=True,
+                        oracle_origin="static_rule",
+                        reproduced=True,
+                        sandbox_artifact=False,
                     )
                 )
                 c += 1
@@ -318,25 +439,36 @@ class OfflineStaticChecker:
         import json
         findings = []
         c = counter_start
+        f_sha = self.file_hashes.get(rel_path)
         try:
             data = json.loads(content)
             deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
             for pkg, ver in deps.items():
                 if ver.startswith("^") or ver.startswith("~") or ver == "*" or ver == "latest":
+                    cwe_id, cwe_name, cvss_score, cvss_vector = resolve_cwe_cvss("Floating Node.js Dependency")
                     findings.append(
                         Finding(
                             id=f"FIND-{c:04d}",
                             title=f"Floating Node.js Dependency: '{pkg}'",
                             severity=Severity.LOW,
-                            confidence=Confidence.HIGH,
+                            confidence=Confidence.CONFIRMED,
                             status=EvidenceStatus.OBSERVED,
                             branch=branch,
                             file_path=rel_path,
                             line_number=None,
+                            file_sha256=f_sha,
                             impact="Floating dependency range requires network resolution unless exact package-lock.json is committed.",
                             evidence=f"\"{pkg}\": \"{ver}\"",
                             suggested_action=f"Pin exact version or ensure package-lock.json / offline cache is provided.",
                             check_tool="npm-package-pin-checker",
+                            cwe_id=cwe_id,
+                            cwe_name=cwe_name,
+                            cvss_score_estimate=cvss_score,
+                            cvss_vector_estimate=cvss_vector,
+                            cvss_is_estimate=True,
+                            oracle_origin="static_rule",
+                            reproduced=True,
+                            sandbox_artifact=False,
                         )
                     )
                     c += 1

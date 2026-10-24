@@ -49,12 +49,14 @@ def compute_secret_fingerprint(secret: str, salt: Optional[Union[str, bytes]] = 
 
 def redact_sensitive_data(text: str) -> str:
     """
-    Redacts discovered credentials, tokens, and passwords in text before writing to reports or logs.
+    Redacts discovered credentials, tokens, passwords, and high-entropy strings
+    in text before writing to reports, logs, or passing to/from model layers.
     """
     if not text:
         return ""
     
     redacted = text
+    # 1. Regex pattern scrubbing
     for pattern in OfflineConfig.SENSITIVE_PATTERNS:
         def _replace_match(match: re.Match) -> str:
             full = match.group(0)
@@ -64,8 +66,63 @@ def redact_sensitive_data(text: str) -> str:
             return "[REDACTED_SECRET]"
             
         redacted = pattern.sub(_replace_match, redacted)
+
+    # 2. Shannon entropy scrubbing for high-entropy tokens
+    candidate_token_pattern = re.compile(r"""(?<=['"])([A-Za-z0-9_\-\.]{24,80})(?=['"])""")
+    for token_m in candidate_token_pattern.finditer(redacted):
+        token = token_m.group(1)
+        if "[REDACTED" not in token and calculate_shannon_entropy(token) >= 4.5:
+            redacted = redacted.replace(token, "[REDACTED_SECRET]")
         
     return redacted
+
+
+def scrub_model_io(text: str) -> str:
+    """
+    Scrubs both inputs to the model and outputs from the model to prevent
+    secret exfiltration or echoing secrets from context.
+    """
+    return redact_sensitive_data(text)
+
+
+def sanitize_prompt_context(untrusted_text: str, source_label: str = "repo_content") -> str:
+    """
+    Sanitizes untrusted repository text (comments, docstrings, README) before passing to local models.
+    Guards against prompt injection by wrapping content in non-executable data fences,
+    neutralizing instruction-override tokens, and preventing prompt-driven execution control.
+    """
+    if not untrusted_text:
+        return ""
+
+    scrubbed = redact_sensitive_data(untrusted_text)
+    
+    # Neutralize instruction hijack tokens
+    override_patterns = [
+        re.compile(r"ignore\s+(?:all\s+)?previous\s+instructions", re.IGNORECASE),
+        re.compile(r"system\s*:", re.IGNORECASE),
+        re.compile(r"assistant\s*:", re.IGNORECASE),
+        re.compile(r"\[/?INST\]", re.IGNORECASE),
+        re.compile(r"<\|im_(?:start|end)\|>", re.IGNORECASE),
+    ]
+    for p in override_patterns:
+        scrubbed = p.sub("[FILTERED_PROMPT_INJECTION_TOKEN]", scrubbed)
+
+    return f'<untrusted_repo_content source="{source_label}">\n{scrubbed}\n</untrusted_repo_content>'
+
+
+def verify_model_weights_manifest(model_path: Union[str, Path], expected_sha256: str) -> bool:
+    """
+    Verifies that local AI model weights / runtime files match pinned cryptographic hashes
+    prior to execution, securing the air-gapped supply chain.
+    """
+    p = Path(model_path)
+    if not p.is_file():
+        return False
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        while chunk := f.read(1024 * 1024):
+            h.update(chunk)
+    return h.hexdigest().lower() == expected_sha256.lower().strip()
 
 
 def scan_for_secrets(content: str, file_path: str) -> List[Tuple[int, str, str, str]]:

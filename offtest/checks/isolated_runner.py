@@ -148,13 +148,21 @@ class IsolatedRunner:
             env["APPDATA"] = str(self.sandbox_home / "AppData" / "Roaming")
             env["LOCALAPPDATA"] = str(self.sandbox_home / "AppData" / "Local")
         env["PYTHONPYCACHEPREFIX"] = str(self.sandbox_home / "pycache")
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
 
         # Python air-gap sandbox socket interceptor bootstrap
+        import site
+        pythonpath_parts = [str(self.sandbox_home)]
         curr_pythonpath = env.get("PYTHONPATH", "")
         if curr_pythonpath:
-            env["PYTHONPATH"] = f"{str(self.sandbox_home)}{os.pathsep}{curr_pythonpath}"
-        else:
-            env["PYTHONPATH"] = str(self.sandbox_home)
+            pythonpath_parts.append(curr_pythonpath)
+        try:
+            user_site = site.getusersitepackages()
+            if user_site and Path(user_site).is_dir() and user_site not in pythonpath_parts:
+                pythonpath_parts.append(user_site)
+        except Exception:
+            pass
+        env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
         env["PYTHONSTARTUP"] = str(self.sandbox_home / "sitecustomize.py")
 
         if env_extra:
