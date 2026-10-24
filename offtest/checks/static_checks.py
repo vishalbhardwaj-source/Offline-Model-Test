@@ -120,6 +120,22 @@ class OfflineStaticChecker:
                 check_tool="python-ast-validator",
             )
             return finding, None
+        except (RecursionError, MemoryError) as re:
+            finding = Finding(
+                id=f"FIND-{counter:04d}",
+                title="AST Parsing Error: Pathological nesting or resource limit exceeded",
+                severity=Severity.HIGH,
+                confidence=Confidence.HIGH,
+                status=EvidenceStatus.OBSERVED,
+                branch=branch,
+                file_path=rel_path,
+                line_number=1,
+                impact="File contains pathological nesting or excessive token complexity that triggers parser memory/recursion limits.",
+                evidence=f"Parser resource exhaustion: {type(re).__name__}",
+                suggested_action="Refactor code structure to reduce excessive expression or block nesting.",
+                check_tool="python-ast-validator",
+            )
+            return finding, None
 
     def _check_python_security_ast(self, rel_path: str, tree: ast.AST, counter_start: int, branch: Optional[str]) -> List[Finding]:
         findings = []
@@ -145,13 +161,14 @@ class OfflineStaticChecker:
                                 else:
                                     conf = Confidence.MEDIUM
                                     trigger = f"Route-name heuristic matched authentication path '{dec.args[0].value}' on HTTP GET (handler arguments: [{', '.join(arg_names) or 'none'}]; no explicit password parameter detected)"
+                                dec_line = getattr(dec, "lineno", node.lineno)
                                 self.issues.append((
-                                    node.lineno,
+                                    dec_line,
                                     "Insecure Authentication Endpoint Defined via HTTP GET",
                                     Severity.HIGH,
                                     conf,
                                     "Authentication, login, and token issuance endpoints must not use HTTP GET. Query parameters in GET requests are persisted in plain text within web server access logs, browser history, and HTTP Referer headers.",
-                                    f"Line {node.lineno}: @app.get('{dec.args[0].value}') handler '{node.name}' uses HTTP GET for an authentication route. Trigger: {trigger}.",
+                                    f"Line {dec_line} (handler '{node.name}' at line {node.lineno}): @app.get('{dec.args[0].value}') uses HTTP GET for an authentication route. Trigger: {trigger}.",
                                     "Change the HTTP route method from GET to POST and accept credentials/payload within the request body."
                                 ))
                 self.generic_visit(node)

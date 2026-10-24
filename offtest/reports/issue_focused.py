@@ -10,7 +10,9 @@ class IssueFocusedReportGenerator:
         lines = []
 
         lines.append("# Actionable Issue-Focused Assessment Report")
-        lines.append(f"**Target:** `{self.ctx.repo_name}` | **Run ID:** `{self.ctx.run_id}` | **Commit:** `{self.ctx.commit_hash or 'HEAD'}`\n")
+        lines.append(f"**Target:** `{self.ctx.repo_name}` | **Run ID:** `{self.ctx.run_id}` | **Commit:** `{self.ctx.commit_hash or 'HEAD'}` | **Working Tree Clean:** `{self.ctx.working_tree_clean}`\n")
+        iso_str = "Verified Container / Kernel Air-Gap" if self.ctx.kernel_isolation_active else "Python-level egress guard (Defense in Depth); Kernel Isolation: Not Present (Bare Metal)"
+        lines.append(f"**Isolation Mode:** `{iso_str}`\n")
 
         # Counts
         crit_issues = [f for f in self.ctx.findings if f.severity == Severity.CRITICAL]

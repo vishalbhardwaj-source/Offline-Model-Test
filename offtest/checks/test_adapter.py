@@ -5,6 +5,14 @@ from offtest.checks.isolated_runner import IsolatedRunner
 from offtest.core.models import CheckResult, CheckStatus, FileRecord
 
 
+def _detect_pytest_version() -> str:
+    try:
+        import pytest
+        return getattr(pytest, "__version__", "installed")
+    except Exception:
+        return "installed"
+
+
 class TestAdapter:
     __test__ = False
 
@@ -29,7 +37,7 @@ class TestAdapter:
                 results.append(
                     CheckResult(
                         tool_name="pytest",
-                        tool_version=sys.version.split()[0],
+                        tool_version=_detect_pytest_version(),
                         check_name="Python Pytest Suite",
                         check_type="unit_test",
                         command="python -m pytest",
@@ -57,7 +65,7 @@ class TestAdapter:
                 results.append(
                     CheckResult(
                         tool_name="pytest",
-                        tool_version=sys.version.split()[0],
+                        tool_version=_detect_pytest_version(),
                         check_name="Python Pytest Suite",
                         check_type="unit_test",
                         command="python -m pytest -v",

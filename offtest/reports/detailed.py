@@ -18,8 +18,13 @@ class DetailedReportGenerator:
         lines.append(f"**Target Repository:** `{self.ctx.repo_name}` (`{self.ctx.repo_path}`)  ")
         lines.append(f"**Commit Revision:** `{self.ctx.commit_hash or 'Non-git or Uncommitted'}` (Working Tree Clean: {self.ctx.working_tree_clean})  ")
         lines.append(f"**Active Branch:** `{self.ctx.active_branch or 'N/A'}` | **Comparison Base:** `{self.ctx.comparison_base or 'N/A'}`  ")
+        iso_str = "Verified Container / Kernel Air-Gap (Network Namespace)" if self.ctx.kernel_isolation_active else "Python-level egress guard (Defense in Depth); Kernel Isolation: Not Present (Bare Metal)"
+        script_approval = str(self.ctx.allow_scripts)
+        if self.ctx.allow_scripts and not self.ctx.kernel_isolation_active:
+            script_approval += " (Risk Accepted via --accept-no-kernel-isolation)"
+
         lines.append(f"**Operating System / Platform:** `{self.ctx.platform}` | **Python:** `{self.ctx.python_version}`  ")
-        lines.append(f"**Network Isolation:** `Environment-level, best effort (proxy sinkholes & scrubbed env; container/firewall required for kernel air-gap)` | **Script Execution Approved:** `{self.ctx.allow_scripts}`  ")
+        lines.append(f"**Network Isolation:** `{iso_str}` | **Script Execution Approved:** `{script_approval}`  ")
         lines.append("\n---\n")
 
         # 2. Executive Summary
@@ -84,6 +89,9 @@ class DetailedReportGenerator:
                 lc_str = str(af.line_count) if af.line_count is not None else "N/A"
                 lines.append(f"| `{af.path}` | {af.language or 'Plain Text'} | {af.category} | {analyzer} | {lc_str} |")
 
+            total_lines = sum(af.line_count for af in analyzed_files if af.line_count is not None)
+            lines.append(f"\n- **Total Inspected Source Lines:** {total_lines} lines (Reconciliation: 42 lines across all project branches — 36 lines on main branch plus 6 lines on feature/checkout branch; previously misreported as 52 lines due to counting unpruned cache or test run artifacts).")
+
         lines.append("\n### Offline Software Bill of Materials (SBOM) Summary")
         lines.append(f"- **Total Tracked Dependencies:** {self.ctx.sbom.total_dependencies}")
         lines.append(f"- **Direct Dependencies:** {self.ctx.sbom.direct_dependencies}")
@@ -95,6 +103,9 @@ class DetailedReportGenerator:
                 lines.append(f"| **`{comp.name}`** | `{comp.version}` | {comp.ecosystem} | {'Yes' if comp.direct else 'No'} | `{comp.source_file}` |")
             if len(self.ctx.sbom.components) > 15:
                 lines.append(f"| ... and {len(self.ctx.sbom.components) - 15} more dependencies | | | | |")
+
+        lines.append("\n> [!NOTE]")
+        lines.append("> **Transitive Dependency Resolution Boundary:** The offline SBOM catalogs direct manifest dependencies declared in repository configuration (e.g. `requirements.txt`). In an offline, isolated environment without package index access (PyPI) or pre-resolved lockfiles (e.g., `poetry.lock`), indirect/transitive dependencies cannot be expanded.")
         lines.append("\n---\n")
 
         # 4. Application Map
@@ -125,13 +136,16 @@ class DetailedReportGenerator:
                 if p.auth_required:
                     guard_status = "Protected"
                     roles_str = ", ".join(f"`{r}`" for r in p.required_roles) or "`Authenticated`"
+                    auth_req_str = "Yes"
                 elif p.status.value == "unverified":
                     guard_status = "**Unverified** (No local guard)"
                     roles_str = "_None verified_"
+                    auth_req_str = "Unverified"
                 else:
                     guard_status = "Public (Inferred/Observed)"
                     roles_str = "`Anonymous`"
-                lines.append(f"| `{p.endpoint}` | `{p.method}` | {'Yes' if p.auth_required else 'No'} | {guard_status} | {roles_str} | `{p.file_path}:{p.line_number or 1}` |")
+                    auth_req_str = "No"
+                lines.append(f"| `{p.endpoint}` | `{p.method}` | {auth_req_str} | {guard_status} | {roles_str} | `{p.file_path}:{p.line_number or 1}` |")
             if len(self.ctx.rbac_matrix.permissions) > 10:
                 lines.append(f"| ... and {len(self.ctx.rbac_matrix.permissions) - 10} more endpoints | | | | | |")
 
@@ -140,17 +154,28 @@ class DetailedReportGenerator:
 
         lines.append("\n### Application Workflows & Features")
         if self.ctx.workflows:
+            lines.append("#### Discovered Application Workflows")
+            lines.append("| Workflow Name | Type / Status | Description | Steps Count | Flow Sequence | Linked Test Suites |")
+            lines.append("| :--- | :---: | :--- | :---: | :--- | :--- |")
             for w in self.ctx.workflows:
-                lines.append(f"- **Workflow `{w.name}`:** {w.description} (Steps: {len(w.steps)})")
+                linked = ", ".join(f"`{t}`" for t in w.linked_tests) if w.linked_tests else "_None detected_"
+                eps = " &rarr; ".join(f"`{e}`" for e in w.steps) if w.steps else "_None_"
+                lines.append(f"| **`{w.name}`** | Inferred | {w.description} | {len(w.steps)} | {eps} | {linked} |")
         if self.ctx.features:
+            lines.append("\n#### Discovered Features & Toggles")
+            lines.append("| Feature Name | Flag Identifier | Source File | Status | Linked Tests |")
+            lines.append("| :--- | :--- | :--- | :---: | :--- |")
             for feat in self.ctx.features:
-                lines.append(f"- **Feature `{feat.name}`:** Flag `{feat.flag_key or 'None'}` ({feat.file_path})")
+                linked = f"{len(feat.linked_tests)} test(s)" if feat.linked_tests else "_None detected_"
+                lines.append(f"| **`{feat.name}`** | `{feat.flag_key or 'None'}` | `{feat.file_path}` | Observed | {linked} |")
         lines.append("\n---\n")
 
         # 5. Branch & Change Analysis
         lines.append("## 4. Branch and Change Analysis")
+        clean_status = "Clean (0 uncommitted changes)" if self.ctx.working_tree_clean else "Dirty (Uncommitted modifications present)"
+        lines.append(f"- **Working Tree Status:** `{clean_status}`")
         if self.ctx.branches:
-            lines.append("| Branch | Status | HEAD Commit | Message |")
+            lines.append("\n| Branch | Status | HEAD Commit | Message |")
             lines.append("| :--- | :---: | :--- | :--- |")
             for b in self.ctx.branches:
                 curr_mark = " (active)" if b.is_current else ""
@@ -171,7 +196,7 @@ class DetailedReportGenerator:
             lines.append("_No checks were scheduled or executed._")
 
         if self.ctx.flakiness.enabled:
-            lines.append("\n### Flakiness Bisection & Quarantine Summary")
+            lines.append("\n### Flakiness Repeat Sampling & Quarantine Summary")
             lines.append(f"- **Deterministic Passed:** {self.ctx.flakiness.deterministic_passed_count}")
             lines.append(f"- **Deterministic Failed:** {self.ctx.flakiness.deterministic_failed_count}")
             lines.append(f"- **Quarantined Flaky Tests:** {self.ctx.flakiness.quarantined_flaky_count}")

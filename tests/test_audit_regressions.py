@@ -277,7 +277,12 @@ def test_target_directory_immutability_before_and_after_assessment(tmp_path: Pat
     assert snap_before == snap_after1, f"Target directory was mutated during allow_scripts=False run: {set(snap_after1.keys()) ^ set(snap_before.keys())}"
 
     # 2. Run with scripts approved
-    orch2 = AssessmentOrchestrator(str(repo_dir), allow_scripts=True, output_dir=str(tmp_path / "out2"))
+    orch2 = AssessmentOrchestrator(
+        str(repo_dir),
+        allow_scripts=True,
+        accept_no_kernel_isolation=True,
+        output_dir=str(tmp_path / "out2"),
+    )
     orch2.run()
     snap_after2 = snapshot_dir(repo_dir)
     assert snap_before == snap_after2, f"Target directory was mutated during allow_scripts=True run: {set(snap_after2.keys()) ^ set(snap_before.keys())}"
@@ -335,5 +340,19 @@ def test_sandbox_home_redirection_shields_ssh_and_aws(tmp_path: Path):
     assert "HOME=" in stdout
     assert str(runner.sandbox_home) in stdout
     assert str(runner.sandbox_home) != str(Path.home())
+
+
+def test_isolated_runner_windows_job_object_containment(tmp_path: Path):
+    """Verifies that IsolatedRunner properly leverages Windows Job Objects on Windows and terminates on timeout."""
+    import sys
+    from offtest.checks.isolated_runner import IsolatedRunner
+
+    runner = IsolatedRunner(tmp_path, timeout_sec=2)
+    # Child attempts to sleep longer than timeout
+    probe = [sys.executable, "-c", "import time; time.sleep(10)"]
+    code, stdout, stderr, dur = runner.run(probe)
+    assert code == 124
+    assert "timed out after 2 seconds" in stderr
+
 
 

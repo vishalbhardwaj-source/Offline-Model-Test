@@ -1,9 +1,28 @@
 import hashlib
+import hmac
 import math
+import os
 import re
+import tempfile
 from collections import Counter
-from typing import List, Optional, Tuple
+from pathlib import Path
+from typing import List, Optional, Tuple, Union
 from offtest.core.config import OfflineConfig
+
+_INSTALL_KEY_FILE = Path(tempfile.gettempdir()) / ".offtest_hmac_install_key"
+
+
+def _get_installation_hmac_key() -> bytes:
+    try:
+        if _INSTALL_KEY_FILE.exists():
+            data = _INSTALL_KEY_FILE.read_bytes()
+            if len(data) >= 16:
+                return data
+        key = os.urandom(32)
+        _INSTALL_KEY_FILE.write_bytes(key)
+        return key
+    except Exception:
+        return b"offtest-default-fallback-installation-key-32b"
 
 
 def calculate_shannon_entropy(data: str) -> float:
@@ -15,9 +34,17 @@ def calculate_shannon_entropy(data: str) -> float:
     return -sum((count / total) * math.log2(count / total) for count in counts.values())
 
 
-def compute_secret_fingerprint(secret: str, salt: str = "offtest-audit-salt") -> str:
-    """Computes a one-way deterministic cryptographic fingerprint for finding deduplication."""
-    return hashlib.sha256(f"{salt}:{secret.strip()}".encode("utf-8")).hexdigest()[:16]
+def compute_secret_fingerprint(secret: str, salt: Optional[Union[str, bytes]] = None) -> str:
+    """
+    Computes a one-way deterministic HMAC-SHA256 fingerprint for finding deduplication.
+    Uses a per-installation machine key to prevent dictionary/rainbow-table brute forcing
+    of low-entropy secrets from generated reports.
+    """
+    if salt is not None:
+        key = salt.encode("utf-8") if isinstance(salt, str) else salt
+    else:
+        key = _get_installation_hmac_key()
+    return hmac.new(key, secret.strip().encode("utf-8"), hashlib.sha256).hexdigest()[:16]
 
 
 def redact_sensitive_data(text: str) -> str:
@@ -53,6 +80,10 @@ def scan_for_secrets(content: str, file_path: str) -> List[Tuple[int, str, str, 
     candidate_token_pattern = re.compile(r"""['"]([A-Za-z0-9_\-\.]{24,80})['"]""")
 
     for idx, line in enumerate(lines, start=1):
+        # Cap line length to prevent ReDoS / memory exhaustion on minified or hostile lines
+        if len(line) > 10_000:
+            line = line[:10_000]
+
         matched = False
 
         # 1. Known high-confidence regex patterns

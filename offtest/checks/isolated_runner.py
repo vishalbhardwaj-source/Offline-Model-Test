@@ -10,6 +10,48 @@ from offtest.core.config import OfflineConfig
 from offtest.intake.safety import redact_sensitive_data
 from offtest.checks.sandbox_interceptor import SANDBOX_BOOTSTRAP_CODE
 
+# Windows Job Object bindings for robust child process tree containment
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    JobObjectExtendedLimitInformation = 9
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_uint64),
+            ("WriteOperationCount", ctypes.c_uint64),
+            ("OtherOperationCount", ctypes.c_uint64),
+            ("ReadTransferCount", ctypes.c_uint64),
+            ("WriteTransferCount", ctypes.c_uint64),
+            ("OtherTransferCount", ctypes.c_uint64),
+        ]
+
+    class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+            ("IoCounters", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryLimit", ctypes.c_size_t),
+            ("PeakJobMemoryLimit", ctypes.c_size_t),
+        ]
+
 
 class IsolatedRunner:
     def __init__(self, work_dir: Path, timeout_sec: int = OfflineConfig.COMMAND_TIMEOUT_SEC):
@@ -27,10 +69,38 @@ class IsolatedRunner:
         except Exception:
             pass
 
-    def _kill_process_tree(self, proc: subprocess.Popen):
-        """Kills the entire process tree to prevent orphan background worker leaks."""
+    def _create_job_object(self) -> Optional[int]:
+        """Creates a Windows Job Object configured to terminate all assigned child processes when closed."""
+        if sys.platform != "win32":
+            return None
+        try:
+            h_job = kernel32.CreateJobObjectW(None, None)
+            if not h_job:
+                return None
+            info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            res = kernel32.SetInformationJobObject(
+                h_job,
+                JobObjectExtendedLimitInformation,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+            )
+            if not res:
+                kernel32.CloseHandle(h_job)
+                return None
+            return h_job
+        except Exception:
+            return None
+
+    def _kill_process_tree(self, proc: subprocess.Popen, h_job: Optional[int] = None):
+        """Kills the entire process tree using Windows Job Object or taskkill to prevent orphan process leaks."""
         try:
             if sys.platform == "win32":
+                if h_job:
+                    try:
+                        kernel32.TerminateJobObject(h_job, 1)
+                    except Exception:
+                        pass
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                     capture_output=True,
@@ -66,7 +136,9 @@ class IsolatedRunner:
         # Enforce offline overrides
         env.update(OfflineConfig.OFFLINE_ENV_OVERRIDES)
 
-        # Sandbox home redirection: shield host ~/.ssh, ~/.aws, and personal credentials from untrusted scripts
+        # Environment profile redirection & host credential isolation:
+        # Redirects USERPROFILE, HOME, and APPDATA to an ephemeral sandbox to protect host credentials (~/.ssh, ~/.aws)
+        # Note: This performs environment-level isolation (protects environment-variable lookups), not kernel filesystem sandbox.
         env["USERPROFILE"] = str(self.sandbox_home)
         env["HOME"] = str(self.sandbox_home)
         if sys.platform == "win32":
@@ -99,6 +171,7 @@ class IsolatedRunner:
             kwargs["preexec_fn"] = os.setsid
 
         proc = None
+        h_job = self._create_job_object()
         try:
             proc = subprocess.Popen(
                 command,
@@ -111,6 +184,13 @@ class IsolatedRunner:
                 errors="replace",
                 **kwargs,
             )
+
+            # Bind Windows Job Object to child process to ensure child process tree is contained
+            if h_job and sys.platform == "win32":
+                try:
+                    kernel32.AssignProcessToJobObject(h_job, proc._handle)
+                except Exception:
+                    pass
 
             stdout_raw, stderr_raw = proc.communicate(timeout=self.timeout_sec)
             duration = round(time.perf_counter() - start_time, 3)
@@ -129,11 +209,17 @@ class IsolatedRunner:
         except subprocess.TimeoutExpired:
             duration = round(time.perf_counter() - start_time, 3)
             if proc:
-                self._kill_process_tree(proc)
+                self._kill_process_tree(proc, h_job=h_job)
             return 124, "", f"Execution timed out after {self.timeout_sec} seconds. Process tree terminated.", duration
 
         except Exception as e:
             duration = round(time.perf_counter() - start_time, 3)
             if proc:
-                self._kill_process_tree(proc)
+                self._kill_process_tree(proc, h_job=h_job)
             return 1, "", f"Failed to execute command: {e}", duration
+        finally:
+            if h_job and sys.platform == "win32":
+                try:
+                    kernel32.CloseHandle(h_job)
+                except Exception:
+                    pass

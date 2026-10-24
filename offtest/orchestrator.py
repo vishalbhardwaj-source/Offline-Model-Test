@@ -21,7 +21,7 @@ from offtest.discovery.app_mapper import ApplicationMapper
 from offtest.discovery.rbac_and_schema import RBACAndSchemaExtractor
 from offtest.generator.test_generator import ConstrainedTestGenerator
 from offtest.intake.git_manager import GitManager
-from offtest.intake.intake import RepositoryIntake
+from offtest.intake.intake import RepositoryIntake, SecurityError
 from offtest.inventory.engine import InventoryEngine
 from offtest.inventory.sbom import SBOMGenerator
 from offtest.reports.detailed import DetailedReportGenerator
@@ -40,6 +40,7 @@ class AssessmentOrchestrator:
         detect_flaky: bool = False,
         quarantine_policy: str = "warn",
         generate_tests: bool = True,
+        accept_no_kernel_isolation: bool = False,
     ):
         self.input_target = repo_path_or_archive
         self.base_branch = base_branch
@@ -49,8 +50,20 @@ class AssessmentOrchestrator:
         self.detect_flaky = detect_flaky
         self.quarantine_policy = quarantine_policy
         self.generate_tests = generate_tests
+        self.accept_no_kernel_isolation = accept_no_kernel_isolation
 
     def run(self) -> Tuple[RunContext, Path, Path, Path]:
+        has_kernel_isolation = (
+            os.environ.get("OFFTEST_KERNEL_ISOLATION", "").lower() in ("1", "true", "yes")
+            or Path("/.dockerenv").exists()
+            or Path("/run/.containerenv").exists()
+        )
+        if self.allow_scripts and not has_kernel_isolation and not self.accept_no_kernel_isolation:
+            raise SecurityError(
+                "Execution Refused: --allow-scripts was requested on a bare host without container/kernel-level network isolation. "
+                "Pass --accept-no-kernel-isolation to acknowledge bare-host execution, or execute inside a container (docker run --network none ...)."
+            )
+
         run_id = f"run_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         run_folder = self.output_dir / run_id
         run_folder.mkdir(parents=True, exist_ok=True)
@@ -158,8 +171,10 @@ class AssessmentOrchestrator:
             platform=platform.platform(),
             python_version=sys.version.split()[0],
             offline_enforced=True,
-            network_isolation_mode="environment_level_best_effort",
+            network_isolation_mode="container_kernel_airgap" if has_kernel_isolation else "python_egress_guard_defense_in_depth",
             allow_scripts=self.allow_scripts,
+            accept_no_kernel_isolation=self.accept_no_kernel_isolation,
+            kernel_isolation_active=has_kernel_isolation,
             tools_manifest=get_tool_manifest(),
             inventory_summary=inv_summary,
             files=files,

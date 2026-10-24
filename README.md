@@ -11,12 +11,12 @@ Designed directly against the **[Master Blueprint](file:///c:/Users/visha/Downlo
 - **Strict Offline Operation & Air-Gap Enforcement:**
   - Multi-layer defense: Environment proxy sinkholes (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `PIP_NO_INDEX=1`, `npm_config_offline=true`).
   - Child-process Python socket interceptor (`sitecustomize.py`) blocking raw TCP (`connect`), UDP (`sendto`), and DNS (`getaddrinfo`) calls to non-loopback addresses while allowing safe local mock servers (`127.0.0.1`, `localhost`).
-  - Host secret shielding: Redirects `USERPROFILE`, `HOME`, and `APPDATA` to an ephemeral sandbox to protect host credentials (`~/.ssh`, `~/.aws`).
-  - Process tree kill on timeout (`taskkill /F /T` on Windows, `killpg` on Unix) to prevent orphaned background processes.
+  - Environment Profile Redirection & Host Credential Isolation: Redirects `USERPROFILE`, `HOME`, and `APPDATA` to an ephemeral sandbox to protect host credentials (`~/.ssh`, `~/.aws`) from environment lookup.
+  - Windows Job Object Process Containment: Employs native Windows Job Objects (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) and process-tree termination (`taskkill /F /T` / `killpg`) to guarantee zero orphan background processes on timeout.
 - **Offline Software Bill of Materials (SBOM):** Automatically extracts and catalogs all dependencies from `package-lock.json`, `package.json`, `poetry.lock`, `Cargo.lock`, and `requirements.txt` into a CycloneDX 1.5-compatible schema offline.
 - **RBAC Permission Matrix & OpenAPI 3.1 Spec Generator:** Inters role-based access control policies (`Anonymous`, `Authenticated`, `Admin`) and automatically reconstructs an offline OpenAPI 3.1 specification from route signatures.
 - **Constrained Branch Test Generator:** Parses AST conditional branches (comparisons, null checks, boolean expressions) and synthesizes syntax-validated, self-healing unit test suites.
-- **Flakiness Bisection & Quarantine Runner:** Automatically performs multi-run bisection testing ($N \ge 3$) on tests to detect and quarantine non-deterministic tests from blocking release gates.
+- **Flakiness Repeat Sampling & Quarantine Runner:** Automatically performs multi-run repeat sampling ($N \ge 3$) on tests to detect and quarantine non-deterministic tests from blocking release gates.
 - **Exhaustive Inventory:** Discovers and classifies 100% of discovered files into recorded dispositions (`analyzed`, `excluded`, `generated`, `binary`, `unsupported`, or `failed_to_inspect`) with explicit reasons.
 - **Application Structure & Workflow Discovery:** Extracts routes, APIs, pages, integrations, and feature toggles with explicit evidence status:
   - `Observed`: Directly present in code/config.
@@ -60,7 +60,7 @@ pip install -e .
 # Standard assessment (intake, SBOM, RBAC, OpenAPI, static scans, test generation)
 python -m offtest assess /path/to/repo --base main --branch feature/payment
 
-# Run with flakiness bisection and quarantine enabled
+# Run with flakiness repeat sampling and quarantine enabled
 python -m offtest assess /path/to/repo --base main --detect-flaky
 
 # Approve executing repository test scripts in offline isolation
@@ -111,7 +111,7 @@ python -m offtest verify-offline
 │   │   ├── sandbox_interceptor.py # Socket/DNS interceptor blocking outbound TCP/UDP
 │   │   ├── static_checks.py    # AST syntax, security flaws (eval, os.system, debug), dependency pins
 │   │   ├── test_adapter.py     # Test discovery & execution with explicit script approval guard
-│   │   ├── flakiness.py        # Multi-run bisection & flakiness quarantine runner
+│   │   ├── flakiness.py        # Multi-run repeat sampling & flakiness quarantine runner
 │   │   └── planner.py          # Coordinates checks and tool manifest
 │   ├── coverage/
 │   │   └── evaluator.py        # Calculates 7 coverage dimensions with explicit denominators
@@ -134,7 +134,7 @@ python -m offtest verify-offline
 | Offline Software Bill of Materials (SBOM) | Verified (`SBOMGenerator`, CycloneDX-compatible) |
 | Role-Based Access Control (RBAC) Matrix | Verified (`RBACAndSchemaExtractor`) |
 | Offline OpenAPI 3.1 Specification Synthesis | Verified (`OpenAPISpecRecord` generation) |
-| Flakiness Bisection & Quarantine Runner | Verified (`FlakinessBisectionRunner` $N \ge 3$) |
+| Flakiness Repeat Sampling & Quarantine Runner | Verified (`FlakinessRepeatSampler` $N \ge 3$) |
 | Constrained Branch Test Generation | Verified (`ConstrainedTestGenerator` AST analysis) |
 | Record tested revision and selected local branches | Verified (`GitManager` without remote fetch) |
 | Inventory files with explicit exclusions/dispositions | Verified (`InventoryEngine`, 100% cataloged) |

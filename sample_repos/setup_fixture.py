@@ -1,10 +1,19 @@
 import os
+import shutil
+import stat
 import subprocess
 from pathlib import Path
 
 
+def _remove_readonly(func, path, excinfo):
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
 def init_sample_repo(base_dir: Path):
     repo_dir = base_dir / "sample_repos" / "sample_web_app"
+    if repo_dir.exists():
+        shutil.rmtree(repo_dir, onerror=_remove_readonly)
     repo_dir.mkdir(parents=True, exist_ok=True)
 
     # Git init

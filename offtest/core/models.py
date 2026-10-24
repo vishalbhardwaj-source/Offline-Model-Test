@@ -306,6 +306,8 @@ class RunContext(BaseModel):
     offline_enforced: bool = True
     network_isolation_mode: str = "environment_level_best_effort"
     allow_scripts: bool = False
+    accept_no_kernel_isolation: bool = False
+    kernel_isolation_active: bool = False
     
     tools_manifest: List[ToolManifestItem] = Field(default_factory=list)
     inventory_summary: RepositoryInventorySummary = Field(default_factory=RepositoryInventorySummary)

@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -50,15 +51,38 @@ def main():
 @click.option("--sarif-out", default=None, help="Optional output path for OASIS SARIF 2.1.0 file.")
 @click.option("--json-out", is_flag=True, default=False, help="Print summary JSON to stdout.")
 @click.option("--strict", is_flag=True, default=False, help="Fail with non-zero exit code on blocked checks.")
-def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_policy, generate_tests, out, sarif_out, json_out, strict):
+@click.option(
+    "--accept-no-kernel-isolation",
+    is_flag=True,
+    default=False,
+    help="Explicitly acknowledge and accept running scripts on bare host without container/kernel-level network isolation.",
+)
+def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_policy, generate_tests, out, sarif_out, json_out, strict, accept_no_kernel_isolation):
     """
     Run offline repository intake, inventory, app mapping, checks, and generate reports.
     """
     click.echo(f"[*] Starting offline assessment for: {repo_path}")
-    if not allow_scripts:
-        click.echo("[i] Repository scripts disabled by default. Pass --allow-scripts to enable test execution.")
+    
+    has_kernel_iso = (
+        os.environ.get("OFFTEST_KERNEL_ISOLATION", "").lower() in ("1", "true", "yes")
+        or Path("/.dockerenv").exists()
+        or Path("/run/.containerenv").exists()
+    )
+
+    if allow_scripts:
+        if not has_kernel_iso and not accept_no_kernel_isolation:
+            click.echo("[!] SAFETY GATE REFUSAL: --allow-scripts requested on bare host without kernel-level isolation.")
+            click.echo("    Host network interfaces and absolute filesystem paths remain reachable by untrusted code.")
+            click.echo("    To proceed safely:")
+            click.echo("      1. Execute inside a container: docker run --network none ...")
+            click.echo("      2. Or explicitly pass: --accept-no-kernel-isolation to acknowledge bare-host execution.")
+            sys.exit(2)
+        elif not has_kernel_iso and accept_no_kernel_isolation:
+            click.echo("[!] Script execution APPROVED on bare host (--accept-no-kernel-isolation accepted by operator).")
+        else:
+            click.echo("[+] Script execution APPROVED inside verified container/kernel isolation.")
     else:
-        click.echo("[!] Script execution APPROVED by operator.")
+        click.echo("[i] Repository scripts disabled by default. Pass --allow-scripts to enable test execution.")
 
     orchestrator = AssessmentOrchestrator(
         repo_path_or_archive=repo_path,
@@ -69,6 +93,7 @@ def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_poli
         detect_flaky=detect_flaky,
         quarantine_policy=quarantine_policy,
         generate_tests=generate_tests,
+        accept_no_kernel_isolation=accept_no_kernel_isolation,
     )
 
     context, detailed_path, issue_path, sarif_path = orchestrator.run()
@@ -163,52 +188,71 @@ def manifest():
 @main.command("verify-offline")
 def verify_offline():
     """
-    Verify that the environment executes analysis without network dependencies
-    using raw socket, DNS, and HTTP probes executed inside the IsolatedRunner.
+    Verify offline network boundaries and security controls.
+    Measures both Python-level egress guards (defense-in-depth) and
+    host OS / kernel-level isolation (containers / network namespaces).
     """
-    click.echo("[*] Executing offline network isolation probes from INSIDE child sandbox processes via IsolatedRunner...")
-    click.echo("    (Probes execute in scrubbed subprocess environments with proxy sinkholes and host secrets stripped)")
+    click.echo("[*] Measuring offline isolation boundaries and air-gap controls...\n")
     from offtest.checks.isolated_runner import IsolatedRunner
     runner = IsolatedRunner(Path("."), timeout_sec=5)
 
-    # 1. HTTP Probe with proxy sinkhole
+    # --- Layer 1: Python-Level In-Process Egress Guard (sitecustomize interceptor) ---
+    click.echo("[Layer 1] Python-Level Egress Guard (Defense in Depth / Interceptor):")
+    
+    # 1. HTTP Proxy Sinkhole Probe
     http_probe = [sys.executable, "-c", "import urllib.request; urllib.request.urlopen('http://example.com', timeout=2)"]
     c1, _, _, d1 = runner.run(http_probe)
+    click.echo(f"  - HTTP Proxy Sinkhole Probe: {'BLOCKED / PROTECTED' if c1 != 0 else 'UNPROTECTED'} ({d1}s)")
 
-    # 2. Raw TCP Socket Probe (direct IP connection attempt, ignores proxy env vars)
+    # 2. Raw TCP Socket Probe (standard python under sitecustomize)
     raw_socket_probe = [sys.executable, "-c", "import socket; s = socket.create_connection(('1.1.1.1', 53), timeout=2); s.close()"]
     c2, _, _, d2 = runner.run(raw_socket_probe)
+    click.echo(f"  - Raw TCP Socket Probe: {'BLOCKED / PROTECTED (Interceptor active)' if c2 != 0 else 'UNPROTECTED'} ({d2}s)")
 
-    # 3. Direct DNS Lookup Probe
+    # 3. Direct DNS Lookup Probe (standard python under sitecustomize)
     dns_probe = [sys.executable, "-c", "import socket; socket.getaddrinfo('example.com', 80)"]
     c3, _, _, d3 = runner.run(dns_probe)
+    click.echo(f"  - Direct DNS Resolution Probe: {'BLOCKED / PROTECTED (Interceptor active)' if c3 != 0 else 'UNPROTECTED'} ({d3}s)")
 
-    # 4. Raw UDP Datagram Probe (direct IP egress attempt)
+    # 4. Raw UDP Datagram Egress
     udp_probe = [sys.executable, "-c", "import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.sendto(b'leak', ('8.8.8.8', 53)); s.close()"]
     c4, _, _, d4 = runner.run(udp_probe)
+    click.echo(f"  - Raw UDP Datagram Egress: {'BLOCKED / PROTECTED (Interceptor active)' if c4 != 0 else 'UNPROTECTED'} ({d4}s)")
 
-    click.echo(f"  - HTTP Proxy Sinkhole Probe: {'BLOCKED / SAFE' if c1 != 0 else 'UNPROTECTED'} ({d1}s)")
-    if c2 != 0:
-        click.echo(f"  - Raw TCP Socket Probe: BLOCKED / SAFE (Offline interceptor / network boundary active) ({d2}s)")
+    # --- Layer 2: Host OS & Kernel Network Boundary (Unpatched / Native Probes) ---
+    click.echo("\n[Layer 2] Host OS & Kernel Boundary (Unpatched / Native Probes):")
+    
+    # 5. Unpatched Interpreter Probe (python -I -S disables sitecustomize and PYTHONPATH)
+    unpatched_probe = [sys.executable, "-I", "-S", "-c", "import socket; s = socket.create_connection(('1.1.1.1', 53), timeout=2); s.close()"]
+    c5, _, _, d5 = runner.run(unpatched_probe)
+    if c5 == 0:
+        click.echo(f"  - Unpatched Interpreter Bypass (python -I -S): NOT BLOCKED (Host network interface open) ({d5}s)")
     else:
-        click.echo(f"  - Raw TCP Socket Probe: [!] WARNING: Connected to raw socket! (Host network interface is open)")
+        click.echo(f"  - Unpatched Interpreter Bypass (python -I -S): BLOCKED (Kernel / Network namespace boundary active) ({d5}s)")
 
-    if c3 != 0:
-        click.echo(f"  - Direct DNS Resolution Probe: BLOCKED / SAFE ({d3}s)")
+    # 6. Host Filesystem Access Probe by Absolute Path
+    real_home = Path.home()
+    ssh_dir = real_home / ".ssh"
+    fs_cmd = [sys.executable, "-c", f"from pathlib import Path; p = Path(r'{str(ssh_dir)}'); print('SSH_EXISTS' if p.exists() else 'SSH_NOT_FOUND')"]
+    c6, out6, _, d6 = runner.run(fs_cmd)
+    if "SSH_EXISTS" in out6:
+        click.echo(f"  - Host Filesystem Absolute Path Access: UNCONSTRAINED (Can read host files outside sandbox)")
     else:
-        click.echo(f"  - Direct DNS Resolution Probe: [!] NOTICE: DNS resolved via host resolver.")
+        click.echo(f"  - Host Filesystem Absolute Path Access: PROTECTED (Host home directory not directly accessible)")
 
-    if c4 != 0:
-        click.echo(f"  - Raw UDP Datagram Egress: BLOCKED / SAFE ({d4}s)")
+    # --- Summary ---
+    click.echo("\n" + "=" * 65)
+    click.echo("ISOLATION STATUS SUMMARY:")
+    click.echo("  * Python Egress Guard: ACTIVE (Defense in Depth)")
+    if c5 == 0:
+        click.echo("  * Host Kernel Air-Gap: NOT PRESENT (Bare-metal host)")
+        click.echo("    [!] WARNING: Untrusted scripts under --allow-scripts can bypass Python guards")
+        click.echo("        using 'python -I', ctypes ws2_32, powershell, or native binaries.")
+        click.echo("    [i] Recommendation: Execute inside container ('docker run --network none')")
+        click.echo("        or supply explicit --accept-no-kernel-isolation acknowledging bare-host risk.")
     else:
-        click.echo(f"  - Raw UDP Datagram Egress: [!] WARNING: UDP egress allowed.")
-
-    if c1 != 0 and c2 != 0 and c3 != 0 and c4 != 0:
-        click.echo("[+] Full air-gap verified: All HTTP, TCP, UDP, and DNS outbound attempts blocked.")
-    elif c1 != 0:
-        click.echo("[i] Partial isolation active. Some raw socket egress is permitted on host.")
-    else:
-        click.echo("[!] WARNING: Network isolation is not functioning.")
+        click.echo("  * Host Kernel Air-Gap: VERIFIED (OS container / network namespace active)")
+    click.echo("=" * 65)
 
 
 if __name__ == "__main__":

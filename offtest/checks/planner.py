@@ -66,10 +66,15 @@ def get_tool_manifest() -> List[ToolManifestItem]:
 
     # 4. Pytest
     pytest_path = shutil.which("pytest") or sys.executable
+    try:
+        import pytest
+        pytest_v = getattr(pytest, "__version__", "installed")
+    except Exception:
+        pytest_v = "installed"
     manifest.append(
         ToolManifestItem(
             name="Pytest Test Runner",
-            version="installed" if shutil.which("pytest") else "built-in adapter",
+            version=pytest_v,
             path=pytest_path,
             category="test_runner",
             is_available=True,

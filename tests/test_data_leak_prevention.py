@@ -132,3 +132,108 @@ def test_archive_path_traversal_leak_prevention(tmp_path: Path):
         assert False, "Should have raised SecurityError on Zip Slip attempt"
     except SecurityError as se:
         assert "Malicious archive member detected" in str(se)
+
+
+def test_allow_scripts_safety_gate_refusal_on_bare_host(tmp_path: Path):
+    """Verifies that --allow-scripts refuses to run on bare host unless --accept-no-kernel-isolation is provided."""
+    dummy_repo = tmp_path / "dummy_repo"
+    dummy_repo.mkdir()
+    (dummy_repo / "server.py").write_text("x = 1\n", encoding="utf-8")
+
+    # 1. Running with allow_scripts=True on bare host without acceptance must raise SecurityError
+    orchestrator = AssessmentOrchestrator(
+        repo_path_or_archive=str(dummy_repo),
+        allow_scripts=True,
+        accept_no_kernel_isolation=False,
+    )
+    try:
+        orchestrator.run()
+        assert False, "Should have raised SecurityError on bare host --allow-scripts without acceptance"
+    except SecurityError as se:
+        assert "Execution Refused" in str(se)
+        assert "--accept-no-kernel-isolation" in str(se)
+
+    # 2. Running with accept_no_kernel_isolation=True must proceed
+    orchestrator_approved = AssessmentOrchestrator(
+        repo_path_or_archive=str(dummy_repo),
+        allow_scripts=True,
+        accept_no_kernel_isolation=True,
+        generate_tests=False,
+    )
+    context, _, _, _ = orchestrator_approved.run()
+    assert context.allow_scripts is True
+    assert context.accept_no_kernel_isolation is True
+
+
+def test_hmac_secret_fingerprinting():
+    """Verifies that secret fingerprints use keyed HMAC-SHA256 and resist rainbow-table attacks."""
+    from offtest.intake.safety import compute_secret_fingerprint
+
+    secret = "secret_db_pass_123"
+    # Deterministic with same installation/salt
+    fp1 = compute_secret_fingerprint(secret, salt=b"key_a")
+    fp2 = compute_secret_fingerprint(secret, salt=b"key_a")
+    assert fp1 == fp2
+
+    # Different salt/key yields different hash (prevents global rainbow-table attacks)
+    fp3 = compute_secret_fingerprint(secret, salt=b"key_b")
+    assert fp1 != fp3
+
+
+def test_pathological_ast_nesting_handling(tmp_path: Path):
+    """Verifies that deeply nested hostile syntax does not crash the static analyzer."""
+    from offtest.checks.static_checks import OfflineStaticChecker
+    from offtest.core.models import FileRecord, FileDisposition
+
+    deep_nesting = "x = " + ("(" * 400) + "1" + (")" * 400)
+    test_file = tmp_path / "nested.py"
+    test_file.write_text(deep_nesting, encoding="utf-8")
+
+    file_rec = FileRecord(
+        path="nested.py",
+        size_bytes=len(deep_nesting),
+        language="Python",
+        sha256="dummy_sha",
+        disposition=FileDisposition.ANALYZED,
+        disposition_reason="Source code eligible for analysis",
+    )
+    checker = OfflineStaticChecker(tmp_path, [file_rec])
+    # Must complete without crashing the runner process
+    findings = checker.run_all()
+    assert isinstance(findings, list)
+
+
+import pytest
+
+
+@pytest.mark.xfail(strict=True, reason="Documented bare-metal limitation: OS kernel-level container (--network none) required to block unpatched python -I -S interpreter")
+def test_unpatched_interpreter_bypass_documented_gap():
+    """
+    Documents known bare-metal boundary: an unpatched interpreter spawned with -I -S
+    bypasses sitecustomize and can reach the host network unless in an OS container.
+    """
+    import sys
+    runner = IsolatedRunner(Path("."), timeout_sec=3)
+    cmd = [sys.executable, "-I", "-S", "-c", "import socket; s = socket.create_connection(('1.1.1.1', 53), timeout=1); s.close()"]
+    exit_code, _, _, _ = runner.run(cmd)
+    # On bare metal with open network, exit_code is 0 (connect succeeds).
+    # In strict xfail mode, this test must fail (exit_code != 0 must be False), proving the gap is documented!
+    assert exit_code != 0, "Expected bare host to allow connection unless inside kernel sandbox"
+
+
+@pytest.mark.xfail(strict=True, reason="Documented bare-metal limitation: OS filesystem jail / container required to block raw absolute path traversal")
+def test_absolute_path_host_file_read_documented_gap(tmp_path: Path):
+    """
+    Documents known bare-metal boundary: absolute path reads to host filesystem bypass
+    USERPROFILE/HOME environment redirection unless in an OS container.
+    """
+    import sys
+    # Create canary file at a known path
+    canary = tmp_path / "host_canary.txt"
+    canary.write_text("HOST_SECRET", encoding="utf-8")
+
+    runner = IsolatedRunner(Path("."), timeout_sec=3)
+    read_cmd = [sys.executable, "-c", f"from pathlib import Path; print(Path(r'{str(canary)}').read_text())"]
+    exit_code, stdout, _, _ = runner.run(read_cmd)
+    # On bare host, absolute path can be read.
+    assert "HOST_SECRET" not in stdout, "Expected absolute path read to fail under filesystem jail"
