@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 from offtest.core.models import FileDisposition, FileRecord, RepositoryInventorySummary
 from offtest.inventory.classifier import classify_file
+from offtest.core.safe_fs import safe_walk
 
 
 def compute_sha256(path: Path) -> str:
@@ -43,40 +44,18 @@ class InventoryEngine:
         entry_points = []
         test_files_count = 0
 
-        for root, dirs, filenames in os.walk(self.repo_dir):
-            # Prune VCS internals and NEVER descend into directory junctions or symlinks (prevents SMB triggers)
-            safe_dirs = []
-            for d in dirs:
-                if d in [".git", ".svn", ".hg"]:
-                    continue
-                d_path = os.path.join(root, d)
-                is_junc = False
-                if hasattr(os.path, "isjunction"):
-                    try:
-                        is_junc = os.path.isjunction(d_path)
-                    except OSError:
-                        is_junc = True
-                if os.path.islink(d_path) or is_junc:
-                    # Do not descend into symlink or junction (fail closed on junctions)
-                    continue
-                safe_dirs.append(d)
-            dirs[:] = safe_dirs
+        self.suspicious_entries: List[Tuple[str, str, str]] = []
 
+        def _record_suspicious(path: str, kind: str, target: str):
+            self.suspicious_entries.append((path, kind, target))
+
+        for root, dirs, filenames in safe_walk(self.repo_dir, on_suspicious_entry=_record_suspicious):
             rel_root = os.path.relpath(root, self.repo_dir)
             if rel_root == ".":
                 rel_root = ""
 
             for fname in filenames:
                 abs_file = Path(root) / fname
-                # Guard against individual file symlinks targeting prohibited remote UNC paths
-                if abs_file.is_symlink():
-                    try:
-                        link_target = os.readlink(abs_file)
-                        from offtest.intake.intake import is_unc_or_remote_path
-                        if is_unc_or_remote_path(link_target):
-                            continue
-                    except OSError:
-                        pass
                 rel_file = os.path.normpath(os.path.join(rel_root, fname)).replace("\\", "/")
 
                 summary.total_files += 1

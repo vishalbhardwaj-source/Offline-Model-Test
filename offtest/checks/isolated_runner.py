@@ -68,23 +68,34 @@ def probe_kernel_network_isolation() -> Tuple[bool, str]:
     """
     import socket
 
-    # 1. Native OS Interface Enumeration (Fail-Safe)
-    if sys.platform != "win32" and Path("/sys/class/net").is_dir():
+    # 1. Native OS Interface Enumeration in Current Process Network Namespace (Fail-Safe)
+    if hasattr(socket, "if_nameindex"):
+        # Linux/Unix: socket.if_nameindex() queries the current network namespace directly
         try:
-            for iface in Path("/sys/class/net").iterdir():
-                if iface.name != "lo":
-                    return False, f"Non-loopback Linux network interface attached: '{iface.name}'."
+            ifaces = socket.if_nameindex()
+            for _, ifname in ifaces:
+                if ifname != "lo":
+                    return False, f"Non-loopback network interface attached in namespace: '{ifname}'."
         except Exception as e:
-            return False, f"Failed to inspect /sys/class/net ({e}); failing closed."
+            return False, f"Failed to enumerate network interfaces via socket.if_nameindex ({e}); failing closed."
     elif sys.platform == "win32":
+        # Windows: GetAdaptersAddresses with AF_UNSPEC (0) to query both IPv4 and IPv6 adapters
         try:
             import ctypes
             from ctypes import wintypes
-            buf_len = wintypes.ULONG(0)
-            res = ctypes.windll.iphlpapi.GetAdaptersInfo(None, ctypes.byref(buf_len))
-            # ERROR_BUFFER_OVERFLOW (111) indicates network adapter interfaces are bound on the host
-            if res == 111 and buf_len.value > 0:
-                return False, f"Active Windows network adapter(s) detected via Win32 iphlpapi (buffer {buf_len.value} bytes). Host is not air-gapped."
+            AF_UNSPEC = 0
+            # GAA_FLAG_SKIP_ANYCAST (2) | GAA_FLAG_SKIP_MULTICAST (4) | GAA_FLAG_SKIP_DNS_SERVER (8)
+            flags = 0x000E
+            out_buf_len = wintypes.ULONG(15000)
+            buf = ctypes.create_string_buffer(out_buf_len.value)
+            ret = ctypes.windll.iphlpapi.GetAdaptersAddresses(AF_UNSPEC, flags, None, buf, ctypes.byref(out_buf_len))
+            if ret == 111:  # ERROR_BUFFER_OVERFLOW: buffer too small, reallocate exact required size
+                buf = ctypes.create_string_buffer(out_buf_len.value)
+                ret = ctypes.windll.iphlpapi.GetAdaptersAddresses(AF_UNSPEC, flags, None, buf, ctypes.byref(out_buf_len))
+
+            # ret == 0 (ERROR_SUCCESS) indicates active adapter structures were populated
+            if ret == 0:
+                return False, f"Active Windows network adapter(s) detected via Win32 GetAdaptersAddresses (AF_UNSPEC). Host is not air-gapped."
         except Exception as e:
             return False, f"Win32 adapter inspection failed ({e}); failing closed."
 
