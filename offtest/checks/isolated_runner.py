@@ -59,27 +59,45 @@ def probe_kernel_network_isolation() -> Tuple[bool, str]:
     Checking /.dockerenv or environment variables alone is insufficient because
     a container can be started with host or bridge networking.
 
-    Proves zero non-loopback network egress:
-    1. Checks if outbound routing exists to non-loopback addresses.
-    2. Verifies absence of external gateway routes.
+    Uses strictly connectionless UDP routing table queries (sends ZERO packets/SYNs over the wire):
+    1. IPv4 Route Resolution: probes RFC 5737 documentation block (192.0.2.1:53).
+    2. IPv6 Route Resolution: probes RFC 3849 documentation prefix (2001:db8::1:53).
+    3. Handles Windows Winsock WSA error codes (WSAENETUNREACH 10051, WSAEHOSTUNREACH 10065).
     Returns: (is_isolated, diagnostic_reason)
     """
     import socket
-    # 1. Routing probe to RFC 5737 documentation address
+
+    # 1. IPv4 Connectionless Route Probe (UDP connect only queries the local routing table)
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(0.2)
-        s.connect(("192.0.2.1", 53))
-        sock_name = s.getsockname()
-        s.close()
+        s4 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s4.settimeout(0.2)
+        s4.connect(("192.0.2.1", 53))
+        sock_name = s4.getsockname()
+        s4.close()
         if sock_name[0] and not sock_name[0].startswith("127."):
-            return False, f"Host network interface is active ({sock_name[0]}). Outbound routes present."
+            return False, f"Host IPv4 network interface is active ({sock_name[0]}). Outbound routes present."
+    except OSError as e:
+        # Expected in --network none: ENETUNREACH (101) or WSAENETUNREACH (10051)
+        pass
+    except Exception:
+        pass
+
+    # 2. IPv6 Connectionless Route Probe
+    try:
+        if socket.has_ipv6:
+            s6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+            s6.settimeout(0.2)
+            s6.connect(("2001:db8::1", 53))
+            sock_name6 = s6.getsockname()
+            s6.close()
+            if sock_name6[0] and sock_name6[0] != "::1":
+                return False, f"Host IPv6 network interface is active ({sock_name6[0]}). IPv6 egress present."
     except OSError:
         pass
     except Exception:
         pass
 
-    # 2. Check container/namespace environment presence
+    # 3. Check container/namespace environment presence
     in_container = (
         Path("/.dockerenv").exists()
         or Path("/run/.containerenv").exists()

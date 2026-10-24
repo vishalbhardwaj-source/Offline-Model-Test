@@ -1,7 +1,9 @@
 import os
 import shutil
+import stat
 import tarfile
 import tempfile
+import urllib.parse
 import zipfile
 from pathlib import Path
 from typing import Tuple
@@ -16,14 +18,18 @@ class SecurityError(Exception):
 def is_unc_or_remote_path(p: str) -> bool:
     r"""
     Detects UNC, SMB, and WebDAV remote network paths across all standard and alternate prefixes:
-    - Standard UNC: \\host\share, //host/share, mixed /\\host or \\/host
+    - Standard UNC: \\host\share, //host/share, mixed /\host or \/host
+    - Percent-encoded UNC: %5C%5Chost, %2F%2Fhost
     - NT / Win32 Device Namespaces: \\?\UNC\, \??\UNC\, \\.\UNC\
-    - File URLs: file://host/share (excluding local file:/// or file://localhost/)
+    - File URLs: file://host/share, file:////host/share (excluding local file:/// or file://localhost/)
     - WebDAV shares: \\host@SSL\share, \\host@port\share
     """
     raw = str(p).strip()
     if not raw:
         return False
+    # Decode percent-encoding (e.g. %5C -> \, %2F -> /)
+    raw = urllib.parse.unquote(raw)
+
     # Check alternate and standard prefixes
     for prefix in [r"\\", r"//", r"/\ ", r"\/", r"\??\UNC", r"\\.\UNC", r"\\?\UNC", r"/??/UNC", r"//./UNC", r"//?/UNC"]:
         if raw.startswith(prefix.strip()):
@@ -35,10 +41,30 @@ def is_unc_or_remote_path(p: str) -> bool:
     if "@SSL" in raw.upper() or "@80" in raw or "@443" in raw:
         if raw.startswith(("\\", "/")):
             return True
-    # Check remote file:// URLs
-    if raw.lower().startswith("file://") and not raw.lower().startswith(("file:///", "file://localhost/")):
-        return True
+    # Check remote file:// URLs (including file:////host/share)
+    if raw.lower().startswith("file:"):
+        cleaned_file = raw.lower().replace("file:", "").lstrip("/")
+        # If there is a network hostname after file: (not empty / not localhost / not a drive letter like c:)
+        if cleaned_file and not cleaned_file.startswith("localhost/") and not (len(cleaned_file) > 1 and cleaned_file[1] == ":"):
+            return True
     return False
+
+
+def check_reparse_points_safely(path: Path) -> None:
+    """
+    Inspects link targets using os.lstat and os.readlink WITHOUT following them.
+    Calling Path.resolve() on Windows can trigger an active SMB connection if a junction points to \\host.
+    """
+    curr = path
+    while curr and curr != curr.parent:
+        try:
+            if curr.is_symlink():
+                target_str = os.readlink(curr)
+                if is_unc_or_remote_path(target_str):
+                    raise SecurityError(f"Symlink points to prohibited UNC/SMB remote target: '{target_str}'")
+        except OSError:
+            pass
+        curr = curr.parent
 
 
 class RepositoryIntake:
@@ -61,7 +87,11 @@ class RepositoryIntake:
                 f"UNC / SMB remote network paths are strictly prohibited in offline air-gap mode: '{path_or_archive}'"
             )
 
-        target = Path(path_or_archive).resolve()
+        # 1b. Inspect reparse points & symlinks WITHOUT following them (prevents SMB handshake during resolve)
+        raw_p = Path(norm_path)
+        check_reparse_points_safely(raw_p)
+
+        target = raw_p.resolve()
 
         # 2. Post-resolution check: Prevent symlinks/junctions resolving to UNC/SMB targets (TOCTOU defense)
         if is_unc_or_remote_path(str(target)) or target.as_posix().startswith("//"):

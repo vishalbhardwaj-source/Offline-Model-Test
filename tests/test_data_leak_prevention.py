@@ -59,6 +59,14 @@ TOKEN = "{raw_jwt}"
         assert raw_jwt not in evidence_text
         assert "[REDACTED_SECRET]" in evidence_text
 
+        # 4. Exhaustive Canary Grep: Scan EVERY byte of EVERY output file in the run directory
+        run_folder = det_path.parent
+        for out_file in run_folder.rglob("*"):
+            if out_file.is_file():
+                raw_bytes = out_file.read_bytes()
+                for secret_canary in [raw_secret_key.encode(), raw_db_password.encode(), raw_jwt.encode()]:
+                    assert secret_canary not in raw_bytes, f"Canary leak detected in output artifact '{out_file.name}'"
+
 
 def test_network_isolation_and_telemetry_blocking():
     """Verifies that IsolatedRunner injects offline proxy nullification and telemetry opt-out flags."""

@@ -6,6 +6,25 @@ from offtest.core.models import RunContext
 from offtest.intake.safety import redact_sensitive_data
 
 
+def atomic_write_text(dest: Path, content: str, encoding: str = "utf-8") -> None:
+    """
+    Atomically writes content using a temporary file in the destination folder,
+    then replaces destination via os.replace. Fails closed so aborted writes or
+    RedactionErrors never leave partial or unredacted raw files on disk.
+    """
+    temp_file = dest.with_name(f".{dest.name}.tmp_{os.getpid()}")
+    try:
+        temp_file.write_text(content, encoding=encoding)
+        temp_file.replace(dest)
+    except Exception:
+        if temp_file.exists():
+            try:
+                temp_file.unlink()
+            except Exception:
+                pass
+        raise
+
+
 class EvidenceStore:
     def __init__(self, base_dir: Optional[str] = None):
         if base_dir:
@@ -23,8 +42,7 @@ class EvidenceStore:
         raw_json = context.model_dump_json(indent=2)
         sanitized_json = redact_sensitive_data(raw_json)
         
-        with open(evidence_file, "w", encoding="utf-8") as f:
-            f.write(sanitized_json)
+        atomic_write_text(evidence_file, sanitized_json, encoding="utf-8")
             
         return evidence_file
 

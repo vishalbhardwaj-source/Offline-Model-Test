@@ -178,8 +178,9 @@ class ConstrainedTestGenerator:
             content = "# Automatically synthesized by offtest constrained AST generator\n# Status: synthesized, unverified (demonstrates branch reachability only)\nimport pytest\n\n"
             content += "\n\n".join(tc.test_code for tc in test_cases) + "\n"
             from offtest.intake.safety import redact_sensitive_data
+            from offtest.core.evidence_store import atomic_write_text
             sanitized_content = redact_sensitive_data(content)
-            suite_file.write_text(sanitized_content, encoding="utf-8")
+            atomic_write_text(suite_file, sanitized_content, encoding="utf-8")
             suite_path_str = str(suite_file)
 
         compile_rate = 100.0 if test_cases else None

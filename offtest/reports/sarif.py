@@ -82,5 +82,6 @@ class SARIFReportGenerator:
         data = self.generate_sarif()
         raw_sarif = json.dumps(data, indent=2)
         from offtest.intake.safety import redact_sensitive_data
+        from offtest.core.evidence_store import atomic_write_text
         sanitized_sarif = redact_sensitive_data(raw_sarif)
-        out_path.write_text(sanitized_sarif, encoding="utf-8")
+        atomic_write_text(out_path, sanitized_sarif, encoding="utf-8")

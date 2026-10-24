@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 from offtest.checks.flakiness import FlakinessRepeatSampler
 from offtest.checks.planner import CheckPlanner, get_tool_manifest
-from offtest.core.evidence_store import EvidenceStore
+from offtest.core.evidence_store import EvidenceStore, atomic_write_text
 from offtest.core.models import (
     BranchDiffRecord,
     BranchRecord,
@@ -202,18 +202,18 @@ class AssessmentOrchestrator:
         evidence_store = EvidenceStore(base_dir=str(self.output_dir))
         evidence_path = evidence_store.save_run(context)
         evidence_sha = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
-        (run_folder / "evidence.json.sha256").write_text(f"{evidence_sha}  evidence.json\n", encoding="utf-8")
+        atomic_write_text(run_folder / "evidence.json.sha256", f"{evidence_sha}  evidence.json\n")
 
-        # 10. Generate Reports & SARIF 2.1.0 Export (Pre-persistence Redaction Barrier)
+        # 10. Generate Reports & SARIF 2.1.0 Export (Pre-persistence Redaction Barrier + Atomic Writes)
         detailed_gen = DetailedReportGenerator(context)
         detailed_md = redact_sensitive_data(detailed_gen.generate_markdown())
         detailed_report_path = run_folder / "REPORT_1_DETAILED.md"
-        detailed_report_path.write_text(detailed_md, encoding="utf-8")
+        atomic_write_text(detailed_report_path, detailed_md, encoding="utf-8")
 
         issue_gen = IssueFocusedReportGenerator(context)
         issue_md = redact_sensitive_data(issue_gen.generate_markdown())
         issue_report_path = run_folder / "REPORT_2_ISSUES.md"
-        issue_report_path.write_text(issue_md, encoding="utf-8")
+        atomic_write_text(issue_report_path, issue_md, encoding="utf-8")
 
         sarif_gen = SARIFReportGenerator(context, strip_snippets=self.strip_sarif_snippets)
         sarif_path = run_folder / "results.sarif"
