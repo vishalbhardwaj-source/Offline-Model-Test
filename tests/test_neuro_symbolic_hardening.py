@@ -325,6 +325,23 @@ def test_entropy_and_pure_hex_detection():
     assert "[REDACTED_SECRET]" in scrubbed
 
 
+def test_platform_telemetry_not_redacted_as_secret():
+    linux_platform = "Linux-7.0.0-1017-azure-x86_64-with-glibc2.43"
+    windows_platform = "Windows-11-10.0.22631-SP0"
+    darwin_platform = "Darwin-23.4.0-arm64-arm-64bit"
+
+    for plat in [linux_platform, windows_platform, darwin_platform]:
+        json_repr = f'{{"platform": "{plat}", "operating_system": "{plat}"}}'
+        scrubbed = redact_sensitive_data(json_repr)
+        assert plat in scrubbed
+        assert "[REDACTED_SECRET]" not in scrubbed
+
+        report_repr = f"**Operating System / Platform:** `{plat}`"
+        scrubbed_rep = redact_sensitive_data(report_repr)
+        assert plat in scrubbed_rep
+
+
+
 def test_prompt_injection_fence_escape_prevention():
     malicious_readme = """
 # Project Readme

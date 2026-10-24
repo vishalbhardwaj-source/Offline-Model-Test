@@ -40,7 +40,7 @@ def is_high_entropy_secret(token: str) -> Tuple[bool, float, str]:
     based on its character set:
     - Pure hexadecimal ([0-9a-fA-F]): max theoretical entropy is log2(16) = 4.0 bits. Threshold >= 3.2 bits (len >= 24).
     - Alphanumeric ([0-9a-zA-Z]): max theoretical entropy ~ 5.95 bits. Threshold >= 3.8 bits (len >= 20).
-    - Base64 / complex ([0-9a-zA-Z_-.+=/]): threshold >= 4.4 bits (len >= 24).
+    - Base64 ([0-9a-zA-Z+/=] or [0-9a-zA-Z_\\-]): threshold >= 4.4 bits (len >= 24).
     """
     if len(token) < 20:
         return False, 0.0, ""
@@ -51,9 +51,9 @@ def is_high_entropy_secret(token: str) -> Tuple[bool, float, str]:
     elif re.fullmatch(r"[0-9a-zA-Z]+", token):
         if len(token) >= 20 and entropy >= 3.8:
             return True, entropy, "Alphanumeric"
-    else:
+    elif re.fullmatch(r"[0-9a-zA-Z+/=]+", token) or re.fullmatch(r"[0-9a-zA-Z_\-]+={0,2}", token):
         if len(token) >= 24 and entropy >= 4.4:
-            return True, entropy, "Base64/Complex"
+            return True, entropy, "Base64"
     return False, entropy, ""
 
 
@@ -92,13 +92,30 @@ def redact_sensitive_data(text: str) -> str:
         redacted = pattern.sub(_replace_match, redacted)
 
     # 2. Charset-aware Shannon entropy scrubbing for high-entropy tokens
-    # Exclude cryptographic integrity hashes (git commit_hash, sha256, checksum)
+    # Exclude cryptographic integrity hashes, platform metadata, and execution telemetry
     candidate_token_pattern = re.compile(r"""(?<=['"])([A-Za-z0-9_\-\.\+=/]{20,80})(?=['"])""")
+    safe_contexts = [
+        "commit_hash",
+        "sha256",
+        "checksum",
+        "purl",
+        "platform",
+        "python_version",
+        "schema_version",
+        "repo_path",
+        "run_id",
+        "os",
+        "operating_system",
+        "arch",
+        "system",
+    ]
     for token_m in candidate_token_pattern.finditer(redacted):
         token = token_m.group(1)
         start_idx = token_m.start(1)
-        prefix_context = redacted[max(0, start_idx - 25) : start_idx].lower()
-        if any(k in prefix_context for k in ["commit_hash", "sha256", "checksum", "purl"]):
+        prefix_context = redacted[max(0, start_idx - 50) : start_idx].lower()
+        if any(k in prefix_context for k in safe_contexts):
+            continue
+        if token.startswith(("Linux-", "Windows-", "Darwin-", "FreeBSD-", "OpenBSD-")):
             continue
         if "[REDACTED" not in token:
             is_secret, _, _ = is_high_entropy_secret(token)
