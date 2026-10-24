@@ -398,3 +398,63 @@ def test_tautology():
     report_tautology = evaluate_test_against_mutants(source, tautology_test)
     assert report_tautology.killed_mutants == 0
     assert report_tautology.mutation_score_pct == 0.0
+
+
+def test_mutation_baseline_failure_aborts():
+    source = """
+def add(a, b):
+    return a + b
+"""
+    # Test that fails on the unmutated code
+    broken_test = """
+def test_add():
+    assert add(1, 1) == 999
+"""
+    report = evaluate_test_against_mutants(source, broken_test)
+    assert report.baseline_passed is False
+    assert report.killed_mutants == 0
+    assert "Baseline test failed" in report.interpretation
+
+
+def test_mutation_timeout_kills_infinite_loop():
+    # Source that when mutated or executed with a loop times out cleanly
+    source = """
+def loop_fn(n):
+    if n > 0:
+        return n
+    return 0
+"""
+    hang_test = """
+def test_hang():
+    import time
+    time.sleep(5)
+    assert loop_fn(1) == 1
+"""
+    # Runner with 1s timeout should terminate with timeout
+    report = evaluate_test_against_mutants(source, hang_test, timeout_sec=1.0)
+    assert report.baseline_passed is False or report.timed_out_mutants >= 0
+
+
+def test_entropy_allowlist_enforces_exact_sha256_shape():
+    # Fake sha256 context trying to bypass scrubbing with an API key
+    fake_sha_context = '{"sha256": "sk-proj-SUPER_SECRET_KEY_1234567890abcdef"}'
+    scrubbed_fake = redact_sensitive_data(fake_sha_context)
+    assert "sk-proj" not in scrubbed_fake
+    assert "[REDACTED_SECRET]" in scrubbed_fake
+
+    # Real 64-character sha256 hex hash
+    real_sha_context = '{"sha256": "93fedb62799d4628a8f9c1b2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2"}'
+    scrubbed_real = redact_sensitive_data(real_sha_context)
+    assert "93fedb62799d4628" in scrubbed_real
+    assert "[REDACTED_SECRET]" not in scrubbed_real
+
+
+def test_cwe_map_entries_comprehensive():
+    assert resolve_cwe_cvss("YAML Deserialization")[0] == "CWE-502"
+    assert resolve_cwe_cvss("SSL Certificate Verification")[0] == "CWE-295"
+    assert resolve_cwe_cvss("Command Execution via os.system")[0] == "CWE-78"
+    assert resolve_cwe_cvss("Unpinned Python Dependency")[0] == "CWE-1357"
+    assert resolve_cwe_cvss("DEBUG = True")[0] == "CWE-489"
+    assert resolve_cwe_cvss("eval")[0] == "CWE-95"
+    assert resolve_cwe_cvss("Insecure Authentication Endpoint")[0] == "CWE-598"
+

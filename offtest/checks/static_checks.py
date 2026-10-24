@@ -20,11 +20,15 @@ RULE_CWE_CVSS_MAP: Dict[str, Tuple[str, str, float, str]] = {
     "High-Entropy Secret": ("CWE-798", "Use of Hard-coded Credentials", 7.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"),
     "Insecure Authentication Endpoint": ("CWE-598", "Use of GET Request Method With Sensitive Query Strings", 6.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N"),
     "eval": ("CWE-95", "Improper Neutralization of Directives in Dynamically Evaluated Code ('Eval Injection')", 9.8, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
-    "Command Execution via os.system": ("CWE-78", "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')", 9.8, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
-    "Command Injection via subprocess": ("CWE-78", "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')", 8.8, "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"),
+    "Command Execution": ("CWE-78", "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')", 8.8, "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"),
+    "Command Injection": ("CWE-78", "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')", 8.8, "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"),
+    "os.system": ("CWE-78", "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')", 8.8, "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"),
     "DEBUG = True": ("CWE-489", "Active Debug Code", 5.3, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N"),
     "Unpinned Python Dependency": ("CWE-1357", "Reliance on Insufficiently Trustworthy Component", 3.7, "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N"),
     "Floating Node.js Dependency": ("CWE-1357", "Reliance on Insufficiently Trustworthy Component", 3.7, "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N"),
+    "YAML Deserialization": ("CWE-502", "Deserialization of Untrusted Data", 9.8, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
+    "Insecure Object Deserialization": ("CWE-502", "Deserialization of Untrusted Data", 9.8, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
+    "SSL Certificate Verification": ("CWE-295", "Improper Certificate Validation", 7.4, "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N"),
 }
 
 SANDBOX_ARTIFACT_PATTERNS = [
@@ -295,10 +299,10 @@ class OfflineStaticChecker:
                             if is_dynamic:
                                 self.issues.append((
                                     node.lineno,
-                                    "Arbitrary Command Execution via os.system()",
-                                    Severity.CRITICAL,
-                                    Confidence.HIGH,
-                                    "os.system executes shell commands with dynamic or untrusted parameters without escaping, risking command injection.",
+                                    "Dynamic Command Execution via os.system()",
+                                    Severity.HIGH,
+                                    Confidence.LIKELY,
+                                    "os.system executes shell commands with dynamic parameters without escaping, creating high risk of command injection if arguments incorporate external input (taint is unverified statically).",
                                     f"Line {node.lineno}: os.system(...)",
                                     "Replace os.system() with subprocess.run(..., shell=False) passing command arguments as a list."
                                 ))
@@ -307,8 +311,8 @@ class OfflineStaticChecker:
                                     node.lineno,
                                     "Direct Shell Execution Present ('os.system()')",
                                     Severity.LOW,
-                                    Confidence.HIGH,
-                                    "Process spawns an OS shell with fixed arguments. Advisory finding; not command injection unless untrusted input is supplied.",
+                                    Confidence.CONFIRMED,
+                                    "Process spawns an OS shell with fixed constant arguments. Advisory finding; not command injection unless external untrusted input is supplied.",
                                     f"Line {node.lineno}: os.system(...)",
                                     "Replace os.system() with subprocess.run(..., shell=False) passing command arguments as a list."
                                 ))

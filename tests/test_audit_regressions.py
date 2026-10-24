@@ -355,16 +355,25 @@ def test_isolated_runner_windows_job_object_containment(tmp_path: Path):
     assert "timed out after 2 seconds" in stderr
 
 
-def test_all_python_files_compile_without_syntax_or_name_errors():
-    """Compiles all repository Python files to bytecode to ensure zero syntax or F821 undefined variable defects."""
+def test_all_python_files_compile_syntax_clean():
+    """Compiles all repository Python files to bytecode to ensure zero syntax defects."""
     import py_compile
     repo_root = Path(__file__).parent.parent
     py_files = list(repo_root.glob("offtest/**/*.py")) + list(repo_root.glob("tests/**/*.py"))
     assert len(py_files) > 10
 
     for py_file in py_files:
-        # compile() raises PyCompileError / SyntaxError if syntax or static compilation fails
         py_compile.compile(str(py_file), doraise=True)
+
+
+def test_all_offtest_modules_import_cleanly_without_undefined_names():
+    """Imports all offtest modules to catch missing imports or top-level NameError / F821 defects."""
+    import importlib
+    repo_root = Path(__file__).parent.parent
+    offtest_files = list(repo_root.glob("offtest/**/*.py"))
+    for py_file in offtest_files:
+        rel_mod = py_file.relative_to(repo_root).with_suffix("").as_posix().replace("/", ".")
+        importlib.import_module(rel_mod)
 
 
 

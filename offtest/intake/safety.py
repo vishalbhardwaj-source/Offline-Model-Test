@@ -92,31 +92,35 @@ def redact_sensitive_data(text: str) -> str:
         redacted = pattern.sub(_replace_match, redacted)
 
     # 2. Charset-aware Shannon entropy scrubbing for high-entropy tokens
-    # Exclude cryptographic integrity hashes, platform metadata, and execution telemetry
+    # Strictly require exact expected cryptographic/telemetry shapes when safe context keys match
     candidate_token_pattern = re.compile(r"""(?<=['"])([A-Za-z0-9_\-\.\+=/]{20,80})(?=['"])""")
-    safe_contexts = [
-        "commit_hash",
-        "sha256",
-        "checksum",
-        "purl",
-        "platform",
-        "python_version",
-        "schema_version",
-        "repo_path",
-        "run_id",
-        "os",
-        "operating_system",
-        "arch",
-        "system",
-    ]
     for token_m in candidate_token_pattern.finditer(redacted):
         token = token_m.group(1)
         start_idx = token_m.start(1)
         prefix_context = redacted[max(0, start_idx - 50) : start_idx].lower()
-        if any(k in prefix_context for k in safe_contexts):
+
+        # Integrity hashes MUST strictly match hexadecimal shape (32-64 hex chars)
+        if any(k in prefix_context for k in ["commit_hash", "sha256", "checksum"]):
+            if re.fullmatch(r"[0-9a-fA-F]{32,64}", token):
+                continue
+
+        # Package URLs must match purl schema
+        if "purl" in prefix_context and token.startswith("pkg:"):
             continue
+
+        # System telemetry must match valid platform or version shape
+        if any(k in prefix_context for k in ["platform", "operating_system", "os", "system", "arch"]):
+            if token.startswith(("Linux-", "Windows-", "Darwin-", "FreeBSD-", "OpenBSD-")) or re.fullmatch(r"[A-Za-z0-9_\.\-]+", token):
+                continue
+
+        # Safe tool/run metadata
+        if any(k in prefix_context for k in ["run_id", "schema_version", "repo_path"]):
+            if token.startswith("run_") or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", token) or "/" in token or "\\" in token:
+                continue
+
         if token.startswith(("Linux-", "Windows-", "Darwin-", "FreeBSD-", "OpenBSD-")):
             continue
+
         if "[REDACTED" not in token:
             is_secret, _, _ = is_high_entropy_secret(token)
             if is_secret:

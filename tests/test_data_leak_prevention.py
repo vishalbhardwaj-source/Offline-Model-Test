@@ -139,6 +139,9 @@ def test_allow_scripts_safety_gate_refusal_on_bare_host(tmp_path: Path):
     dummy_repo = tmp_path / "dummy_repo"
     dummy_repo.mkdir()
     (dummy_repo / "server.py").write_text("x = 1\n", encoding="utf-8")
+    marker_file = dummy_repo / "executed_marker.txt"
+    test_script = dummy_repo / "run_me.py"
+    test_script.write_text(f"from pathlib import Path; Path(r'{str(marker_file)}').write_text('EXECUTED')", encoding="utf-8")
 
     # 1. Running with allow_scripts=True on bare host omitting accept_no_kernel_isolation must raise SecurityError specifically
     orchestrator_omitted = AssessmentOrchestrator(
@@ -150,6 +153,7 @@ def test_allow_scripts_safety_gate_refusal_on_bare_host(tmp_path: Path):
         orchestrator_omitted.run()
     assert "Execution Refused" in str(exc_info.value)
     assert "--accept-no-kernel-isolation" in str(exc_info.value)
+    assert marker_file.exists() is False, "Refusal must happen before any repository scripts are executed"
 
     # 2. Explicitly setting accept_no_kernel_isolation=False also raises SecurityError
     orchestrator_explicit_false = AssessmentOrchestrator(
@@ -211,10 +215,21 @@ def test_pathological_ast_nesting_handling(tmp_path: Path):
     assert isinstance(findings, list)
 
 
+import os
 import pytest
 
+_has_kernel_isolation = (
+    os.environ.get("OFFTEST_KERNEL_ISOLATION", "").lower() in ("1", "true", "yes")
+    or Path("/.dockerenv").exists()
+    or Path("/run/.containerenv").exists()
+)
 
-@pytest.mark.xfail(strict=True, reason="Documented bare-metal limitation: OS kernel-level container (--network none) required to block unpatched python -I -S interpreter")
+
+@pytest.mark.xfail(
+    condition=not _has_kernel_isolation,
+    strict=True,
+    reason="Documented bare-metal limitation: OS kernel-level container (--network none) required to block unpatched python -I -S interpreter",
+)
 def test_unpatched_interpreter_bypass_documented_gap():
     """
     Documents known bare-metal boundary: an unpatched interpreter spawned with -I -S
@@ -229,7 +244,11 @@ def test_unpatched_interpreter_bypass_documented_gap():
     assert exit_code != 0, "Expected bare host to allow connection unless inside kernel sandbox"
 
 
-@pytest.mark.xfail(strict=True, reason="Documented bare-metal limitation: OS filesystem jail / container required to block raw absolute path traversal")
+@pytest.mark.xfail(
+    condition=not _has_kernel_isolation,
+    strict=True,
+    reason="Documented bare-metal limitation: OS filesystem jail / container required to block raw absolute path traversal",
+)
 def test_absolute_path_host_file_read_documented_gap(tmp_path: Path):
     """
     Documents known bare-metal boundary: absolute path reads to host filesystem bypass
