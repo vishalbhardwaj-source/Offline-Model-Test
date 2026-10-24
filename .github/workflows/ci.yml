@@ -49,11 +49,106 @@ jobs:
         run: |
           docker build -t offtest:test .
 
-      - name: Assert Air-Gap Container Security Boundaries
+      - name: Assert Air-Gap Container Security Boundaries (Negative & Positive Controls)
         run: |
           mkdir -p /tmp/test_out
           chmod 777 /tmp/test_out
-          # Execute assessment inside hardened container with zero network and read-only repo
+
+          echo "=== Negative Control 1: Refuse default bridge network (egress open) ==="
+          if docker run --rm \
+            --read-only \
+            --tmpfs /tmp:rw,nosuid,size=512m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --user 10001:10001 \
+            -v $GITHUB_WORKSPACE/sample_repos/sample_web_app:/repo:ro \
+            -v /tmp/test_out:/out:rw \
+            offtest:test assess /repo --out /out --allow-scripts; then
+            echo "ERROR: Gate unexpectedly approved container with default bridge network!"
+            exit 1
+          else
+            echo "SUCCESS: Gate correctly refused default bridge network."
+          fi
+
+          echo "=== Negative Control 2: Refuse root user (--user 0) ==="
+          if docker run --rm \
+            --network none \
+            --read-only \
+            --tmpfs /tmp:rw,nosuid,size=512m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --user 0:0 \
+            -v $GITHUB_WORKSPACE/sample_repos/sample_web_app:/repo:ro \
+            -v /tmp/test_out:/out:rw \
+            offtest:test assess /repo --out /out --allow-scripts; then
+            echo "ERROR: Gate unexpectedly approved root user execution!"
+            exit 1
+          else
+            echo "SUCCESS: Gate correctly refused root user."
+          fi
+
+          echo "=== Negative Control 3: Refuse full capability bounding set (missing --cap-drop ALL) ==="
+          if docker run --rm \
+            --network none \
+            --read-only \
+            --tmpfs /tmp:rw,nosuid,size=512m \
+            --security-opt no-new-privileges \
+            --user 10001:10001 \
+            -v $GITHUB_WORKSPACE/sample_repos/sample_web_app:/repo:ro \
+            -v /tmp/test_out:/out:rw \
+            offtest:test assess /repo --out /out --allow-scripts; then
+            echo "ERROR: Gate unexpectedly approved non-zero CapBnd bounding set!"
+            exit 1
+          else
+            echo "SUCCESS: Gate correctly refused container without --cap-drop ALL."
+          fi
+
+          echo "=== Negative Control 4: Refuse writable root filesystem (missing --read-only) ==="
+          if docker run --rm \
+            --network none \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --user 10001:10001 \
+            -v $GITHUB_WORKSPACE/sample_repos/sample_web_app:/repo:ro \
+            -v /tmp/test_out:/out:rw \
+            offtest:test assess /repo --out /out --allow-scripts; then
+            echo "ERROR: Gate unexpectedly approved writable root filesystem!"
+            exit 1
+          else
+            echo "SUCCESS: Gate correctly refused writable root filesystem."
+          fi
+
+          echo "=== Negative Control 5: Refuse mounted Docker socket ==="
+          if docker run --rm \
+            --network none \
+            --read-only \
+            --tmpfs /tmp:rw,nosuid,size=512m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --user 10001:10001 \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v $GITHUB_WORKSPACE/sample_repos/sample_web_app:/repo:ro \
+            -v /tmp/test_out:/out:rw \
+            offtest:test assess /repo --out /out --allow-scripts; then
+            echo "ERROR: Gate unexpectedly approved mounted Docker control socket!"
+            exit 1
+          else
+            echo "SUCCESS: Gate correctly refused mounted Docker socket."
+          fi
+
+          echo "=== Negative Control 6: Refuse --privileged container ==="
+          if docker run --rm \
+            --privileged \
+            -v $GITHUB_WORKSPACE/sample_repos/sample_web_app:/repo:ro \
+            -v /tmp/test_out:/out:rw \
+            offtest:test assess /repo --out /out --allow-scripts; then
+            echo "ERROR: Gate unexpectedly approved --privileged execution!"
+            exit 1
+          else
+            echo "SUCCESS: Gate correctly refused --privileged container."
+          fi
+
+          echo "=== Positive Control: Fully hardened container is approved ==="
           docker run --rm \
             --network none \
             --read-only \
@@ -63,4 +158,5 @@ jobs:
             --user 10001:10001 \
             -v $GITHUB_WORKSPACE/sample_repos/sample_web_app:/repo:ro \
             -v /tmp/test_out:/out:rw \
-            offtest:test assess /repo --out /out
+            offtest:test assess /repo --out /out --allow-scripts
+          echo "SUCCESS: Hardened air-gapped container approved and executed safely."

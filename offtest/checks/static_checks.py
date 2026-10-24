@@ -584,7 +584,38 @@ class OfflineStaticChecker:
             data = json.loads(content)
             deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
             for pkg, ver in deps.items():
-                if ver.startswith("^") or ver.startswith("~") or ver == "*" or ver == "latest":
+                ver_str = str(ver).strip()
+                from offtest.intake.intake import is_unc_or_remote_path
+                if is_unc_or_remote_path(ver_str) or ver_str.startswith(("git://", "git+http", "git+ssh", "http://", "https://")):
+                    findings.append(
+                        Finding(
+                            id=f"FIND-{c:04d}",
+                            title=f"Remote Network or UNC Dependency Reference in package.json: '{pkg}'",
+                            severity=Severity.HIGH,
+                            confidence=Confidence.CONFIRMED,
+                            provenance="rule",
+                            status=EvidenceStatus.OBSERVED,
+                            branch=branch,
+                            file_path=rel_path,
+                            line_number=None,
+                            file_sha256=f_sha,
+                            impact="Package dependency specifies a remote network or UNC repository URL. Installation triggers outbound network traffic across air-gap.",
+                            evidence=f"\"{pkg}\": \"{ver_str}\"",
+                            suggested_action="Vendor dependency locally within repository or supply offline tarball archive.",
+                            check_tool="dependency-pin-checker",
+                            cwe_id="CWE-829",
+                            cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
+                            cvss_score_estimate=7.5,
+                            cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+                            cvss_is_estimate=True,
+                            environmental_context_assumed="Assumes strict offline air-gap build requirements.",
+                            oracle_origin="static_rule",
+                            reproduced=True,
+                            sandbox_artifact=False,
+                        )
+                    )
+                    c += 1
+                elif ver.startswith("^") or ver.startswith("~") or ver == "*" or ver == "latest":
                     cwe_id, cwe_name, cvss_score, cvss_vector = resolve_cwe_cvss("Floating Node.js Dependency")
                     findings.append(
                         Finding(

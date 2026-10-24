@@ -14,6 +14,12 @@ class IssueFocusedReportGenerator:
         iso_str = "Verified Container / Kernel Air-Gap" if self.ctx.kernel_isolation_active else "Python-level egress guard (Defense in Depth); Kernel Isolation: Not Present (Bare Metal)"
         lines.append(f"**Isolation Mode:** `{iso_str}`\n")
 
+        if self.ctx.allow_scripts and not self.ctx.kernel_isolation_active:
+            lines.append("> [!CAUTION]")
+            lines.append("> **UNISOLATED SCRIPT EXECUTION WARNING**")
+            lines.append("> Operator explicitly bypassed kernel sandbox boundaries via `--accept-no-kernel-isolation`.")
+            lines.append("> Untrusted repository code was executed directly on a bare host without network namespace, container, or read-only filesystem isolation.\n")
+
         # Counts
         crit_issues = [f for f in self.ctx.findings if f.severity == Severity.CRITICAL]
         high_issues = [f for f in self.ctx.findings if f.severity == Severity.HIGH]

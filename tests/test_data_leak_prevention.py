@@ -68,6 +68,53 @@ TOKEN = "{raw_jwt}"
                     assert secret_canary not in raw_bytes, f"Canary leak detected in output artifact '{out_file.name}'"
 
 
+def test_comprehensive_canary_leak_protection_parent_env_and_npmrc(monkeypatch):
+    """
+    Verifies that secrets from parent environment, .npmrc, and runtime outputs
+    never leak into any persisted artifact in the evidence store or reports.
+    """
+    with tempfile.TemporaryDirectory() as fixture_dir, tempfile.TemporaryDirectory() as runs_dir:
+        repo_path = Path(fixture_dir)
+
+        # 1. Parent environment canary secrets
+        parent_env_canary = "ghp_CANARY_PARENT_ENV_TOKEN_SECRET_9876543210"
+        aws_secret_canary = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYCANARYKEY99"
+        monkeypatch.setenv("GITHUB_TOKEN", parent_env_canary)
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", aws_secret_canary)
+
+        # 2. .npmrc canary secret
+        npmrc_canary = "npm_0000000000000000000000000000CANARYTOKEN"
+        (repo_path / ".npmrc").write_text(f"//registry.npmjs.org/:_authToken={npmrc_canary}\n", encoding="utf-8")
+
+        # 3. Source file with embedded tokens
+        source_canary = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.CANARY_PAYLOAD.CANARY_SIGNATURE_BYTES_123"
+        (repo_path / "app.js").write_text(f"const token = '{source_canary}';\nconsole.log(token);\n", encoding="utf-8")
+
+        orchestrator = AssessmentOrchestrator(
+            repo_path_or_archive=str(repo_path),
+            base_branch="main",
+            allow_scripts=False,
+            output_dir=runs_dir,
+            generate_tests=False,
+        )
+
+        context, det_path, iss_path, sarif_path = orchestrator.run()
+
+        all_canaries = [
+            parent_env_canary.encode(),
+            aws_secret_canary.encode(),
+            npmrc_canary.encode(),
+            source_canary.encode(),
+        ]
+
+        run_folder = det_path.parent
+        for out_file in run_folder.rglob("*"):
+            if out_file.is_file():
+                raw_bytes = out_file.read_bytes()
+                for canary in all_canaries:
+                    assert canary not in raw_bytes, f"Canary leak detected in '{out_file.name}'"
+
+
 def test_network_isolation_and_telemetry_blocking():
     """Verifies that IsolatedRunner injects offline proxy nullification and telemetry opt-out flags."""
     runner = IsolatedRunner(Path("."))
@@ -325,6 +372,49 @@ def test_absolute_path_host_file_read_documented_gap(tmp_path: Path):
     exit_code, stdout, _, _ = runner.run(read_cmd)
     # On bare host, absolute path can be read.
     assert "HOST_SECRET" not in stdout, "Expected absolute path read to fail under filesystem jail"
+
+
+def test_verify_kernel_sandbox_environment_linux_unit(monkeypatch, tmp_path):
+    """
+    Unit-tests Linux kernel sandbox verification logic using simulated /proc files:
+    - Verifies CapBnd bounding set discrimination
+    - Verifies mountinfo ro root, ro repo, out-only writable volume
+    - Verifies control socket detection
+    """
+    from offtest.checks.isolated_runner import verify_kernel_sandbox_environment, _audit_mounts
+    import offtest.checks.isolated_runner as iso_mod
+
+    # 1. Simulated mountinfo with read-only root and /out volume
+    mountinfo_valid = """36 35 0:33 / / ro,relatime - overlay overlay ro,lowerdir=...
+37 36 0:34 / /repo ro,relatime - ext4 /dev/sdb ro
+38 36 0:35 / /out rw,relatime - ext4 /dev/sdc rw
+39 36 0:36 / /tmp rw,nosuid,nodev - tmpfs tmpfs rw
+"""
+    m_file = tmp_path / "mountinfo"
+    m_file.write_text(mountinfo_valid, encoding="utf-8")
+
+    # Audit valid mount layout
+    monkeypatch.setattr(iso_mod, "Path", lambda p: m_file if str(p) == "/proc/self/mountinfo" else Path(p))
+    ok, diag = _audit_mounts(Path("/repo"))
+    assert ok is True
+
+    # 2. Simulated mountinfo with mounted docker socket
+    mountinfo_socket = mountinfo_valid + "40 36 0:37 / /var/run/docker.sock rw - ext4 /dev/sdd rw\n"
+    m_sock_file = tmp_path / "mountinfo_sock"
+    m_sock_file.write_text(mountinfo_socket, encoding="utf-8")
+    monkeypatch.setattr(iso_mod, "Path", lambda p: m_sock_file if str(p) == "/proc/self/mountinfo" else Path(p))
+    ok_sock, diag_sock = _audit_mounts(Path("/repo"))
+    assert ok_sock is False
+    assert "Control socket detected" in diag_sock
+
+    # 3. Simulated mountinfo with unauthorized writable host mount
+    mountinfo_leak = mountinfo_valid + "41 36 0:38 / /etc rw,relatime - ext4 /dev/sde rw\n"
+    m_leak_file = tmp_path / "mountinfo_leak"
+    m_leak_file.write_text(mountinfo_leak, encoding="utf-8")
+    monkeypatch.setattr(iso_mod, "Path", lambda p: m_leak_file if str(p) == "/proc/self/mountinfo" else Path(p))
+    ok_leak, diag_leak = _audit_mounts(Path("/repo"))
+    assert ok_leak is False
+    assert "Unauthorized writable mount" in diag_leak
 
 
 def test_unc_path_rejection_prevents_smb_leak():

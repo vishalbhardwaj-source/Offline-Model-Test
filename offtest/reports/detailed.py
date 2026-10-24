@@ -25,6 +25,13 @@ class DetailedReportGenerator:
 
         lines.append(f"**Operating System / Platform:** `{self.ctx.platform}` | **Python:** `{self.ctx.python_version}`  ")
         lines.append(f"**Network Isolation:** `{iso_str}` | **Script Execution Approved:** `{script_approval}`  ")
+
+        if self.ctx.allow_scripts and not self.ctx.kernel_isolation_active:
+            lines.append("\n> [!CAUTION]")
+            lines.append("> **UNISOLATED SCRIPT EXECUTION WARNING**")
+            lines.append("> Operator explicitly bypassed kernel sandbox boundaries via `--accept-no-kernel-isolation`.")
+            lines.append("> Untrusted repository code was executed directly on a bare host without network namespace, container, or read-only filesystem isolation.\n")
+
         lines.append("\n---\n")
 
         # 2. Executive Summary

@@ -61,7 +61,7 @@ def main():
     "--accept-no-kernel-isolation",
     is_flag=True,
     default=False,
-    help="Explicitly acknowledge and accept running scripts on bare host without container/kernel-level network isolation.",
+    help="Explicitly acknowledge and accept running scripts on bare host with NO ISOLATION. Untrusted code will have direct host access.",
 )
 def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_policy, generate_tests, out, sarif_out, json_out, strict, strip_sarif_snippets, accept_no_kernel_isolation):
     """
@@ -75,13 +75,20 @@ def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_poli
     if allow_scripts:
         if not has_kernel_iso and not accept_no_kernel_isolation:
             click.echo("[!] SAFETY GATE REFUSAL: --allow-scripts requested on bare host without kernel-level isolation.")
+            click.echo(f"    Reason: {iso_reason}")
             click.echo("    Host network interfaces and absolute filesystem paths remain reachable by untrusted code.")
             click.echo("    To proceed safely:")
-            click.echo("      1. Execute inside a container: docker run --network none ...")
+            click.echo("      1. Execute inside a hardened container: docker run --network none --read-only --cap-drop ALL ...")
             click.echo("      2. Or explicitly pass: --accept-no-kernel-isolation to acknowledge bare-host execution.")
             sys.exit(2)
         elif not has_kernel_iso and accept_no_kernel_isolation:
-            click.echo("[!] Script execution APPROVED on bare host (--accept-no-kernel-isolation accepted by operator).")
+            is_ci = os.environ.get("CI", "").lower() in ("true", "1") or os.environ.get("GITHUB_ACTIONS", "").lower() in ("true", "1")
+            if is_ci:
+                click.echo("[!] SAFETY GATE REFUSAL: --accept-no-kernel-isolation is strictly rejected in CI / automated environments.")
+                click.echo("    Automated CI jobs must execute inside hardened air-gapped containers to protect runner infrastructure.")
+                sys.exit(2)
+            click.echo("[!] CRITICAL WARNING: Script execution APPROVED on bare host with NO ISOLATION.")
+            click.echo("    Untrusted repository code has direct access to host network interfaces, environment variables, and filesystem.")
         else:
             click.echo("[+] Script execution APPROVED inside verified container/kernel isolation.")
     else:

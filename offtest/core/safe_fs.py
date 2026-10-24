@@ -59,6 +59,8 @@ def safe_walk(
     """
     top = str(top_dir)
 
+    top_resolved = os.path.realpath(top)
+
     for root, dirs, files in os.walk(top):
         # 1. Filter subdirectories
         safe_dirs: List[str] = []
@@ -74,6 +76,11 @@ def safe_walk(
                     if is_unc_or_remote_path(target_link):
                         if on_suspicious_entry:
                             on_suspicious_entry(d_path, "junction", target_link)
+                    else:
+                        target_resolved = os.path.realpath(os.path.join(root, target_link))
+                        if not target_resolved.startswith(top_resolved):
+                            if on_suspicious_entry:
+                                on_suspicious_entry(d_path, "escaping_symlink", target_link)
                 except OSError:
                     pass
                 # Never descend into junctions or symlinks
@@ -94,6 +101,12 @@ def safe_walk(
                         if on_suspicious_entry:
                             on_suspicious_entry(f_path, "symlink_file", target_link)
                         continue
+                    else:
+                        target_resolved = os.path.realpath(os.path.join(root, target_link))
+                        if not target_resolved.startswith(top_resolved):
+                            if on_suspicious_entry:
+                                on_suspicious_entry(f_path, "escaping_symlink", target_link)
+                            continue
                 except OSError:
                     pass
             safe_files.append(f)

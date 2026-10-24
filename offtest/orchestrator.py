@@ -57,12 +57,20 @@ class AssessmentOrchestrator:
         self.strip_sarif_snippets = strip_sarif_snippets
 
     def run(self) -> Tuple[RunContext, Path, Path, Path]:
-        has_kernel_isolation, isolation_diag = verify_kernel_sandbox_environment()
-        if self.allow_scripts and not has_kernel_isolation and not self.accept_no_kernel_isolation:
-            raise SecurityError(
-                f"Execution Refused: --allow-scripts was requested on a bare host without container/kernel-level network isolation ({isolation_diag}). "
-                "Pass --accept-no-kernel-isolation to acknowledge bare-host execution, or execute inside a container (docker run --network none ...)."
-            )
+        target_path = Path(self.input_target) if isinstance(self.input_target, (str, Path)) and Path(self.input_target).exists() else None
+        has_kernel_isolation, isolation_diag = verify_kernel_sandbox_environment(target_path)
+        if self.allow_scripts and not has_kernel_isolation:
+            if not self.accept_no_kernel_isolation:
+                raise SecurityError(
+                    f"Execution Refused: --allow-scripts was requested on a bare host without container/kernel-level network isolation ({isolation_diag}). "
+                    "Pass --accept-no-kernel-isolation to acknowledge bare-host execution, or execute inside a container (docker run --network none ...)."
+                )
+            is_ci = os.environ.get("CI", "").lower() in ("true", "1") or os.environ.get("GITHUB_ACTIONS", "").lower() in ("true", "1")
+            if is_ci:
+                raise SecurityError(
+                    "Execution Refused: accept_no_kernel_isolation is strictly rejected in CI / automated environments. "
+                    "Hardened container air-gap isolation is mandatory."
+                )
 
         run_id = f"run_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         run_folder = self.output_dir / run_id
