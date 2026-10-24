@@ -16,6 +16,11 @@ dependencies = [
 [project.scripts]
 offtest = "offtest.cli:main"
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["offtest*"]
+exclude = ["sample_repos*", "reproduced_reports*", "tests*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
