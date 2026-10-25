@@ -215,7 +215,7 @@ def _audit_mounts(repo_path: Optional[Path] = None) -> Tuple[bool, str]:
 
     # Strict tmpfs whitelist paths (Round 9 mount audit: allow standard OS device & scratch tmpfs)
     approved_tmpfs_paths = {
-        "/dev", "/dev/shm", "/run", "/run/lock", "/tmp", "/var/run"
+        "/dev", "/dev/shm", "/run", "/run/lock", "/tmp", "/var/run", "/out"
     }
 
     # Container runtime default network config files (Docker, Podman, gVisor)
@@ -262,8 +262,11 @@ def _audit_mounts(repo_path: Optional[Path] = None) -> Tuple[bool, str]:
             if is_rw:
                 return False, f"Repository mount '{mount_point}' is mounted writable. Hardened container requires -v /path:/repo:ro."
 
-        # Check writable mounts: only allowed are approved tmpfs paths, runtime configs, or /out
+        # Check writable mounts: only allowed are /out, approved tmpfs paths, or runtime configs
         if is_rw:
+            # Output directory is explicitly designated for writing reports and artifacts
+            if mount_point == "/out" or mount_point.startswith("/out/"):
+                continue
             if fs_type in pseudo_types:
                 continue
             if mount_point in runtime_whitelisted_mounts:
@@ -274,11 +277,10 @@ def _audit_mounts(repo_path: Optional[Path] = None) -> Tuple[bool, str]:
                     or mount_point.startswith("/tmp/")
                     or mount_point.startswith("/dev/")
                     or mount_point.startswith("/run/")
+                    or mount_point.startswith("/out/")
                 ):
                     continue
                 return False, f"Unauthorized writable tmpfs mount detected at '{mount_point}'. Only approved scratch paths ({', '.join(sorted(approved_tmpfs_paths))}) are permitted."
-            if mount_point == "/out" or mount_point.startswith("/out/"):
-                continue
             return False, f"Unauthorized writable mount detected at '{mount_point}' (type: {fs_type}). Only /out and approved tmpfs scratch memory are permitted."
 
     if not root_seen or not root_ro:

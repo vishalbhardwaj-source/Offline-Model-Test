@@ -98,7 +98,7 @@ def test_mount_audit_rejects_unauthorized_writable_tmpfs(monkeypatch, tmp_path: 
     # 1. Standard Docker hardened container layout with /dev tmpfs should PASS
     docker_hardened_mountinfo = """36 35 0:33 / / ro,relatime - overlay overlay ro,lowerdir=...
 37 36 0:34 / /repo ro,relatime - ext4 /dev/sdb ro
-38 36 0:35 / /out rw,relatime - ext4 /dev/sdc rw
+38 36 0:35 / /out rw,nosuid,nodev - tmpfs tmpfs rw
 39 36 0:36 / /dev rw,nosuid,size=65536k,mode=755 - tmpfs tmpfs rw
 40 36 0:37 / /dev/shm rw,nosuid,nodev,noexec - tmpfs tmpfs rw
 41 36 0:38 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw
@@ -111,7 +111,7 @@ def test_mount_audit_rejects_unauthorized_writable_tmpfs(monkeypatch, tmp_path: 
 
     monkeypatch.setattr(iso_mod, "Path", lambda p: m_valid_file if str(p) == "/proc/self/mountinfo" else Path(p))
     ok, diag = _audit_mounts(Path("/repo"))
-    assert ok is True, f"Failed on standard Docker mount layout: {diag}"
+    assert ok is True, f"Failed on standard Docker mount layout with tmpfs /out: {diag}"
 
     # 2. Writable tmpfs mounted over /etc (unauthorized writable mount) must FAIL
     hostile_mountinfo = """36 35 0:33 / / ro,relatime - overlay overlay ro,lowerdir=...
