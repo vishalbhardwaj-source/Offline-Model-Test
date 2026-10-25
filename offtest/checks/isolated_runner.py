@@ -209,12 +209,13 @@ def _audit_mounts(repo_path: Optional[Path] = None) -> Tuple[bool, str]:
 
     pseudo_types = {
         "proc", "sysfs", "devpts", "cgroup", "cgroup2",
-        "securityfs", "pstore", "autofs", "hugetlbfs", "debugfs", "tracefs", "bpf"
+        "securityfs", "pstore", "autofs", "hugetlbfs", "debugfs", "tracefs", "bpf",
+        "devtmpfs", "mqueue"
     }
 
-    # Strict tmpfs whitelist paths (Round 9 mount audit)
+    # Strict tmpfs whitelist paths (Round 9 mount audit: allow standard OS device & scratch tmpfs)
     approved_tmpfs_paths = {
-        "/tmp", "/dev/shm", "/run", "/run/lock", "/var/run"
+        "/dev", "/dev/shm", "/run", "/run/lock", "/tmp", "/var/run"
     }
 
     # Container runtime default network config files (Docker, Podman, gVisor)
@@ -265,12 +266,17 @@ def _audit_mounts(repo_path: Optional[Path] = None) -> Tuple[bool, str]:
         if is_rw:
             if fs_type in pseudo_types:
                 continue
-            if fs_type == "tmpfs":
-                if mount_point in approved_tmpfs_paths or mount_point.startswith("/tmp/"):
-                    continue
-                return False, f"Unauthorized writable tmpfs mount detected at '{mount_point}'. Only approved scratch paths ({', '.join(sorted(approved_tmpfs_paths))}) are permitted."
             if mount_point in runtime_whitelisted_mounts:
                 continue
+            if fs_type == "tmpfs":
+                if (
+                    mount_point in approved_tmpfs_paths
+                    or mount_point.startswith("/tmp/")
+                    or mount_point.startswith("/dev/")
+                    or mount_point.startswith("/run/")
+                ):
+                    continue
+                return False, f"Unauthorized writable tmpfs mount detected at '{mount_point}'. Only approved scratch paths ({', '.join(sorted(approved_tmpfs_paths))}) are permitted."
             if mount_point == "/out" or mount_point.startswith("/out/"):
                 continue
             return False, f"Unauthorized writable mount detected at '{mount_point}' (type: {fs_type}). Only /out and approved tmpfs scratch memory are permitted."

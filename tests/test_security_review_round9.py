@@ -90,12 +90,30 @@ def test_evidence_hmac_tamper_evidence(tmp_path: Path):
 def test_mount_audit_rejects_unauthorized_writable_tmpfs(monkeypatch, tmp_path: Path):
     """
     Verifies Round 9 Gate Audit: Loose tmpfs mounts (e.g. writable tmpfs mounted over /etc)
-    are strictly rejected. Approved scratch paths (/tmp, /dev/shm, /run) and container runtime
+    are strictly rejected. Approved scratch paths (/tmp, /dev, /dev/shm, /run) and container runtime
     files (/etc/hosts, /etc/resolv.conf) are properly validated.
     """
     import offtest.checks.isolated_runner as iso_mod
 
-    # Writable tmpfs mounted over /etc (unauthorized writable mount)
+    # 1. Standard Docker hardened container layout with /dev tmpfs should PASS
+    docker_hardened_mountinfo = """36 35 0:33 / / ro,relatime - overlay overlay ro,lowerdir=...
+37 36 0:34 / /repo ro,relatime - ext4 /dev/sdb ro
+38 36 0:35 / /out rw,relatime - ext4 /dev/sdc rw
+39 36 0:36 / /dev rw,nosuid,size=65536k,mode=755 - tmpfs tmpfs rw
+40 36 0:37 / /dev/shm rw,nosuid,nodev,noexec - tmpfs tmpfs rw
+41 36 0:38 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw
+42 36 0:39 / /dev/mqueue rw,nosuid,nodev,noexec - mqueue mqueue rw
+43 36 0:40 / /etc/hosts ro,relatime - ext4 /dev/sdb ro
+44 36 0:41 / /tmp rw,nosuid,nodev - tmpfs tmpfs rw
+"""
+    m_valid_file = tmp_path / "mountinfo_docker_hardened"
+    m_valid_file.write_text(docker_hardened_mountinfo, encoding="utf-8")
+
+    monkeypatch.setattr(iso_mod, "Path", lambda p: m_valid_file if str(p) == "/proc/self/mountinfo" else Path(p))
+    ok, diag = _audit_mounts(Path("/repo"))
+    assert ok is True, f"Failed on standard Docker mount layout: {diag}"
+
+    # 2. Writable tmpfs mounted over /etc (unauthorized writable mount) must FAIL
     hostile_mountinfo = """36 35 0:33 / / ro,relatime - overlay overlay ro,lowerdir=...
 37 36 0:34 / /repo ro,relatime - ext4 /dev/sdb ro
 38 36 0:35 / /out rw,relatime - ext4 /dev/sdc rw
