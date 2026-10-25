@@ -77,8 +77,10 @@ def safe_walk(
                         if on_suspicious_entry:
                             on_suspicious_entry(d_path, "junction", target_link)
                     else:
-                        target_resolved = os.path.realpath(os.path.join(root, target_link))
-                        if not target_resolved.startswith(top_resolved):
+                        # Lexical path check: purely syntactic normalization without following or resolving links
+                        lexical_target = os.path.normpath(os.path.join(root, target_link))
+                        top_norm = os.path.normpath(top)
+                        if not (lexical_target == top_norm or lexical_target.startswith(top_norm + os.sep)):
                             if on_suspicious_entry:
                                 on_suspicious_entry(d_path, "escaping_symlink", target_link)
                 except OSError:
@@ -102,8 +104,10 @@ def safe_walk(
                             on_suspicious_entry(f_path, "symlink_file", target_link)
                         continue
                     else:
-                        target_resolved = os.path.realpath(os.path.join(root, target_link))
-                        if not target_resolved.startswith(top_resolved):
+                        # Lexical path check: purely syntactic normalization without following or resolving links
+                        lexical_target = os.path.normpath(os.path.join(root, target_link))
+                        top_norm = os.path.normpath(top)
+                        if not (lexical_target == top_norm or lexical_target.startswith(top_norm + os.sep)):
                             if on_suspicious_entry:
                                 on_suspicious_entry(f_path, "escaping_symlink", target_link)
                             continue

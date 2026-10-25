@@ -1,27 +1,81 @@
+import hashlib
+import hmac
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Optional
 from offtest.core.models import RunContext
-from offtest.intake.safety import redact_sensitive_data
+from offtest.intake.safety import redact_data_structure, redact_sensitive_data
+
+
+def get_evidence_signing_key() -> bytes:
+    """
+    Retrieves or generates the HMAC key used to cryptographically seal evidence.json.
+    - Honors OFFTEST_HMAC_KEY from host orchestrator environment.
+    - Falls back to private per-installation key in user profile / tmp with 0o600 permissions.
+    """
+    env_key = os.environ.get("OFFTEST_HMAC_KEY")
+    if env_key:
+        return env_key.encode("utf-8")
+    
+    key_dir = Path(os.environ.get("OFFTEST_KEY_DIR", Path.home() / ".offtest"))
+    key_file = key_dir / "signing.key"
+    try:
+        if key_file.exists():
+            data = key_file.read_bytes()
+            if len(data) >= 16:
+                return data
+        key_dir.mkdir(parents=True, exist_ok=True)
+        key = os.urandom(32)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(str(key_file), flags, 0o600)
+        with open(fd, "wb") as f:
+            f.write(key)
+        return key
+    except Exception:
+        # Ephemeral memory key fallback for read-only containers
+        if not hasattr(get_evidence_signing_key, "_mem_key"):
+            get_evidence_signing_key._mem_key = os.urandom(32)
+        return get_evidence_signing_key._mem_key
 
 
 def atomic_write_text(dest: Path, content: str, encoding: str = "utf-8") -> None:
     """
     Atomically writes content using a temporary file in the destination folder,
     flushes and fsyncs to disk, then replaces destination via os.replace.
-    Ensures that interrupted writes or RedactionErrors never leave partial or
-    unredacted raw files on disk.
+    Guards against:
+    - Pre-planted symlinks / junctions at destination (O_NOFOLLOW & pre-removal)
+    - Unredacted partial writes
+    - Overly permissive file modes (enforces 0o600 where supported)
     """
     import time
     import uuid
+    
+    # Pre-planting defense: refuse writing through existing symlinks
+    if dest.is_symlink() or (sys.platform == "win32" and getattr(dest, "is_junction", lambda: False)()):
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+
     temp_file = dest.with_name(f".{dest.name}.tmp_{os.getpid()}_{uuid.uuid4().hex[:6]}")
     success = False
     try:
-        with open(temp_file, "w", encoding=encoding) as f:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(str(temp_file), flags, 0o600)
+        with open(fd, "w", encoding=encoding, newline="") as f:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
+        
+        # Enforce 0o600 permissions where supported
+        if sys.platform != "win32":
+            try:
+                os.chmod(temp_file, 0o600)
+            except OSError:
+                pass
+
         # Windows sharing-violation retry loop (handles transient indexer/antivirus locks)
         for attempt in range(4):
             try:
@@ -54,11 +108,31 @@ class EvidenceStore:
         run_dir.mkdir(parents=True, exist_ok=True)
         evidence_file = run_dir / "evidence.json"
         
-        # Enforce zero data leaks: redact all secrets from the serialized evidence JSON before persisting to disk
-        raw_json = context.model_dump_json(indent=2)
-        sanitized_json = redact_sensitive_data(raw_json)
+        # Round 9 Integrity & Redaction Barrier:
+        # 1. Pre-serialization recursive redaction on Python data structure (prevents JSON escaping bypasses)
+        raw_dict = context.model_dump()
+        redacted_dict = redact_data_structure(raw_dict)
         
+        # 2. Serialize to clean JSON string
+        serialized_json = json.dumps(redacted_dict, indent=2)
+        
+        # 3. Post-serialization regex/entropy double barrier
+        sanitized_json = redact_sensitive_data(serialized_json)
+        
+        # 4. Re-parse verification: Mathematically validate JSON syntax is uncorrupted
+        json.loads(sanitized_json)
+        
+        # 5. Atomic write with O_NOFOLLOW and restrictive permissions (0o600)
         atomic_write_text(evidence_file, sanitized_json, encoding="utf-8")
+        final_bytes = evidence_file.read_bytes()
+        
+        # 6. Cryptographic Evidence Integrity (SHA-256 + Keyed HMAC)
+        sha256_digest = hashlib.sha256(final_bytes).hexdigest()
+        atomic_write_text(run_dir / "evidence.json.sha256", f"{sha256_digest}  evidence.json\n")
+        
+        hmac_key = get_evidence_signing_key()
+        hmac_digest = hmac.new(hmac_key, final_bytes, hashlib.sha256).hexdigest()
+        atomic_write_text(run_dir / "evidence.json.hmac", f"{hmac_digest}  evidence.json\n")
             
         return evidence_file
 

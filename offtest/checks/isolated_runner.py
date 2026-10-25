@@ -208,8 +208,18 @@ def _audit_mounts(repo_path: Optional[Path] = None) -> Tuple[bool, str]:
     root_ro = False
 
     pseudo_types = {
-        "tmpfs", "proc", "sysfs", "devpts", "mqueue", "cgroup", "cgroup2",
+        "proc", "sysfs", "devpts", "cgroup", "cgroup2",
         "securityfs", "pstore", "autofs", "hugetlbfs", "debugfs", "tracefs", "bpf"
+    }
+
+    # Strict tmpfs whitelist paths (Round 9 mount audit)
+    approved_tmpfs_paths = {
+        "/tmp", "/dev/shm", "/run", "/run/lock", "/var/run"
+    }
+
+    # Container runtime default network config files (Docker, Podman, gVisor)
+    runtime_whitelisted_mounts = {
+        "/etc/hosts", "/etc/resolv.conf", "/etc/hostname", "/dev/mqueue"
     }
 
     target_repo_str = str(repo_path.resolve()) if repo_path else "/repo"
@@ -251,13 +261,19 @@ def _audit_mounts(repo_path: Optional[Path] = None) -> Tuple[bool, str]:
             if is_rw:
                 return False, f"Repository mount '{mount_point}' is mounted writable. Hardened container requires -v /path:/repo:ro."
 
-        # Check writable mounts: only allowed are tmpfs/pseudo types, or /out (or subpath of /out)
+        # Check writable mounts: only allowed are approved tmpfs paths, runtime configs, or /out
         if is_rw:
             if fs_type in pseudo_types:
                 continue
+            if fs_type == "tmpfs":
+                if mount_point in approved_tmpfs_paths or mount_point.startswith("/tmp/"):
+                    continue
+                return False, f"Unauthorized writable tmpfs mount detected at '{mount_point}'. Only approved scratch paths ({', '.join(sorted(approved_tmpfs_paths))}) are permitted."
+            if mount_point in runtime_whitelisted_mounts:
+                continue
             if mount_point == "/out" or mount_point.startswith("/out/"):
                 continue
-            return False, f"Unauthorized writable mount detected at '{mount_point}' (type: {fs_type}). Only /out and tmpfs scratch memory are permitted."
+            return False, f"Unauthorized writable mount detected at '{mount_point}' (type: {fs_type}). Only /out and approved tmpfs scratch memory are permitted."
 
     if not root_seen or not root_ro:
         return False, "Root filesystem '/' was not confirmed read-only in /proc/self/mountinfo."

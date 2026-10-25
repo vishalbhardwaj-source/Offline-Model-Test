@@ -166,11 +166,12 @@ class RepositoryIntake:
                         if not str(resolved).startswith(str(temp_dir)):
                             raise SecurityError(f"Malicious archive member detected (path traversal): {member.name}")
 
-                        # 3. Symlink / Hardlink Escape Guard
+                        # 3. Symlink / Hardlink Escape Guard (strictly lexical - prevents resolve() evaluation)
                         if member.issym() or member.islnk():
-                            link_target = (temp_dir / member.name).parent / member.linkname
-                            link_resolved = link_target.resolve()
-                            if not str(link_resolved).startswith(str(temp_dir)):
+                            parent_dir = os.path.normpath(str((temp_dir / member.name).parent))
+                            lexical_target = os.path.normpath(os.path.join(parent_dir, member.linkname))
+                            temp_dir_norm = os.path.normpath(str(temp_dir))
+                            if not (lexical_target == temp_dir_norm or lexical_target.startswith(temp_dir_norm + os.sep)):
                                 raise SecurityError(
                                     f"Malicious symlink/hardlink points outside sandbox: {member.name} -> {member.linkname}"
                                 )

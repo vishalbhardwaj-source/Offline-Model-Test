@@ -72,6 +72,13 @@ class SARIFReportGenerator:
                             "rules": list(rules.values()),
                         }
                     },
+                    "properties": {
+                        "runId": getattr(self.ctx, "run_id", "unknown_run"),
+                        "bareHostOverride": bool(getattr(self.ctx, "accept_no_kernel_isolation", False) and not getattr(self.ctx, "kernel_isolation_active", False)),
+                        "kernelIsolationActive": bool(getattr(self.ctx, "kernel_isolation_active", False)),
+                        "networkIsolationMode": getattr(self.ctx, "network_isolation_mode", "unknown"),
+                        "offlineEnforced": bool(getattr(self.ctx, "offline_enforced", True)),
+                    },
                     "results": results,
                 }
             ],

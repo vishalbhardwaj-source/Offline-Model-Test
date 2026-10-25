@@ -24,6 +24,13 @@ RULE_CWE_CVSS_MAP: Dict[str, Tuple[str, str, float, str]] = {
     "Command Injection": ("CWE-78", "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')", 8.8, "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"),
     "os.system": ("CWE-78", "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')", 8.8, "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"),
     "DEBUG = True": ("CWE-489", "Active Debug Code", 5.3, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N"),
+    "Remote UNC or Network Reference": ("CWE-829", "Inclusion of Functionality from Untrusted Control Sphere", 7.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"),
+    "Remote Network or UNC Dependency Reference": ("CWE-829", "Inclusion of Functionality from Untrusted Control Sphere", 7.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"),
+    "Remote Package Index": ("CWE-829", "Inclusion of Functionality from Untrusted Control Sphere", 7.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"),
+    "Remote Submodule URL": ("CWE-829", "Inclusion of Functionality from Untrusted Control Sphere", 7.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"),
+    "Remote Git Dependency": ("CWE-829", "Inclusion of Functionality from Untrusted Control Sphere", 7.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"),
+    "Remote VCS or Network Dependency": ("CWE-829", "Inclusion of Functionality from Untrusted Control Sphere", 7.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"),
+    "External Package Registry Configured": ("CWE-829", "Inclusion of Functionality from Untrusted Control Sphere", 7.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"),
     "Unpinned Python Dependency": ("CWE-1357", "Reliance on Insufficiently Trustworthy Component", 3.7, "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N"),
     "Floating Node.js Dependency": ("CWE-1357", "Reliance on Insufficiently Trustworthy Component", 3.7, "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N"),
     "YAML Deserialization": ("CWE-502", "Deserialization of Untrusted Data", 9.8, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
@@ -198,16 +205,42 @@ class OfflineStaticChecker:
                         findings.append(item)
                         counter += 1
 
-            # 3. Dependency configuration analysis
-            if f.path.endswith("requirements.txt"):
+            # 3. Dependency and remote reference configuration analysis (Round 9)
+            norm_name = Path(f.path).name.lower()
+            if ((norm_name.startswith(("requirement", "constraint", "req")) and norm_name.endswith(".txt"))
+                    or "requirements" in norm_name or "constraints" in norm_name):
                 dep_findings = self._check_requirements(f.path, content, counter, branch)
                 for item in dep_findings:
                     findings.append(item)
                     counter += 1
 
-            elif f.path.endswith("package.json"):
+            elif norm_name == "package.json":
                 pkg_findings = self._check_package_json(f.path, content, counter, branch)
                 for item in pkg_findings:
+                    findings.append(item)
+                    counter += 1
+
+            elif norm_name == ".gitmodules":
+                gitmod_findings = self._check_gitmodules(f.path, content, counter, branch)
+                for item in gitmod_findings:
+                    findings.append(item)
+                    counter += 1
+
+            elif norm_name == "cargo.toml":
+                cargo_findings = self._check_cargo_toml(f.path, content, counter, branch)
+                for item in cargo_findings:
+                    findings.append(item)
+                    counter += 1
+
+            elif norm_name in ["pyproject.toml", "setup.cfg"]:
+                pyproj_findings = self._check_pyproject_or_setup_cfg(f.path, content, counter, branch)
+                for item in pyproj_findings:
+                    findings.append(item)
+                    counter += 1
+
+            elif norm_name in [".npmrc", "pip.conf"]:
+                reg_findings = self._check_registry_config(f.path, content, counter, branch)
+                for item in reg_findings:
                     findings.append(item)
                     counter += 1
 
@@ -486,6 +519,34 @@ class OfflineStaticChecker:
 
         return findings
 
+    def _get_requirements_nesting_depth(self, current_file: str, target_arg: str, visited: set) -> int:
+        clean_target = target_arg.split()[0].strip().strip("'\"")
+        parent_dir = Path(current_file).parent
+        target_path = (self.repo_dir / parent_dir / clean_target).resolve()
+        norm_key = str(target_path)
+        if norm_key in visited:
+            return 999  # Cycle detected
+        visited.add(norm_key)
+
+        if not target_path.is_file():
+            return 1
+
+        try:
+            content = target_path.read_text(encoding="utf-8-sig", errors="ignore")
+        except Exception:
+            return 1
+
+        max_sub = 0
+        for line in content.splitlines():
+            line_str = line.strip()
+            if line_str.startswith(("-r", "--requirement")):
+                sub_arg = line_str.split(maxsplit=1)[1].strip() if len(line_str.split()) > 1 else ""
+                if sub_arg:
+                    sub_d = self._get_requirements_nesting_depth(str(parent_dir / clean_target), sub_arg, visited.copy())
+                    if sub_d > max_sub:
+                        max_sub = sub_d
+        return 1 + max_sub
+
     def _check_requirements(self, rel_path: str, content: str, counter_start: int, branch: Optional[str]) -> List[Finding]:
         findings = []
         c = counter_start
@@ -495,6 +556,86 @@ class OfflineStaticChecker:
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
+
+            # Check for remote package indexes (--index-url, --extra-index-url, --find-links, -i, -f)
+            index_patterns = [
+                re.compile(r"""(?:--index-url|--extra-index-url|-i)\s+(['"]?(?:https?://|//)[^\s'"]+)""", re.IGNORECASE),
+                re.compile(r"""(?:--find-links|-f)\s+(['"]?(?:https?://|//)[^\s'"]+)""", re.IGNORECASE),
+            ]
+            found_remote_index = False
+            for ipat in index_patterns:
+                m = ipat.search(stripped)
+                if m:
+                    idx_target = m.group(1).strip("'\"")
+                    if not any(local in idx_target for local in ["127.0.0.1", "localhost"]):
+                        findings.append(
+                            Finding(
+                                id=f"FIND-{c:04d}",
+                                title="Remote Package Index or Registry Reference in Dependency File",
+                                severity=Severity.HIGH,
+                                confidence=Confidence.CONFIRMED,
+                                provenance="rule",
+                                status=EvidenceStatus.OBSERVED,
+                                branch=branch,
+                                file_path=rel_path,
+                                line_number=idx,
+                                file_sha256=f_sha,
+                                impact=f"Dependency file references an external package index or repository ({idx_target}). Resolving packages against external indices violates air-gap boundaries.",
+                                evidence=f"Line {idx}: {stripped}",
+                                suggested_action="Remove external index URL and use local offline wheel directory with --no-index --find-links.",
+                                check_tool="dependency-pin-checker",
+                                cwe_id="CWE-829",
+                                cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
+                                cvss_score_estimate=7.5,
+                                cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+                                cvss_is_estimate=True,
+                                environmental_context_assumed="Assumes strict offline air-gap build requirements.",
+                                oracle_origin="static_rule",
+                                reproduced=True,
+                                sandbox_artifact=False,
+                            )
+                        )
+                        c += 1
+                        found_remote_index = True
+                        break
+
+            if found_remote_index:
+                continue
+
+            # Check for nested -r depth limit
+            if stripped.startswith(("-r", "--requirement")):
+                nested_target = stripped.split(maxsplit=1)[1].strip() if len(stripped.split()) > 1 else ""
+                if nested_target:
+                    depth = self._get_requirements_nesting_depth(rel_path, nested_target, visited=set())
+                    if depth > 5:
+                        findings.append(
+                            Finding(
+                                id=f"FIND-{c:04d}",
+                                title="Excessive Recursion Depth in Requirements Inclusion (-r)",
+                                severity=Severity.HIGH,
+                                confidence=Confidence.CONFIRMED,
+                                provenance="rule",
+                                status=EvidenceStatus.OBSERVED,
+                                branch=branch,
+                                file_path=rel_path,
+                                line_number=idx,
+                                file_sha256=f_sha,
+                                impact=f"Nested requirements file inclusion depth exceeds safety limit ({depth} > 5). Deeply nested or recursive includes can cause parser denial of service or evade scanners.",
+                                evidence=f"Line {idx}: {stripped} (chain depth: {depth})",
+                                suggested_action="Flatten requirements hierarchy and limit nested include depth to <= 5.",
+                                check_tool="dependency-pin-checker",
+                                cwe_id="CWE-674",
+                                cwe_name="Uncontrolled Recursion",
+                                cvss_score_estimate=5.3,
+                                cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L",
+                                cvss_is_estimate=True,
+                                environmental_context_assumed="Assumes standard offline parsing limits.",
+                                oracle_origin="static_rule",
+                                reproduced=True,
+                                sandbox_artifact=False,
+                            )
+                        )
+                        c += 1
 
             # Check for remote UNC or Network references in requirements.txt (e.g. -r \\host\x, -e \\host\x, file://)
             from offtest.intake.intake import is_unc_or_remote_path
@@ -573,6 +714,205 @@ class OfflineStaticChecker:
                     )
                 )
                 c += 1
+        return findings
+
+    def _check_gitmodules(self, rel_path: str, content: str, counter_start: int, branch: Optional[str]) -> List[Finding]:
+        findings = []
+        c = counter_start
+        f_sha = self.file_hashes.get(rel_path)
+        for idx, line in enumerate(content.splitlines(), start=1):
+            stripped = line.strip()
+            if stripped.startswith("url"):
+                parts = stripped.split("=", 1)
+                if len(parts) == 2:
+                    url = parts[1].strip().strip("'\"")
+                    if url.startswith(("http://", "https://", "git://", "ssh://", "git@")) or "://" in url:
+                        findings.append(
+                            Finding(
+                                id=f"FIND-{c:04d}",
+                                title="Remote Submodule URL in .gitmodules",
+                                severity=Severity.HIGH,
+                                confidence=Confidence.CONFIRMED,
+                                provenance="rule",
+                                status=EvidenceStatus.OBSERVED,
+                                branch=branch,
+                                file_path=rel_path,
+                                line_number=idx,
+                                file_sha256=f_sha,
+                                impact=f"Submodule references remote git URL '{url}'. Cloning or updating submodules violates air-gap boundary.",
+                                evidence=f"Line {idx}: {stripped}",
+                                suggested_action="Vendor submodule tree directly within the repository or provide local mirror.",
+                                check_tool="gitmodule-remote-checker",
+                                cwe_id="CWE-829",
+                                cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
+                                cvss_score_estimate=7.5,
+                                cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+                                cvss_is_estimate=True,
+                                environmental_context_assumed="Assumes strict offline air-gap build requirements.",
+                                oracle_origin="static_rule",
+                                reproduced=True,
+                                sandbox_artifact=False,
+                            )
+                        )
+                        c += 1
+        return findings
+
+    def _check_cargo_toml(self, rel_path: str, content: str, counter_start: int, branch: Optional[str]) -> List[Finding]:
+        import os
+        findings = []
+        c = counter_start
+        f_sha = self.file_hashes.get(rel_path)
+        for idx, line in enumerate(content.splitlines(), start=1):
+            stripped = line.strip()
+            # Remote git dependency
+            git_m = re.search(r"""git\s*=\s*['"]([^'"]+)['"]""", stripped)
+            if git_m:
+                git_url = git_m.group(1)
+                findings.append(
+                    Finding(
+                        id=f"FIND-{c:04d}",
+                        title="Remote Git Dependency in Cargo.toml",
+                        severity=Severity.HIGH,
+                        confidence=Confidence.CONFIRMED,
+                        provenance="rule",
+                        status=EvidenceStatus.OBSERVED,
+                        branch=branch,
+                        file_path=rel_path,
+                        line_number=idx,
+                        file_sha256=f_sha,
+                        impact=f"Cargo manifest specifies remote git dependency '{git_url}'. Cargo fetch will attempt remote network connection.",
+                        evidence=f"Line {idx}: {stripped}",
+                        suggested_action="Vendor crate locally via 'cargo vendor' or supply offline .cargo/config.toml source replacement.",
+                        check_tool="cargo-remote-checker",
+                        cwe_id="CWE-829",
+                        cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
+                        cvss_score_estimate=7.5,
+                        cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+                        cvss_is_estimate=True,
+                        environmental_context_assumed="Assumes strict offline air-gap build requirements.",
+                        oracle_origin="static_rule",
+                        reproduced=True,
+                        sandbox_artifact=False,
+                    )
+                )
+                c += 1
+
+            # Escaping path dependency
+            path_m = re.search(r"""path\s*=\s*['"]([^'"]+)['"]""", stripped)
+            if path_m:
+                local_p = path_m.group(1)
+                parent_dir = Path(rel_path).parent.as_posix()
+                lexical_p = os.path.normpath(os.path.join(parent_dir, local_p)).replace("\\", "/")
+                if lexical_p.startswith("..") or lexical_p.startswith("/") or ":" in lexical_p:
+                    findings.append(
+                        Finding(
+                            id=f"FIND-{c:04d}",
+                            title="Escaping Path Dependency in Cargo.toml",
+                            severity=Severity.HIGH,
+                            confidence=Confidence.CONFIRMED,
+                            provenance="rule",
+                            status=EvidenceStatus.OBSERVED,
+                            branch=branch,
+                            file_path=rel_path,
+                            line_number=idx,
+                            file_sha256=f_sha,
+                            impact=f"Path dependency '{local_p}' traverses lexically outside the repository boundary ({lexical_p}).",
+                            evidence=f"Line {idx}: {stripped}",
+                            suggested_action="Keep all path dependencies inside the repository root.",
+                            check_tool="cargo-path-checker",
+                            cwe_id="CWE-829",
+                            cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
+                            cvss_score_estimate=7.5,
+                            cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+                            cvss_is_estimate=True,
+                            environmental_context_assumed="Assumes strict offline air-gap build requirements.",
+                            oracle_origin="static_rule",
+                            reproduced=True,
+                            sandbox_artifact=False,
+                        )
+                    )
+                    c += 1
+        return findings
+
+    def _check_pyproject_or_setup_cfg(self, rel_path: str, content: str, counter_start: int, branch: Optional[str]) -> List[Finding]:
+        findings = []
+        c = counter_start
+        f_sha = self.file_hashes.get(rel_path)
+        for idx, line in enumerate(content.splitlines(), start=1):
+            stripped = line.strip()
+            if any(proto in stripped for proto in ["git+http://", "git+https://", "git+ssh://", "https://", "http://"]):
+                # Avoid flagging benign documentation links
+                if any(dep_k in stripped.lower() for dep_k in ["dependencies", "requires", "@", "find-links", "index-url", "repository"]):
+                    findings.append(
+                        Finding(
+                            id=f"FIND-{c:04d}",
+                            title="Remote VCS or Network Dependency in Python Manifest",
+                            severity=Severity.HIGH,
+                            confidence=Confidence.CONFIRMED,
+                            provenance="rule",
+                            status=EvidenceStatus.OBSERVED,
+                            branch=branch,
+                            file_path=rel_path,
+                            line_number=idx,
+                            file_sha256=f_sha,
+                            impact=f"Build manifest specifies remote network dependency reference. Resolving package will trigger outbound network traffic.",
+                            evidence=f"Line {idx}: {stripped}",
+                            suggested_action="Vendor dependency locally or install from pre-cached offline wheelhouse.",
+                            check_tool="pyproject-remote-checker",
+                            cwe_id="CWE-829",
+                            cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
+                            cvss_score_estimate=7.5,
+                            cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+                            cvss_is_estimate=True,
+                            environmental_context_assumed="Assumes strict offline air-gap build requirements.",
+                            oracle_origin="static_rule",
+                            reproduced=True,
+                            sandbox_artifact=False,
+                        )
+                    )
+                    c += 1
+        return findings
+
+    def _check_registry_config(self, rel_path: str, content: str, counter_start: int, branch: Optional[str]) -> List[Finding]:
+        findings = []
+        c = counter_start
+        f_sha = self.file_hashes.get(rel_path)
+        for idx, line in enumerate(content.splitlines(), start=1):
+            stripped = line.strip()
+            if stripped.startswith("#") or stripped.startswith(";"):
+                continue
+            reg_m = re.search(r"""(?:registry|index-url|extra-index-url)\s*=\s*(['"]?https?://[^\s'"]+)""", stripped, re.IGNORECASE)
+            if reg_m:
+                url = reg_m.group(1).strip("'\"")
+                if not any(loc in url for loc in ["127.0.0.1", "localhost"]):
+                    findings.append(
+                        Finding(
+                            id=f"FIND-{c:04d}",
+                            title=f"External Package Registry Configured in {Path(rel_path).name}",
+                            severity=Severity.HIGH,
+                            confidence=Confidence.CONFIRMED,
+                            provenance="rule",
+                            status=EvidenceStatus.OBSERVED,
+                            branch=branch,
+                            file_path=rel_path,
+                            line_number=idx,
+                            file_sha256=f_sha,
+                            impact=f"Package manager config specifies remote registry URL '{url}'. Package installations will attempt outbound requests.",
+                            evidence=f"Line {idx}: {stripped}",
+                            suggested_action="Configure local mirror (127.0.0.1) or supply packages via offline disk cache.",
+                            check_tool="registry-config-checker",
+                            cwe_id="CWE-829",
+                            cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
+                            cvss_score_estimate=7.5,
+                            cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+                            cvss_is_estimate=True,
+                            environmental_context_assumed="Assumes strict offline air-gap build requirements.",
+                            oracle_origin="static_rule",
+                            reproduced=True,
+                            sandbox_artifact=False,
+                        )
+                    )
+                    c += 1
         return findings
 
     def _check_package_json(self, rel_path: str, content: str, counter_start: int, branch: Optional[str]) -> List[Finding]:

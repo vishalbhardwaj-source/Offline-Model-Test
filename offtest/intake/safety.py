@@ -138,6 +138,22 @@ def redact_sensitive_data(text: str) -> str:
         raise RedactionError(f"Redaction process failed ({e}); failing closed to prevent potential credential leakage.") from e
 
 
+def redact_data_structure(val: Union[dict, list, str, any]) -> any:
+    """
+    Recursively redacts sensitive strings across dictionary, list, and primitive structures
+    BEFORE JSON serialization. This eliminates edge-cases where JSON string escaping
+    (\\n, \\", \\u00XX) causes regex-based post-serialization scrubbers to miss secrets,
+    or where regex string replacement corrupts JSON syntax.
+    """
+    if isinstance(val, str):
+        return redact_sensitive_data(val)
+    elif isinstance(val, dict):
+        return {k: redact_data_structure(v) for k, v in val.items()}
+    elif isinstance(val, list):
+        return [redact_data_structure(item) for item in val]
+    return val
+
+
 def scrub_model_io(text: str) -> str:
     """
     Scrubs both inputs to the model and outputs from the model to prevent
