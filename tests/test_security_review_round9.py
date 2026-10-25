@@ -95,7 +95,7 @@ def test_mount_audit_rejects_unauthorized_writable_tmpfs(monkeypatch, tmp_path: 
     """
     import offtest.checks.isolated_runner as iso_mod
 
-    # 1. Standard Docker hardened container layout with /dev tmpfs should PASS
+    # 1. Standard Docker hardened container layout with /dev tmpfs and OCI masked paths (/proc/interrupts) should PASS
     docker_hardened_mountinfo = """36 35 0:33 / / ro,relatime - overlay overlay ro,lowerdir=...
 37 36 0:34 / /repo ro,relatime - ext4 /dev/sdb ro
 38 36 0:35 / /out rw,nosuid,nodev - tmpfs tmpfs rw
@@ -105,6 +105,8 @@ def test_mount_audit_rejects_unauthorized_writable_tmpfs(monkeypatch, tmp_path: 
 42 36 0:39 / /dev/mqueue rw,nosuid,nodev,noexec - mqueue mqueue rw
 43 36 0:40 / /etc/hosts ro,relatime - ext4 /dev/sdb ro
 44 36 0:41 / /tmp rw,nosuid,nodev - tmpfs tmpfs rw
+45 36 0:42 / /proc/interrupts rw,nosuid,nodev,noexec - tmpfs tmpfs rw
+46 36 0:43 / /proc/kcore rw,nosuid,nodev,noexec - tmpfs tmpfs rw
 """
     m_valid_file = tmp_path / "mountinfo_docker_hardened"
     m_valid_file.write_text(docker_hardened_mountinfo, encoding="utf-8")

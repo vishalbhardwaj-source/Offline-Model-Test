@@ -267,6 +267,9 @@ def _audit_mounts(repo_path: Optional[Path] = None) -> Tuple[bool, str]:
             # Output directory is explicitly designated for writing reports and artifacts
             if mount_point == "/out" or mount_point.startswith("/out/"):
                 continue
+            # Kernel pseudo filesystems and OCI runtime masked paths (/proc/*, /sys/*)
+            if mount_point.startswith(("/proc/", "/sys/")) or mount_point in ("/proc", "/sys"):
+                continue
             if fs_type in pseudo_types:
                 continue
             if mount_point in runtime_whitelisted_mounts:
