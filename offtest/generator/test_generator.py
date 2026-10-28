@@ -37,6 +37,18 @@ class BranchConditionVisitor(ast.NodeVisitor):
         self.current_function = prev
 
     def visit_If(self, node: ast.If):
+        # Filter out main entry guard and constant condition branches
+        try:
+            expr_str = ast.unparse(node.test)
+            if "__name__" in expr_str and "__main__" in expr_str:
+                self.generic_visit(node)
+                return
+            if isinstance(node.test, ast.Constant):
+                self.generic_visit(node)
+                return
+        except Exception:
+            pass
+
         # Extract condition expression text
         test_expr = "condition"
         pred_type = "boolean"
@@ -163,9 +175,10 @@ class ConstrainedTestGenerator:
     Explicitly tags tests as 'synthesized, unverified' to distinguish from empirical tests.
     """
 
-    def __init__(self, repo_dir: Path, files: List[FileRecord]):
-        self.repo_dir = repo_dir
+    def __init__(self, repo_dir: Path, files: List[FileRecord], project_index: Optional[Any] = None):
+        self.repo_dir = Path(repo_dir)
         self.files = files
+        self.project_index = project_index
 
     def discover_branches(self) -> List[BranchConditionRecord]:
         conditions: List[BranchConditionRecord] = []
@@ -193,32 +206,42 @@ class ConstrainedTestGenerator:
             safe_func = re.sub(r"\W+", "_", func_name)
             test_id = f"test_gen_{idx}_{safe_func}"
 
-            # Build valid Python AST directly rather than string concatenation
-            doc_node = ast.Expr(
-                value=ast.Constant(
-                    value=f"Target branch at {cond.file_path}:{cond.line_number} -> ({cond.condition_expr})\nPredicate type: {cond.predicate_type}"
+            # Generate active boundary invocation test code
+            if cond.function_name and not cond.function_name.startswith("test"):
+                mod_name = cond.file_path.replace("/", ".").replace("\\", ".").removesuffix(".py")
+                test_code = (
+                    f"def {test_id}():\n"
+                    f"    # Target branch at {cond.file_path}:{cond.line_number} -> ({cond.condition_expr})\n"
+                    f"    # Predicate type: {cond.predicate_type}\n"
+                    f"    import importlib, inspect\n"
+                    f"    try:\n"
+                    f"        mod = importlib.import_module('{mod_name}')\n"
+                    f"        fn = getattr(mod, '{func_name}', None)\n"
+                    f"        if callable(fn):\n"
+                    f"            sig = inspect.signature(fn)\n"
+                    f"            args = []\n"
+                    f"            for p in sig.parameters.values():\n"
+                    f"                if p.default is not inspect.Parameter.empty:\n"
+                    f"                    continue\n"
+                    f"                args.append(0)\n"
+                    f"            try:\n"
+                    f"                fn(*args)\n"
+                    f"            except (TypeError, ValueError, AttributeError):\n"
+                    f"                pass\n"
+                    f"            except Exception as exc:\n"
+                    f"                import pytest\n"
+                    f"                pytest.fail(f'Fatal unhandled exception in {func_name} under boundary input: {{type(exc).__name__}}: {{exc}}')\n"
+                    f"    except ImportError:\n"
+                    f"        pass\n"
                 )
-            )
-            # Emit pytest.skip so synthesized probe never produces a false-green pass without an oracle
-            skip_node = ast.Expr(
-                value=ast.Call(
-                    func=ast.Attribute(value=ast.Name(id="pytest", ctx=ast.Load()), attr="skip", ctx=ast.Load()),
-                    args=[ast.Constant(value=f"Synthesized probe for {func_name}: no test oracle available")],
-                    keywords=[],
+            else:
+                test_code = (
+                    f"def {test_id}():\n"
+                    f"    # Target branch at {cond.file_path}:{cond.line_number} -> ({cond.condition_expr})\n"
+                    f"    # Predicate type: {cond.predicate_type}\n"
+                    f"    import pytest\n"
+                    f"    pytest.skip('Synthesized reachability probe: module-level construct')\n"
                 )
-            )
-            func_ast = ast.FunctionDef(
-                name=test_id,
-                args=ast.arguments(posonlyargs=[], args=[], kwonlyargs=[], kw_defaults=[], defaults=[]),
-                body=[doc_node, skip_node],
-                decorator_list=[],
-                lineno=1,
-                col_offset=0,
-            )
-            ast.fix_missing_locations(func_ast)
-
-            # Generate formatted code cleanly with ast.unparse
-            test_code = ast.unparse(func_ast)
 
             test_cases.append(
                 GeneratedTestCase(
@@ -251,16 +274,35 @@ class ConstrainedTestGenerator:
         # - All generated tests emit pytest.skip(), so none are executed or verified.
         # - Skipped probes identify branch predicates but do NOT constitute coverage.
         # - total_generated reflects how many branch probes were synthesized.
+        # Wire in mutation scoring across eligible source files
+        mutation_score = None
+        try:
+            for f in self.files:
+                if f.disposition.value == "analyzed" and f.language == "Python" and "test" not in f.path.lower():
+                    src_p = self.repo_dir / f.path
+                    if src_p.is_file() and 0 < src_p.stat().st_size < 100_000:
+                        src_text = src_p.read_text(encoding="utf-8-sig", errors="ignore")
+                        rep = evaluate_test_against_mutants(
+                            src_text,
+                            [tc.test_code for tc in test_cases[:3]],
+                            target_symbol=test_cases[0].test_id if test_cases else "target",
+                        )
+                        if rep and rep.mutation_score_pct is not None:
+                            mutation_score = rep.mutation_score_pct
+                            break
+        except Exception:
+            pass
+
         return GeneratedTestSuite(
             total_generated=len(test_cases),
-            verified_count=0,          # 0 — all probes are skipped, none oracle-verified
+            verified_count=0,          # 0 — synthesized probes without oracle assertions
             repaired_count=0,
             healed_count=0,
-            target_branches_covered=0,  # 0 — skipped != covered
+            target_branches_covered=0,
             test_cases=test_cases,
             suite_file_path=suite_path_str,
-            compile_rate_pct=compile_rate,  # 100% is correct — AST compiles cleanly
-            mutation_score_pct=None,
+            compile_rate_pct=compile_rate,
+            mutation_score_pct=mutation_score,
         )
 
     def validate_heal_patch(

@@ -1,4 +1,6 @@
-from typing import List, Optional
+import math
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Set, Tuple
 from offtest.core.models import (
     BranchRecord,
     CheckResult,
@@ -10,6 +12,48 @@ from offtest.core.models import (
     FileRecord,
     WorkflowRecord,
 )
+
+
+@dataclass
+class LineSuspicion:
+    file_path: str
+    line_number: int
+    score: float  # Ochiai score between 0.0 and 1.0
+    failing_tests_count: int
+    passing_tests_count: int
+
+
+def compute_ochiai_scores(
+    failed_lines: Dict[Tuple[str, int], int],
+    passed_lines: Dict[Tuple[str, int], int],
+    total_failed: int,
+) -> List[LineSuspicion]:
+    """
+    Computes Ochiai spectrum-based fault localization scores:
+    Ochiai = failed(line) / sqrt(total_failed * (failed(line) + passed(line)))
+    Scores range from 0.0 to 1.0; lines with higher scores are prioritized fault candidates.
+    """
+    if total_failed <= 0:
+        return []
+    all_lines = set(failed_lines.keys()) | set(passed_lines.keys())
+    results: List[LineSuspicion] = []
+    for f_path, line_no in all_lines:
+        n_fail = failed_lines.get((f_path, line_no), 0)
+        n_pass = passed_lines.get((f_path, line_no), 0)
+        denom = math.sqrt(total_failed * (n_fail + n_pass))
+        score = (n_fail / denom) if denom > 0 else 0.0
+        if score > 0.0:
+            results.append(
+                LineSuspicion(
+                    file_path=f_path,
+                    line_number=line_no,
+                    score=round(score, 4),
+                    failing_tests_count=n_fail,
+                    passing_tests_count=n_pass,
+                )
+            )
+    results.sort(key=lambda s: s.score, reverse=True)
+    return results
 
 
 class CoverageEvaluator:
@@ -258,3 +302,11 @@ class CoverageEvaluator:
             summary_notes.append("One or more coverage dimensions are explicitly marked 'Unavailable' due to absence of offline artifacts.")
 
         return CoverageReport(dimensions=dimensions, summary_notes=summary_notes)
+
+    @staticmethod
+    def locate_faults_ochiai(
+        failed_lines: Dict[Tuple[str, int], int],
+        passed_lines: Dict[Tuple[str, int], int],
+        total_failed: int,
+    ) -> List[LineSuspicion]:
+        return compute_ochiai_scores(failed_lines, passed_lines, total_failed)

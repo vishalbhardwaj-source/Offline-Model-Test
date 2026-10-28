@@ -126,11 +126,15 @@ class AssessmentOrchestrator:
         inv_engine = InventoryEngine(str(target_dir))
         files, inv_summary = inv_engine.scan()
 
+        # 3b. Unified ProjectIndex (parse once, shared AST, symbol table, call graph & reachability)
+        from offtest.core.project_index import ProjectIndex
+        project_index = ProjectIndex(target_dir, files)
+
         sbom_generator = SBOMGenerator(target_dir, files)
         sbom_report = sbom_generator.generate()
 
         # 4. Application Mapping (routes, APIs, features, workflows, integrations)
-        app_mapper = ApplicationMapper(target_dir, files)
+        app_mapper = ApplicationMapper(target_dir, files, project_index=project_index)
         routes, apis, features, workflows, integrations = app_mapper.map_application()
 
         # 4b. RBAC Permission Matrix & Offline OpenAPI 3.1 Synthesis
@@ -139,7 +143,7 @@ class AssessmentOrchestrator:
         openapi_spec = rbac_schema_extractor.synthesize_openapi(title=f"{repo_name} API")
 
         # 5. Check Planning & Execution (inside scrubbed isolated runner)
-        check_planner = CheckPlanner(target_dir, files, allow_scripts=self.allow_scripts)
+        check_planner = CheckPlanner(target_dir, files, allow_scripts=self.allow_scripts, project_index=project_index)
         active_b_name = git_state.get("active_branch") or "HEAD"
         check_results, findings = check_planner.execute_all(branch=active_b_name)
 
@@ -149,7 +153,7 @@ class AssessmentOrchestrator:
 
         # 5c. AST Branch Predicates & Constrained Test Generation
         if self.generate_tests:
-            generator = ConstrainedTestGenerator(target_dir, files)
+            generator = ConstrainedTestGenerator(target_dir, files, project_index=project_index)
             generated_test_suite = generator.generate_suite(output_dir=run_folder)
         else:
             from offtest.core.models import GeneratedTestSuite

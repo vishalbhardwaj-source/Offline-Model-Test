@@ -1,7 +1,7 @@
 import ast
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from offtest.core.models import (
     Confidence,
     EvidenceStatus,
@@ -36,6 +36,12 @@ RULE_CWE_CVSS_MAP: Dict[str, Tuple[str, str, float, str]] = {
     "YAML Deserialization": ("CWE-502", "Deserialization of Untrusted Data", 9.8, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
     "Insecure Object Deserialization": ("CWE-502", "Deserialization of Untrusted Data", 9.8, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
     "SSL Certificate Verification": ("CWE-295", "Improper Certificate Validation", 7.4, "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N"),
+    "Undefined Name": ("CWE-456", "Missing Initialization of a Variable", 7.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N"),
+    "Division by Zero": ("CWE-369", "Divide By Zero", 7.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"),
+    "Dead Code": ("CWE-561", "Dead Code", 0.0, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N"),
+    "No-Op Function": ("CWE-561", "Dead Code", 0.0, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N"),
+    "Uncalled Dead Code": ("CWE-561", "Dead Code", 0.0, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N"),
+    "Constant Condition": ("CWE-570", "Expression is Always False", 0.0, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N"),
 }
 
 SANDBOX_ARTIFACT_PATTERNS = [
@@ -86,10 +92,15 @@ def resolve_cwe_cvss(title: str) -> Tuple[Optional[str], Optional[str], Optional
 
 
 class OfflineStaticChecker:
-    def __init__(self, repo_dir: Path, files: List[FileRecord]):
+    def __init__(self, repo_dir: Path, files: List[FileRecord], project_index: Optional[Any] = None):
         self.repo_dir = repo_dir
         self.files = files
         self.file_hashes: Dict[str, str] = {f.path: f.sha256 for f in files if getattr(f, "sha256", None)}
+        if project_index is None:
+            from offtest.core.project_index import ProjectIndex
+            self.project_index = ProjectIndex(repo_dir, files)
+        else:
+            self.project_index = project_index
 
     def run_all(self, branch: Optional[str] = None) -> List[Finding]:
         findings: List[Finding] = []
@@ -212,6 +223,10 @@ class OfflineStaticChecker:
                     for item in dead_findings:
                         findings.append(item)
                         counter += 1
+                    semantic_findings = self._check_python_semantic_bugs(f.path, parsed_ast, counter, branch)
+                    for item in semantic_findings:
+                        findings.append(item)
+                        counter += 1
 
             # 3. Dependency and remote reference configuration analysis (Round 9)
             norm_name = Path(f.path).name.lower()
@@ -252,6 +267,9 @@ class OfflineStaticChecker:
                     findings.append(item)
                     counter += 1
 
+        # Check project-wide unreachable functions, classes, and no-ops
+        uncalled_findings = self._check_project_uncalled_code(branch, counter)
+        findings.extend(uncalled_findings)
         return findings
 
     def _check_python_syntax(self, rel_path: str, content: str, counter: int, branch: Optional[str]):
@@ -1124,4 +1142,328 @@ class OfflineStaticChecker:
                     )
                 )
                 c += 1
+        return findings
+
+    def _check_python_semantic_bugs(self, rel_path: str, tree: ast.AST, counter_start: int, branch: Optional[str]) -> List[Finding]:
+        findings: List[Finding] = []
+        c = counter_start
+        f_sha = self.file_hashes.get(rel_path)
+
+        builtins_set = set(dir(__builtins__)) | {
+            "__name__", "__file__", "__doc__", "__all__", "__path__", "__package__",
+            "__spec__", "True", "False", "None", "self", "cls"
+        }
+
+        # 1. Collect top-level globals and imports
+        global_names: Set[str] = set()
+        for stmt in getattr(tree, "body", []):
+            if isinstance(stmt, ast.Import):
+                for alias in stmt.names:
+                    bound = alias.asname or alias.name.split(".")[0]
+                    global_names.add(bound)
+            elif isinstance(stmt, ast.ImportFrom):
+                for alias in stmt.names:
+                    if alias.name != "*":
+                        bound = alias.asname or alias.name
+                        global_names.add(bound)
+            elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                global_names.add(stmt.name)
+            elif isinstance(stmt, ast.Assign):
+                for target in stmt.targets:
+                    for n in ast.walk(target):
+                        if isinstance(n, ast.Name):
+                            global_names.add(n.id)
+            elif isinstance(stmt, (ast.AnnAssign, ast.AugAssign)):
+                target = stmt.target
+                if isinstance(target, ast.Name):
+                    global_names.add(target.id)
+
+        # 2. Scope-based undefined name checker and zero division / constant conditions
+        class BugVisitor(ast.NodeVisitor):
+            def __init__(self):
+                self.scope_stack: List[Set[str]] = []
+
+            def visit_BinOp(self, node: ast.BinOp):
+                nonlocal c
+                if isinstance(node.op, (ast.Div, ast.FloorDiv, ast.Mod)):
+                    is_zero = False
+                    ev = ""
+                    if isinstance(node.right, ast.Constant) and node.right.value == 0:
+                        is_zero = True
+                        ev = f"Line {node.lineno}: division by literal zero ('{ast.unparse(node)}')"
+                    elif isinstance(node.right, ast.BinOp) and isinstance(node.right.op, ast.Sub):
+                        try:
+                            l_str = ast.unparse(node.right.left).strip()
+                            r_str = ast.unparse(node.right.right).strip()
+                            if l_str == r_str and l_str:
+                                is_zero = True
+                                ev = f"Line {node.lineno}: division by expression '{l_str} - {r_str}' which evaluates identically to zero ('{ast.unparse(node)}')"
+                        except Exception:
+                            pass
+                    if is_zero:
+                        findings.append(
+                            Finding(
+                                id=f"FIND-{c:04d}",
+                                title="Division by Zero Detected in Binary Operation",
+                                severity=Severity.HIGH,
+                                confidence=Confidence.CONFIRMED,
+                                provenance="symbolic",
+                                status=EvidenceStatus.OBSERVED,
+                                branch=branch,
+                                file_path=rel_path,
+                                line_number=node.lineno,
+                                file_sha256=f_sha,
+                                impact="Execution will trigger ZeroDivisionError causing unhandled runtime failure.",
+                                evidence=ev,
+                                suggested_action="Ensure denominator is validated before division.",
+                                check_tool="python-semantic-analyzer",
+                                cwe_id="CWE-369",
+                                cwe_name="Divide By Zero",
+                                cvss_score_estimate=7.5,
+                                cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+                                cvss_is_estimate=True,
+                                oracle_origin="symbolic_invariant",
+                                reproduced=True,
+                                sandbox_artifact=False,
+                            )
+                        )
+                        c += 1
+                self.generic_visit(node)
+
+            def visit_If(self, node: ast.If):
+                nonlocal c
+                if isinstance(node.test, ast.Constant):
+                    val = node.test.value
+                    if val in (False, 0, "", None, [], {}):
+                        findings.append(
+                            Finding(
+                                id=f"FIND-{c:04d}",
+                                title=f"Unreachable Code: Constant False Condition ('if {val}:')",
+                                severity=Severity.MEDIUM,
+                                confidence=Confidence.CONFIRMED,
+                                provenance="symbolic",
+                                status=EvidenceStatus.OBSERVED,
+                                branch=branch,
+                                file_path=rel_path,
+                                line_number=node.lineno,
+                                file_sha256=f_sha,
+                                impact=f"The conditional branch 'if {val}:' will never execute under any circumstances (dead code).",
+                                evidence=f"Line {node.lineno}: 'if {ast.unparse(node.test)}:' is permanently false.",
+                                suggested_action="Remove the dead conditional block or correct the condition.",
+                                check_tool="python-semantic-analyzer",
+                                cwe_id="CWE-570",
+                                cwe_name="Expression is Always False",
+                                cvss_score_estimate=None,
+                                cvss_vector_estimate=None,
+                                cvss_is_estimate=False,
+                                oracle_origin="symbolic_invariant",
+                                reproduced=True,
+                                sandbox_artifact=False,
+                            )
+                        )
+                        c += 1
+                    elif val in (True, 1) and node.orelse:
+                        findings.append(
+                            Finding(
+                                id=f"FIND-{c:04d}",
+                                title="Unreachable Else Block: Constant True Condition ('if True:')",
+                                severity=Severity.MEDIUM,
+                                confidence=Confidence.CONFIRMED,
+                                provenance="symbolic",
+                                status=EvidenceStatus.OBSERVED,
+                                branch=branch,
+                                file_path=rel_path,
+                                line_number=node.lineno,
+                                file_sha256=f_sha,
+                                impact="The else branch will never execute because the if-condition is constant true.",
+                                evidence=f"Line {node.lineno}: 'if {ast.unparse(node.test)}:' has an unreachable else block.",
+                                suggested_action="Remove the tautological if-else or correct the condition.",
+                                check_tool="python-semantic-analyzer",
+                                cwe_id="CWE-571",
+                                cwe_name="Expression is Always True",
+                                cvss_score_estimate=None,
+                                cvss_vector_estimate=None,
+                                cvss_is_estimate=False,
+                                oracle_origin="symbolic_invariant",
+                                reproduced=True,
+                                sandbox_artifact=False,
+                            )
+                        )
+                        c += 1
+                self.generic_visit(node)
+
+            def visit_FunctionDef(self, node: ast.FunctionDef):
+                self._check_func(node)
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
+                self._check_func(node)
+
+            def _check_func(self, node: ast.FunctionDef | ast.AsyncFunctionDef):
+                nonlocal c
+                local_vars: Set[str] = set()
+                for arg in node.args.posonlyargs + node.args.args + node.args.kwonlyargs:
+                    local_vars.add(arg.arg)
+                if node.args.vararg:
+                    local_vars.add(node.args.vararg.arg)
+                if node.args.kwarg:
+                    local_vars.add(node.args.kwarg.arg)
+
+                for stmt in node.body:
+                    for n in ast.walk(stmt):
+                        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+                            local_vars.add(n.id)
+                        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                            local_vars.add(n.name)
+
+                self.scope_stack.append(local_vars)
+
+                for stmt in node.body:
+                    for n in ast.walk(stmt):
+                        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
+                            name_id = n.id
+                            in_scope = any(name_id in scope for scope in self.scope_stack)
+                            if not in_scope and name_id not in global_names and name_id not in builtins_set:
+                                findings.append(
+                                    Finding(
+                                        id=f"FIND-{c:04d}",
+                                        title=f"Undefined Name: '{name_id}' Used in Function '{node.name}'",
+                                        severity=Severity.HIGH,
+                                        confidence=Confidence.CONFIRMED,
+                                        provenance="symbolic",
+                                        status=EvidenceStatus.OBSERVED,
+                                        branch=branch,
+                                        file_path=rel_path,
+                                        line_number=n.lineno,
+                                        file_sha256=f_sha,
+                                        impact=f"Name '{name_id}' is referenced before assignment or without import, causing a NameError at runtime.",
+                                        evidence=f"Line {n.lineno}: '{name_id}' loaded in function '{node.name}' is undefined.",
+                                        suggested_action=f"Define or import '{name_id}' before using it in '{node.name}'.",
+                                        check_tool="python-semantic-analyzer",
+                                        cwe_id="CWE-456",
+                                        cwe_name="Missing Initialization of a Variable",
+                                        cvss_score_estimate=7.5,
+                                        cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N",
+                                        cvss_is_estimate=True,
+                                        oracle_origin="symbolic_invariant",
+                                        reproduced=True,
+                                        sandbox_artifact=False,
+                                    )
+                                )
+                                c += 1
+                self.generic_visit(node)
+                self.scope_stack.pop()
+
+        visitor = BugVisitor()
+        visitor.visit(tree)
+        return findings
+
+    def _check_project_uncalled_code(self, branch: Optional[str], counter_start: int) -> List[Finding]:
+        """
+        Reports uncalled functions, classes, and no-op stubs discovered via project-wide call graph.
+        """
+        findings: List[Finding] = []
+        c = counter_start
+
+        if not hasattr(self, "project_index") or self.project_index is None:
+            return findings
+
+        # 1. Unreachable functions and classes from call graph
+        for sym in self.project_index.unreachable_symbols:
+            f_sha = self.file_hashes.get(sym.file_path)
+            # Determine confidence level
+            conf = Confidence.CONFIRMED if sym.is_private else Confidence.LIKELY
+            if sym.name in self.project_index.dynamic_names or sym.name in self.project_index.exported_names:
+                conf = Confidence.POSSIBLE
+
+            findings.append(
+                Finding(
+                    id=f"FIND-{c:04d}",
+                    title=f"Uncalled Dead Code: {sym.symbol_type.capitalize()} '{sym.name}' Is Never Called",
+                    severity=Severity.LOW,
+                    confidence=conf,
+                    provenance="symbolic",
+                    status=EvidenceStatus.OBSERVED,
+                    branch=branch,
+                    file_path=sym.file_path,
+                    line_number=sym.line_number,
+                    file_sha256=f_sha,
+                    impact=f"{sym.symbol_type.capitalize()} '{sym.name}' defined at line {sym.line_number} is unreachable from any application entry point or test.",
+                    evidence=f"{sym.file_path}:{sym.line_number}: {sym.symbol_type} '{sym.name}' has 0 incoming call references in the project call graph.",
+                    suggested_action="Remove uncalled code or wire it into an active application workflow.",
+                    check_tool="project-callgraph-analyzer",
+                    cwe_id="CWE-561",
+                    cwe_name="Dead Code",
+                    cvss_score_estimate=None,
+                    cvss_vector_estimate=None,
+                    cvss_is_estimate=False,
+                    environmental_context_assumed="Cross-file call graph reachability analysis from entry points (routes, CLI, __main__, tests).",
+                    oracle_origin="symbolic_invariant",
+                    reproduced=True,
+                    sandbox_artifact=False,
+                )
+            )
+            c += 1
+
+        # 2. No-op functions and NotImplemented stubs
+        for sym in self.project_index.symbols.values():
+            if "test" in sym.file_path.lower():
+                continue
+            f_sha = self.file_hashes.get(sym.file_path)
+            if sym.is_noop:
+                findings.append(
+                    Finding(
+                        id=f"FIND-{c:04d}",
+                        title=f"No-Op Function: '{sym.name}()' Has Empty Body",
+                        severity=Severity.LOW,
+                        confidence=Confidence.LIKELY,
+                        provenance="symbolic",
+                        status=EvidenceStatus.OBSERVED,
+                        branch=branch,
+                        file_path=sym.file_path,
+                        line_number=sym.line_number,
+                        file_sha256=f_sha,
+                        impact=f"Function '{sym.name}()' executes no operational logic ({sym.noop_reason}).",
+                        evidence=f"{sym.file_path}:{sym.line_number}: {sym.noop_reason}",
+                        suggested_action="Implement functional logic or remove no-op function stub.",
+                        check_tool="python-semantic-analyzer",
+                        cwe_id="CWE-561",
+                        cwe_name="Dead Code",
+                        cvss_score_estimate=None,
+                        cvss_vector_estimate=None,
+                        cvss_is_estimate=False,
+                        oracle_origin="symbolic_invariant",
+                        reproduced=True,
+                        sandbox_artifact=False,
+                    )
+                )
+                c += 1
+            elif sym.raises_not_implemented:
+                findings.append(
+                    Finding(
+                        id=f"FIND-{c:04d}",
+                        title=f"Unimplemented Function Stub: '{sym.name}()' Always Raises NotImplementedError",
+                        severity=Severity.MEDIUM,
+                        confidence=Confidence.LIKELY,
+                        provenance="symbolic",
+                        status=EvidenceStatus.OBSERVED,
+                        branch=branch,
+                        file_path=sym.file_path,
+                        line_number=sym.line_number,
+                        file_sha256=f_sha,
+                        impact=f"Invoking '{sym.name}()' immediately terminates with NotImplementedError.",
+                        evidence=f"{sym.file_path}:{sym.line_number}: function body unconditionally raises NotImplementedError.",
+                        suggested_action="Provide concrete implementation for function.",
+                        check_tool="python-semantic-analyzer",
+                        cwe_id="CWE-561",
+                        cwe_name="Dead Code",
+                        cvss_score_estimate=None,
+                        cvss_vector_estimate=None,
+                        cvss_is_estimate=False,
+                        oracle_origin="symbolic_invariant",
+                        reproduced=True,
+                        sandbox_artifact=False,
+                    )
+                )
+                c += 1
+
         return findings

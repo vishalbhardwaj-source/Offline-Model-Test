@@ -6,12 +6,18 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+.ruff_cache/
 
 # Test runs and temporary artifacts
 .offtest_runs/
 reproduced_reports/
 *_reports/
+sample_reports/
+sample_test_reports/
 sample_repos/sample_web_app/
+*.sarif
+*.log
+scratch/
 
 # Virtual environments
 venv/

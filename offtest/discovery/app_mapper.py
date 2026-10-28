@@ -1,7 +1,7 @@
 import ast
 import re
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from offtest.core.models import (
     APIRecord,
     EvidenceStatus,
@@ -14,10 +14,15 @@ from offtest.core.models import (
 
 
 class ApplicationMapper:
-    def __init__(self, repo_dir: Path, files: List[FileRecord]):
-        self.repo_dir = repo_dir
+    def __init__(self, repo_dir: Path, files: List[FileRecord], project_index: Optional[Any] = None):
+        self.repo_dir = Path(repo_dir)
         self.files = files
         self.test_files = [f for f in files if f.category == "test"]
+        if project_index is None:
+            from offtest.core.project_index import ProjectIndex
+            self.project_index = ProjectIndex(repo_dir, files)
+        else:
+            self.project_index = project_index
 
     def map_application(self) -> Tuple[List[RouteRecord], List[APIRecord], List[FeatureRecord], List[WorkflowRecord], List[IntegrationRecord]]:
         routes: List[RouteRecord] = []
@@ -36,7 +41,39 @@ class ApplicationMapper:
             except Exception:
                 pass
 
-        # Regex patterns for Python routes (Flask / FastAPI)
+        # 0. Load AST-extracted routes from ProjectIndex with exact HTTP methods & handlers
+        for er in self.project_index.routes:
+            f_sha = next((getattr(f, "sha256", None) for f in self.files if f.path == er.file_path), None)
+            is_api = er.path.startswith("/api") or "/v1/" in er.path or "/v2/" in er.path
+            if is_api:
+                apis.append(
+                    APIRecord(
+                        endpoint=er.path,
+                        method=er.method,
+                        handler=er.handler_name,
+                        file_path=er.file_path,
+                        line_number=er.line_number,
+                        file_sha256=f_sha,
+                        status=EvidenceStatus.OBSERVED,
+                        auth_required=er.auth_required,
+                        notes=f"{er.framework} API route detected",
+                    )
+                )
+            else:
+                routes.append(
+                    RouteRecord(
+                        path=er.path,
+                        method=er.method,
+                        handler=er.handler_name,
+                        file_path=er.file_path,
+                        line_number=er.line_number,
+                        file_sha256=f_sha,
+                        status=EvidenceStatus.OBSERVED,
+                        notes=f"{er.framework} web route detected",
+                    )
+                )
+
+        # Regex patterns for Python routes (Flask / FastAPI fallback)
         py_route_pattern = re.compile(
             r"""@(?:app|router|api)\.(get|post|put|delete|patch|route)\(\s*['"]([^'"]+)['"]""",
             re.IGNORECASE,
@@ -89,6 +126,9 @@ class ApplicationMapper:
                         path = m.group(2)
                         if method == "ROUTE":
                             method = "ANY"
+                        # Skip if already discovered from AST
+                        if any(r.path == path and (r.method == method or r.method == "ANY" or method == "ANY") for r in routes) or any(a.endpoint == path for a in apis):
+                            continue
                         
                         is_api = path.startswith("/api") or "/v1/" in path or "/v2/" in path
                         if is_api:
@@ -328,6 +368,45 @@ class ApplicationMapper:
             )
 
         # 2. Workflow Discovery
+        # 2a. Code-Derived Workflows: follow the call graph from each route handler
+        seen_wf_names = set()
+        for r_entry in (routes + apis):
+            handler = getattr(r_entry, "handler", None)
+            path_str = getattr(r_entry, "path", None) or getattr(r_entry, "endpoint", "")
+            method_str = getattr(r_entry, "method", "ANY")
+            if handler:
+                call_trace = self.project_index.trace_workflow(r_entry.file_path, handler)
+                if len(call_trace) > 1:
+                    wf_name = f"{method_str} {path_str} Execution Workflow"
+                    if wf_name not in seen_wf_names:
+                        seen_wf_names.add(wf_name)
+                        desc = f"Call-graph workflow traced from handler '{handler}()' in {r_entry.file_path}:{r_entry.line_number}"
+                        steps = [desc for _, _, desc in call_trace]
+                        rel_files = sorted(list(set(fp for fp, _, _ in call_trace)))
+                        linked = []
+                        for tf_path, t_content in test_file_contents.items():
+                            if "synthesized" in tf_path.lower():
+                                continue
+                            if any(k in t_content.lower() for k in [handler.lower(), Path(r_entry.file_path).stem.lower()]):
+                                linked.append(tf_path)
+
+                        workflows.append(
+                            WorkflowRecord(
+                                name=wf_name,
+                                description=desc,
+                                entry_point=f"{method_str} {path_str} -> {handler}()",
+                                related_files=rel_files,
+                                linked_tests=sorted(list(set(linked))),
+                                status=EvidenceStatus.OBSERVED,
+                                steps=steps,
+                                is_advisory=False,
+                                symbolic_edges_verified=True,
+                                initiated_by=f"Client sends {method_str} request to '{path_str}'",
+                                processing_pipeline=steps,
+                                where_it_leads=f"Executes {call_trace[-1][2]} and terminates handler",
+                                subgraph="API & Route Execution",
+                            )
+                        )
         # Scan for CI/CD workflows (excluding external dependencies but NOT .github/)
         for f in self.files:
             path_norm = f.path.replace("\\", "/")
@@ -392,8 +471,10 @@ class ApplicationMapper:
             )
 
         # Navigation & Screen Routing Workflows
-        spa_routes = [r for r in routes if not r.path.startswith("/src/") and not r.path.endswith(".html")]
-        if spa_routes:
+        # Only add client-side SPA navigation workflow if genuine SPA routing files exist
+        spa_router_files = [f for f in self.files if any(k in f.path.lower() for k in ["routing.module", "router.js", "app-routing", "routes.ts"])]
+        spa_routes = [r for r in routes if "SPA" in (r.notes or "")]
+        if spa_routes and spa_router_files:
             main_route = spa_routes[0].path
             rel_files = sorted(list(set([r.file_path for r in spa_routes[:5]])))
             workflows.append(
@@ -439,13 +520,16 @@ class ApplicationMapper:
                 )
             )
 
-        # Domain-agnostic workflow inference from discovered routes, APIs, and file structure
-        # All inferred workflows are explicitly tagged INFERRED with symbolic_edges_verified=False
-        # until a real call-graph pass can elevate them.
+        # Domain-agnostic workflow inference for routes not already covered by call-graph traces
+        covered_eps = {w.entry_point.lower() for w in workflows if w.entry_point}
         route_paths = [r.path.lower() for r in routes] + [a.endpoint.lower() for a in apis]
 
-        # Auth workflow — only if auth routes were actually discovered
-        auth_routes = [r for r in route_paths if any(term in r for term in ["login", "register", "auth", "signup", "signin"])]
+        # Auth workflow — only if auth routes were actually discovered and not already traced
+        auth_routes = [
+            r for r in route_paths
+            if any(term in r for term in ["login", "register", "auth", "signup", "signin"])
+            and not any(r in ep for ep in covered_eps)
+        ]
         if auth_routes:
             linked_auth_tests = []
             for tf_path, t_content in test_file_contents.items():
@@ -472,7 +556,11 @@ class ApplicationMapper:
                 )
             )
 
-        checkout_routes = [r for r in route_paths if any(term in r for term in ["checkout", "payment", "order", "cart"])]
+        checkout_routes = [
+            r for r in route_paths
+            if any(term in r for term in ["checkout", "payment", "order", "cart"])
+            and not any(r in ep for ep in covered_eps)
+        ]
         if checkout_routes:
             linked_cart_tests = []
             for tf_path, t_content in test_file_contents.items():
@@ -528,13 +616,19 @@ class ApplicationMapper:
             for wf in workflows:
                 feat_name = wf.name
                 target_file = wf.related_files[0] if wf.related_files else (sorted_files[0].path if sorted_files else "app.py")
+                # Look up actual line number of target symbol in project_index
+                actual_line = 1
+                for sym in self.project_index.symbols.values():
+                    if sym.file_path == target_file:
+                        actual_line = sym.line_number
+                        break
                 flag = re.sub(r'[^A-Z0-9_]', '_', feat_name.upper())[:30]
                 features.append(
                     FeatureRecord(
                         name=feat_name,
                         flag_key=flag,
                         file_path=target_file,
-                        line_number=1,
+                        line_number=actual_line,
                         # NOTE: synthesized fallback — status is INFERRED, not OBSERVED
                         status=EvidenceStatus.INFERRED,
                         linked_tests=wf.linked_tests,

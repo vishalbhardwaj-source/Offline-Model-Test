@@ -2,7 +2,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, List, Optional, Tuple
 from offtest.checks.isolated_runner import IsolatedRunner
 from offtest.checks.static_checks import OfflineStaticChecker
 from offtest.checks.test_adapter import TestAdapter
@@ -97,10 +97,11 @@ def get_tool_manifest() -> List[ToolManifestItem]:
 
 
 class CheckPlanner:
-    def __init__(self, repo_dir: Path, files: List[FileRecord], allow_scripts: bool = False):
+    def __init__(self, repo_dir: Path, files: List[FileRecord], allow_scripts: bool = False, project_index: Optional[Any] = None):
         self.repo_dir = repo_dir
         self.files = files
         self.allow_scripts = allow_scripts
+        self.project_index = project_index
 
     def execute_all(self, branch: str = "HEAD") -> Tuple[List[CheckResult], List[Finding]]:
         check_results: List[CheckResult] = []
@@ -108,7 +109,7 @@ class CheckPlanner:
 
         import time
         # 1. Run Offline Static Analysis & Security
-        static_checker = OfflineStaticChecker(self.repo_dir, self.files)
+        static_checker = OfflineStaticChecker(self.repo_dir, self.files, project_index=self.project_index)
         _static_start = time.perf_counter()
         static_findings = static_checker.run_all(branch=branch)
         _static_elapsed = time.perf_counter() - _static_start
