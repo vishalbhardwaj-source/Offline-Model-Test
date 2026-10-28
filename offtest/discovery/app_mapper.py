@@ -253,29 +253,15 @@ class ApplicationMapper:
                             raw_name = comp_match.group(1)
                             clean_stem = raw_name.replace("Component", "")
                             match_name = raw_name
-                            friendly_map = {
-                                "Navbar": ("Navigation Bar & Category Selector", "Provides category selection navigation menu for section switching (World, Politics, Tech, etc.) and deep-link routing."),
-                                "News": ("Top Stories Feed & Article Coordinator", "Coordinates section top stories display, loading state spinners, and responsive article grid rendering."),
-                                "NewsItem": ("Article Card & Media Presentation", "Renders article preview cards with headline, abstract, publication date, byline, and external story links."),
-                                "Header": ("Application Masthead & Branding", "Presents top-level branding banner, application title, and masthead layout."),
-                                "Sections": ("News Section Filter Management", "Maintains active category selections and emits section change events."),
-                            }
-                            if clean_stem in friendly_map:
-                                feat_title, feat_desc = friendly_map[clean_stem]
-                            else:
-                                feat_title = f"{clean_stem} UI Component"
-                                feat_desc = f"User presentation and view interaction component managing {clean_stem} interface lifecycle."
+                            feat_title = f"{clean_stem} UI Component"
+                            feat_desc = f"User presentation and view interaction component managing {clean_stem} interface lifecycle."
 
                         elif svc_match:
                             raw_name = svc_match.group(1)
                             clean_stem = raw_name.replace("Service", "")
                             match_name = raw_name
-                            if clean_stem.lower() == "news":
-                                feat_title = "External News API Client Service"
-                                feat_desc = "Issues asynchronous HTTP requests to external news REST endpoints and deserializes payload into typed models."
-                            else:
-                                feat_title = f"{clean_stem} Data & API Service"
-                                feat_desc = f"Business logic and asynchronous HTTP client service managing {clean_stem} data operations."
+                            feat_title = f"{clean_stem} Data & API Service"
+                            feat_desc = f"Business logic and asynchronous HTTP client service managing {clean_stem} data operations."
 
                         elif eff_match:
                             raw_name = eff_match.group(1)
@@ -342,11 +328,17 @@ class ApplicationMapper:
             )
 
         # 2. Workflow Discovery
-        # Scan for CI/CD workflows (excluding external dependencies)
+        # Scan for CI/CD workflows (excluding external dependencies but NOT .github/)
         for f in self.files:
-            if any(part in f.path for part in ["node_modules", "dist", "vendor", ".git"]):
+            path_norm = f.path.replace("\\", "/")
+            path_parts = path_norm.split("/")
+            # Skip genuine node_modules, dist output, vendor directories, and .git internals
+            # but NOT .github/workflows which starts with ".github" not ".git"
+            if any(seg in path_parts for seg in ["node_modules", "dist", "vendor"]):
                 continue
-            if ".github/workflows" in f.path or ".gitlab-ci" in f.path:
+            if "/.git/" in "/" + path_norm + "/" and not path_norm.startswith(".github"):
+                continue
+            if ".github/workflows" in path_norm or ".gitlab-ci" in path_norm:
                 workflows.append(
                     WorkflowRecord(
                         name=f"CI/CD Pipeline: {Path(f.path).name}",
@@ -384,7 +376,7 @@ class ApplicationMapper:
                     entry_point="Action Dispatch (NgRx / State Store)",
                     related_files=all_related,
                     linked_tests=linked_store_tests,
-                    status=EvidenceStatus.OBSERVED,
+                    status=EvidenceStatus.INFERRED,
                     steps=[
                         "UI component dispatches action with intent and parameters",
                         "Reactive Effect intercepts action and executes asynchronous service call",
@@ -395,7 +387,7 @@ class ApplicationMapper:
                         "UI selectors project updated state to active component templates",
                     ],
                     is_advisory=False,
-                    symbolic_edges_verified=True,
+                    symbolic_edges_verified=False,
                 )
             )
 
@@ -419,7 +411,7 @@ class ApplicationMapper:
                         "Component triggers initial state queries and renders view template",
                     ],
                     is_advisory=False,
-                    symbolic_edges_verified=True,
+                    symbolic_edges_verified=False,
                 )
             )
 
@@ -443,15 +435,18 @@ class ApplicationMapper:
                         "Client deserializes payload and updates view models",
                     ],
                     is_advisory=False,
-                    symbolic_edges_verified=True,
+                    symbolic_edges_verified=False,
                 )
             )
 
-        # Heuristic application workflows based on discovered routes & files
+        # Domain-agnostic workflow inference from discovered routes, APIs, and file structure
+        # All inferred workflows are explicitly tagged INFERRED with symbolic_edges_verified=False
+        # until a real call-graph pass can elevate them.
         route_paths = [r.path.lower() for r in routes] + [a.endpoint.lower() for a in apis]
+
+        # Auth workflow — only if auth routes were actually discovered
         auth_routes = [r for r in route_paths if any(term in r for term in ["login", "register", "auth", "signup", "signin"])]
         if auth_routes:
-            # Check if any non-synthesized test tests authentication
             linked_auth_tests = []
             for tf_path, t_content in test_file_contents.items():
                 if "synthesized" in tf_path.lower():
@@ -462,7 +457,7 @@ class ApplicationMapper:
             workflows.append(
                 WorkflowRecord(
                     name="User Authentication & Session Management",
-                    description="User login, registration, and credential validation workflow (inferred advisory journey)",
+                    description="User login, registration, and credential validation workflow (inferred from route names; not call-graph verified)",
                     entry_point=auth_routes[0],
                     related_files=[r.file_path for r in routes if r.path.lower() in auth_routes] + [a.file_path for a in apis if a.endpoint.lower() in auth_routes],
                     linked_tests=linked_auth_tests,
@@ -470,6 +465,10 @@ class ApplicationMapper:
                     steps=["Submit credentials", "Validate password/token", "Establish session"],
                     is_advisory=True,
                     symbolic_edges_verified=False,
+                    initiated_by="User authentication prompt or login page",
+                    processing_pipeline=["1. Ingest credentials", "2. Validate hash/token", "3. Establish session state"],
+                    where_it_leads="Grants authenticated session token and unlocks protected API routes",
+                    subgraph="Authentication",
                 )
             )
 
@@ -483,7 +482,7 @@ class ApplicationMapper:
             workflows.append(
                 WorkflowRecord(
                     name="Checkout & Order Processing",
-                    description="User cart management, order submission, and payment flow (inferred advisory journey)",
+                    description="User cart management, order submission, and payment flow (inferred from route names; not call-graph verified)",
                     entry_point=checkout_routes[0],
                     related_files=[r.file_path for r in routes if r.path.lower() in checkout_routes],
                     linked_tests=linked_cart_tests,
@@ -491,6 +490,10 @@ class ApplicationMapper:
                     steps=["View cart", "Initiate checkout", "Process payment", "Confirm order"],
                     is_advisory=True,
                     symbolic_edges_verified=False,
+                    initiated_by="User clicks checkout button from cart view",
+                    processing_pipeline=["1. Validate cart contents", "2. Process payment transaction", "3. Dispatch order confirmation"],
+                    where_it_leads="Commits order transaction to database and triggers fulfillment",
+                    subgraph="E-Commerce",
                 )
             )
 
@@ -499,11 +502,11 @@ class ApplicationMapper:
             workflows.append(
                 WorkflowRecord(
                     name="Application Bootstrap & Initial Render",
-                    description="Standard lifecycle startup and initial UI rendering workflow",
+                    description="Standard lifecycle startup and initial UI rendering workflow (fallback — no routes or API endpoints detected)",
                     entry_point="/",
                     related_files=[f.path for f in sorted_files[:3]],
                     linked_tests=list(test_file_contents.keys())[:2],
-                    status=EvidenceStatus.OBSERVED,
+                    status=EvidenceStatus.INFERRED,
                     steps=[
                         "Load application runtime bundle and dependencies",
                         "Initialize application configuration and root context",
@@ -511,10 +514,36 @@ class ApplicationMapper:
                     ],
                     is_advisory=True,
                     symbolic_edges_verified=False,
+                    initiated_by="Initial browser navigation to root URL",
+                    processing_pipeline=["1. Load application bundles", "2. Mount root component", "3. Render landing screen"],
+                    where_it_leads="Presents active application interface to user",
+                    subgraph="Bootstrap",
                 )
             )
 
-        # Ensure features are never empty for any application
+        # Populate features from discovered workflows only if no explicit feature flags were found.
+        # Status is INFERRED (not OBSERVED) because these are synthesized from workflow data,
+        # not from real feature flag API calls in the source code.
+        if len(features) == 0:
+            for wf in workflows:
+                feat_name = wf.name
+                target_file = wf.related_files[0] if wf.related_files else (sorted_files[0].path if sorted_files else "app.py")
+                flag = re.sub(r'[^A-Z0-9_]', '_', feat_name.upper())[:30]
+                features.append(
+                    FeatureRecord(
+                        name=feat_name,
+                        flag_key=flag,
+                        file_path=target_file,
+                        line_number=1,
+                        # NOTE: synthesized fallback — status is INFERRED, not OBSERVED
+                        status=EvidenceStatus.INFERRED,
+                        linked_tests=wf.linked_tests,
+                        description=wf.description,
+                    )
+                )
+
+        # Second fallback: if still empty (no workflows either), synthesize from first discovered API/route/file.
+        # Status is explicitly INFERRED to avoid claiming OBSERVED evidence we do not have.
         if len(features) == 0:
             if apis:
                 first_api = apis[0]
@@ -524,7 +553,8 @@ class ApplicationMapper:
                         flag_key="API_SERVICE",
                         file_path=first_api.file_path,
                         line_number=first_api.line_number or 1,
-                        status=EvidenceStatus.OBSERVED,
+                        # NOTE: synthesized fallback — not an observed feature flag
+                        status=EvidenceStatus.INFERRED,
                         linked_tests=[tf for tf in test_file_contents if "api" in tf.lower()],
                         description="Server-side HTTP API processing client requests, parameter validation, and data serialization.",
                     )
@@ -537,7 +567,8 @@ class ApplicationMapper:
                         flag_key="ROUTING_SERVICE",
                         file_path=first_route.file_path,
                         line_number=first_route.line_number or 1,
-                        status=EvidenceStatus.OBSERVED,
+                        # NOTE: synthesized fallback — not an observed feature flag
+                        status=EvidenceStatus.INFERRED,
                         linked_tests=[tf for tf in test_file_contents if "route" in tf.lower() or "test" in tf.lower()],
                         description="Handles URL-driven routing, page view activation, and template rendering for users.",
                     )
@@ -550,7 +581,8 @@ class ApplicationMapper:
                         flag_key="CORE_RUNTIME",
                         file_path=top_file.path,
                         line_number=1,
-                        status=EvidenceStatus.OBSERVED,
+                        # NOTE: synthesized fallback — not an observed feature flag
+                        status=EvidenceStatus.INFERRED,
                         linked_tests=list(test_file_contents.keys())[:1],
                         description="Core application runtime controlling environment initialization, business logic, and operations.",
                     )

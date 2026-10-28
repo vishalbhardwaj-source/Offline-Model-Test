@@ -1,7 +1,7 @@
 import ast
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from offtest.core.models import (
     BranchConditionRecord,
     FileRecord,
@@ -13,9 +13,9 @@ from offtest.generator.heal_gate import (
     HealIterationRecord,
     HealSessionResult,
     check_patch,
-    run_healing_loop,
+    run_healing_loop,  # reserved for future heal integration
 )
-from offtest.generator.mutation import evaluate_test_against_mutants
+from offtest.generator.mutation import evaluate_test_against_mutants  # reserved for future mutation scoring
 
 
 class BranchConditionVisitor(ast.NodeVisitor):
@@ -40,7 +40,7 @@ class BranchConditionVisitor(ast.NodeVisitor):
         # Extract condition expression text
         test_expr = "condition"
         pred_type = "boolean"
-        suggested: List[Dict[str, any]] = []
+        suggested: List[Dict[str, Any]] = []
 
         if isinstance(node.test, ast.Compare):
             pred_type = "comparison"
@@ -94,6 +94,68 @@ class BranchConditionVisitor(ast.NodeVisitor):
         )
         self.generic_visit(node)
 
+    def visit_While(self, node: ast.While):
+        try:
+            test_expr = ast.unparse(node.test)
+        except Exception:
+            test_expr = "condition"
+        self.conditions.append(
+            BranchConditionRecord(
+                file_path=self.file_path,
+                function_name=self.current_function,
+                line_number=node.lineno,
+                condition_expr=test_expr,
+                predicate_type="while_loop",
+                suggested_inputs=[
+                    {"case": "loop_enters", "strategy": "truthy_condition"},
+                    {"case": "loop_skips", "strategy": "falsy_condition"},
+                ],
+            )
+        )
+        self.generic_visit(node)
+
+    def visit_For(self, node: ast.For):
+        try:
+            iter_expr = ast.unparse(node.iter)
+        except Exception:
+            iter_expr = "iterable"
+        self.conditions.append(
+            BranchConditionRecord(
+                file_path=self.file_path,
+                function_name=self.current_function,
+                line_number=node.lineno,
+                condition_expr=f"for ... in {iter_expr}",
+                predicate_type="for_loop",
+                suggested_inputs=[
+                    {"case": "non_empty_iterable", "strategy": "provide_non_empty_sequence"},
+                    {"case": "empty_iterable", "strategy": "provide_empty_sequence"},
+                ],
+            )
+        )
+        self.generic_visit(node)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler):
+        exc_type = ""
+        if node.type is not None:
+            try:
+                exc_type = ast.unparse(node.type)
+            except Exception:
+                exc_type = "Exception"
+        self.conditions.append(
+            BranchConditionRecord(
+                file_path=self.file_path,
+                function_name=self.current_function,
+                line_number=node.lineno,
+                condition_expr=f"except {exc_type}" if exc_type else "except",
+                predicate_type="exception_handler",
+                suggested_inputs=[
+                    {"case": "exception_raised", "strategy": f"raise_{exc_type or 'Exception'}"},
+                    {"case": "no_exception", "strategy": "execute_without_error"},
+                ],
+            )
+        )
+        self.generic_visit(node)
+
 
 class ConstrainedTestGenerator:
     """
@@ -126,7 +188,7 @@ class ConstrainedTestGenerator:
         test_cases: List[GeneratedTestCase] = []
 
         # Generate structured AST test definitions
-        for idx, cond in enumerate(conditions[:10], start=1):
+        for idx, cond in enumerate(conditions[:50], start=1):
             func_name = cond.function_name or "component"
             safe_func = re.sub(r"\W+", "_", func_name)
             test_id = f"test_gen_{idx}_{safe_func}"
@@ -185,15 +247,19 @@ class ConstrainedTestGenerator:
 
         compile_rate = 100.0 if test_cases else None
 
+        # verified_count and target_branches_covered remain 0:
+        # - All generated tests emit pytest.skip(), so none are executed or verified.
+        # - Skipped probes identify branch predicates but do NOT constitute coverage.
+        # - total_generated reflects how many branch probes were synthesized.
         return GeneratedTestSuite(
             total_generated=len(test_cases),
-            verified_count=len(test_cases),
+            verified_count=0,          # 0 — all probes are skipped, none oracle-verified
             repaired_count=0,
             healed_count=0,
-            target_branches_covered=len(test_cases),
+            target_branches_covered=0,  # 0 — skipped != covered
             test_cases=test_cases,
             suite_file_path=suite_path_str,
-            compile_rate_pct=compile_rate,
+            compile_rate_pct=compile_rate,  # 100% is correct — AST compiles cleanly
             mutation_score_pct=None,
         )
 

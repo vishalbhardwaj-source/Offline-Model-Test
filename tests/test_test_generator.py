@@ -39,6 +39,8 @@ def process_order(price, discount):
 
     suite = generator.generate_suite(output_dir=tmp_path)
     assert suite.total_generated >= 2
-    assert suite.verified_count >= 2
+    # Skipped probe tests are not considered verified or covered without an oracle
+    assert suite.verified_count == 0
+    assert suite.target_branches_covered == 0
     assert suite.suite_file_path is not None
     assert Path(suite.suite_file_path).is_file()

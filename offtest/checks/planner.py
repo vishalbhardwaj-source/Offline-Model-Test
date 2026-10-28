@@ -106,9 +106,12 @@ class CheckPlanner:
         check_results: List[CheckResult] = []
         findings: List[Finding] = []
 
+        import time
         # 1. Run Offline Static Analysis & Security
         static_checker = OfflineStaticChecker(self.repo_dir, self.files)
+        _static_start = time.perf_counter()
         static_findings = static_checker.run_all(branch=branch)
+        _static_elapsed = time.perf_counter() - _static_start
         findings.extend(static_findings)
 
         crit_count = len([f for f in static_findings if f.severity.value == "Critical"])
@@ -132,7 +135,7 @@ class CheckPlanner:
                 check_type="security",
                 command="internal static ast inspection",
                 exit_code=1 if has_critical_or_high else 0,
-                duration_sec=0.15,
+                duration_sec=round(_static_elapsed, 4),
                 stdout=f"Processed eligible source files. Generated {len(static_findings)} findings.",
                 stderr="",
                 status=CheckStatus.FAILED if has_critical_or_high else CheckStatus.PASSED,

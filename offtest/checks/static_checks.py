@@ -1,7 +1,7 @@
 import ast
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from offtest.core.models import (
     Confidence,
     EvidenceStatus,
@@ -9,7 +9,6 @@ from offtest.core.models import (
     Finding,
     Severity,
 )
-from offtest.discovery.anchor_verifier import verify_source_anchor
 from offtest.intake.safety import scan_for_secrets
 
 # Curated deterministic rule-to-CWE mapping table with estimated CVSS baselines
@@ -20,6 +19,7 @@ RULE_CWE_CVSS_MAP: Dict[str, Tuple[str, str, float, str]] = {
     "High-Entropy Secret": ("CWE-798", "Use of Hard-coded Credentials", 7.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"),
     "Insecure Authentication Endpoint": ("CWE-598", "Use of GET Request Method With Sensitive Query Strings", 6.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N"),
     "eval": ("CWE-95", "Improper Neutralization of Directives in Dynamically Evaluated Code ('Eval Injection')", 9.8, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
+    "exec": ("CWE-95", "Improper Neutralization of Directives in Dynamically Evaluated Code ('Eval Injection')", 9.8, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
     "Command Execution": ("CWE-78", "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')", 8.8, "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"),
     "Command Injection": ("CWE-78", "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')", 8.8, "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"),
     "os.system": ("CWE-78", "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')", 8.8, "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"),
@@ -75,8 +75,12 @@ def classify_defect_confidence(
 
 
 def resolve_cwe_cvss(title: str) -> Tuple[Optional[str], Optional[str], Optional[float], Optional[str]]:
-    for key, (cwe_id, cwe_name, cvss_score, cvss_vector) in RULE_CWE_CVSS_MAP.items():
-        if key.lower() in title.lower():
+    # Match longest key first so specific keys (e.g. "Command Execution") always win
+    # over short keys that are substrings (e.g. "exec" inside "Command Execution").
+    title_lower = title.lower()
+    for key in sorted(RULE_CWE_CVSS_MAP, key=len, reverse=True):
+        if key.lower() in title_lower:
+            cwe_id, cwe_name, cvss_score, cvss_vector = RULE_CWE_CVSS_MAP[key]
             return cwe_id, cwe_name, cvss_score, cvss_vector
     return None, None, None, None
 
@@ -202,6 +206,10 @@ class OfflineStaticChecker:
                 elif parsed_ast:
                     py_findings = self._check_python_security_ast(f.path, parsed_ast, counter, branch)
                     for item in py_findings:
+                        findings.append(item)
+                        counter += 1
+                    dead_findings = self._check_python_dead_code(f.path, parsed_ast, counter, branch)
+                    for item in dead_findings:
                         findings.append(item)
                         counter += 1
 
@@ -516,6 +524,136 @@ class OfflineStaticChecker:
                 )
             )
             c += 1
+
+        return findings
+
+    def _check_python_dead_code(self, rel_path: str, tree: ast.AST, counter_start: int, branch: Optional[str]) -> List[Finding]:
+        """
+        Detects unused imports and unreachable statements (dead code) via AST walk.
+        Findings are LOW severity / LIKELY confidence — no CVSS score attached.
+        """
+        findings: List[Finding] = []
+        c = counter_start
+        f_sha = self.file_hashes.get(rel_path)
+
+        # --- 1. Unused top-level imports ---
+        # Collect all imported names, then collect all Name references in the rest of the AST.
+        import_names: Dict[str, int] = {}  # name -> line_number
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    bound_name = alias.asname if alias.asname else alias.name.split(".")[0]
+                    import_names[bound_name] = node.lineno
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name == "*":
+                        continue  # star import — can't track
+                    bound_name = alias.asname if alias.asname else alias.name
+                    import_names[bound_name] = node.lineno
+
+        # Collect all Name loads in the module body (excluding the import statements themselves)
+        used_names: Set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                used_names.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                # attr access like `os.path` — the root name `os` is used
+                root = node
+                while isinstance(root, ast.Attribute):
+                    root = root.value
+                if isinstance(root, ast.Name):
+                    used_names.add(root.id)
+
+        for name, line_no in import_names.items():
+            if name not in used_names and name != "_":
+                findings.append(
+                    Finding(
+                        id=f"FIND-{c:04d}",
+                        title=f"Unused Import: '{name}'",
+                        severity=Severity.LOW,
+                        confidence=Confidence.LIKELY,
+                        provenance="symbolic",
+                        status=EvidenceStatus.OBSERVED,
+                        branch=branch,
+                        file_path=rel_path,
+                        line_number=line_no,
+                        file_sha256=f_sha,
+                        impact=f"Import '{name}' is defined but never referenced in this module. Dead imports increase cognitive load and surface area.",
+                        evidence=f"Line {line_no}: import '{name}' — no reference found in module body.",
+                        suggested_action=f"Remove the unused import of '{name}' or add a usage if intentional.",
+                        check_tool="python-dead-code-checker",
+                        cwe_id="CWE-561",
+                        cwe_name="Dead Code",
+                        cvss_score_estimate=None,
+                        cvss_vector_estimate=None,
+                        cvss_is_estimate=False,
+                        environmental_context_assumed="Static AST analysis — dynamic __all__ exports or re-export patterns may produce false positives.",
+                        oracle_origin="symbolic_invariant",
+                        reproduced=True,
+                        sandbox_artifact=False,
+                    )
+                )
+                c += 1
+
+        # --- 2. Unreachable statements after return/raise/break/continue ---
+        terminal_nodes = (ast.Return, ast.Raise, ast.Break, ast.Continue)
+
+        def check_block_for_unreachable(stmts: List[ast.stmt], parent_lineno: int) -> None:
+            nonlocal c
+            for i, stmt in enumerate(stmts):
+                if isinstance(stmt, terminal_nodes):
+                    # Everything after this in the same block is unreachable
+                    unreachable = stmts[i + 1:]
+                    for dead_stmt in unreachable:
+                        if isinstance(dead_stmt, (ast.Pass,)):
+                            continue  # `pass` after return is trivial
+                        dead_line = getattr(dead_stmt, "lineno", parent_lineno)
+                        findings.append(
+                            Finding(
+                                id=f"FIND-{c:04d}",
+                                title="Unreachable Statement After Control Flow Terminator",
+                                severity=Severity.LOW,
+                                confidence=Confidence.LIKELY,
+                                provenance="symbolic",
+                                status=EvidenceStatus.OBSERVED,
+                                branch=branch,
+                                file_path=rel_path,
+                                line_number=dead_line,
+                                file_sha256=f_sha,
+                                impact="Statement appears after a return/raise/break/continue and will never execute.",
+                                evidence=f"Line {dead_line}: statement follows a {type(stmt).__name__} at line {stmt.lineno}.",
+                                suggested_action="Remove the unreachable statement or restructure the control flow.",
+                                check_tool="python-dead-code-checker",
+                                cwe_id="CWE-561",
+                                cwe_name="Dead Code",
+                                cvss_score_estimate=None,
+                                cvss_vector_estimate=None,
+                                cvss_is_estimate=False,
+                                environmental_context_assumed="Static AST analysis — exception handlers and finally blocks may execute; only linear block reachability is checked.",
+                                oracle_origin="symbolic_invariant",
+                                reproduced=True,
+                                sandbox_artifact=False,
+                            )
+                        )
+                        c += 1
+                    break  # stop processing this block further
+
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if body and isinstance(body, list):
+                check_block_for_unreachable(body, getattr(node, "lineno", 1))
+            orelse = getattr(node, "orelse", None)
+            if orelse and isinstance(orelse, list):
+                check_block_for_unreachable(orelse, getattr(node, "lineno", 1))
+            handlers = getattr(node, "handlers", None)
+            if handlers:
+                for handler in handlers:
+                    if hasattr(handler, "body"):
+                        check_block_for_unreachable(handler.body, handler.lineno)
+            finalbody = getattr(node, "finalbody", None)
+            if finalbody and isinstance(finalbody, list):
+                check_block_for_unreachable(finalbody, getattr(node, "lineno", 1))
 
         return findings
 
@@ -922,68 +1060,68 @@ class OfflineStaticChecker:
         f_sha = self.file_hashes.get(rel_path)
         try:
             data = json.loads(content)
-            deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
-            for pkg, ver in deps.items():
-                ver_str = str(ver).strip()
-                from offtest.intake.intake import is_unc_or_remote_path
-                if is_unc_or_remote_path(ver_str) or ver_str.startswith(("git://", "git+http", "git+ssh", "http://", "https://")):
-                    findings.append(
-                        Finding(
-                            id=f"FIND-{c:04d}",
-                            title=f"Remote Network or UNC Dependency Reference in package.json: '{pkg}'",
-                            severity=Severity.HIGH,
-                            confidence=Confidence.CONFIRMED,
-                            provenance="rule",
-                            status=EvidenceStatus.OBSERVED,
-                            branch=branch,
-                            file_path=rel_path,
-                            line_number=None,
-                            file_sha256=f_sha,
-                            impact="Package dependency specifies a remote network or UNC repository URL. Installation triggers outbound network traffic across air-gap.",
-                            evidence=f"\"{pkg}\": \"{ver_str}\"",
-                            suggested_action="Vendor dependency locally within repository or supply offline tarball archive.",
-                            check_tool="dependency-pin-checker",
-                            cwe_id="CWE-829",
-                            cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
-                            cvss_score_estimate=7.5,
-                            cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
-                            cvss_is_estimate=True,
-                            environmental_context_assumed="Assumes strict offline air-gap build requirements.",
-                            oracle_origin="static_rule",
-                            reproduced=True,
-                            sandbox_artifact=False,
-                        )
-                    )
-                    c += 1
-                elif ver.startswith("^") or ver.startswith("~") or ver == "*" or ver == "latest":
-                    cwe_id, cwe_name, cvss_score, cvss_vector = resolve_cwe_cvss("Floating Node.js Dependency")
-                    findings.append(
-                        Finding(
-                            id=f"FIND-{c:04d}",
-                            title=f"Floating Node.js Dependency: '{pkg}'",
-                            severity=Severity.LOW,
-                            confidence=Confidence.CONFIRMED,
-                            provenance="rule",
-                            status=EvidenceStatus.OBSERVED,
-                            branch=branch,
-                            file_path=rel_path,
-                            line_number=None,
-                            file_sha256=f_sha,
-                            impact="Floating dependency range requires network resolution unless exact package-lock.json is committed.",
-                            evidence=f"\"{pkg}\": \"{ver}\"",
-                            suggested_action=f"Pin exact version or ensure package-lock.json / offline cache is provided.",
-                            check_tool="npm-package-pin-checker",
-                            cwe_id=cwe_id,
-                            cwe_name=cwe_name,
-                            cvss_score_estimate=cvss_score,
-                            cvss_vector_estimate=cvss_vector,
-                            cvss_is_estimate=True,
-                            oracle_origin="static_rule",
-                            reproduced=True,
-                            sandbox_artifact=False,
-                        )
-                    )
-                    c += 1
         except Exception:
-            pass
+            return findings
+        deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
+        for pkg, ver in deps.items():
+            ver_str = str(ver).strip()
+            from offtest.intake.intake import is_unc_or_remote_path
+            if is_unc_or_remote_path(ver_str) or ver_str.startswith(("git://", "git+http", "git+ssh", "http://", "https://")):
+                findings.append(
+                    Finding(
+                        id=f"FIND-{c:04d}",
+                        title=f"Remote Network or UNC Dependency Reference in package.json: '{pkg}'",
+                        severity=Severity.HIGH,
+                        confidence=Confidence.CONFIRMED,
+                        provenance="rule",
+                        status=EvidenceStatus.OBSERVED,
+                        branch=branch,
+                        file_path=rel_path,
+                        line_number=None,
+                        file_sha256=f_sha,
+                        impact="Package dependency specifies a remote network or UNC repository URL. Installation triggers outbound network traffic across air-gap.",
+                        evidence=f"\"{pkg}\": \"{ver_str}\"",
+                        suggested_action="Vendor dependency locally within repository or supply offline tarball archive.",
+                        check_tool="dependency-pin-checker",
+                        cwe_id="CWE-829",
+                        cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
+                        cvss_score_estimate=7.5,
+                        cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+                        cvss_is_estimate=True,
+                        environmental_context_assumed="Assumes strict offline air-gap build requirements.",
+                        oracle_origin="static_rule",
+                        reproduced=True,
+                        sandbox_artifact=False,
+                    )
+                )
+                c += 1
+            elif ver.startswith("^") or ver.startswith("~") or ver == "*" or ver == "latest":
+                cwe_id, cwe_name, cvss_score, cvss_vector = resolve_cwe_cvss("Floating Node.js Dependency")
+                findings.append(
+                    Finding(
+                        id=f"FIND-{c:04d}",
+                        title=f"Floating Node.js Dependency: '{pkg}'",
+                        severity=Severity.LOW,
+                        confidence=Confidence.CONFIRMED,
+                        provenance="rule",
+                        status=EvidenceStatus.OBSERVED,
+                        branch=branch,
+                        file_path=rel_path,
+                        line_number=None,
+                        file_sha256=f_sha,
+                        impact="Floating dependency range requires network resolution unless exact package-lock.json is committed.",
+                        evidence=f"\"{pkg}\": \"{ver}\"",
+                        suggested_action=f"Pin exact version or ensure package-lock.json / offline cache is provided.",
+                        check_tool="npm-package-pin-checker",
+                        cwe_id=cwe_id,
+                        cwe_name=cwe_name,
+                        cvss_score_estimate=cvss_score,
+                        cvss_vector_estimate=cvss_vector,
+                        cvss_is_estimate=True,
+                        oracle_origin="static_rule",
+                        reproduced=True,
+                        sandbox_artifact=False,
+                    )
+                )
+                c += 1
         return findings

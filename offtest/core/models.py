@@ -100,6 +100,10 @@ class WorkflowRecord(BaseModel):
     steps: List[str] = Field(default_factory=list)
     is_advisory: bool = True
     symbolic_edges_verified: bool = False
+    initiated_by: Optional[str] = None
+    processing_pipeline: List[str] = Field(default_factory=list)
+    where_it_leads: Optional[str] = None
+    subgraph: Optional[str] = None
 
 
 class IntegrationRecord(BaseModel):
