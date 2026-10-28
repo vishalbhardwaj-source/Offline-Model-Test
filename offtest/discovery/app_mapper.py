@@ -370,13 +370,15 @@ class ApplicationMapper:
         # 2. Workflow Discovery
         # 2a. Code-Derived Workflows: follow the call graph from each route handler
         seen_wf_names = set()
+        traced_route_paths = set()
         for r_entry in (routes + apis):
             handler = getattr(r_entry, "handler", None)
             path_str = getattr(r_entry, "path", None) or getattr(r_entry, "endpoint", "")
             method_str = getattr(r_entry, "method", "ANY")
             if handler:
                 call_trace = self.project_index.trace_workflow(r_entry.file_path, handler)
-                if len(call_trace) > 1:
+                if len(call_trace) >= 1:
+                    traced_route_paths.add(path_str.lower())
                     wf_name = f"{method_str} {path_str} Execution Workflow"
                     if wf_name not in seen_wf_names:
                         seen_wf_names.add(wf_name)
@@ -528,6 +530,7 @@ class ApplicationMapper:
         auth_routes = [
             r for r in route_paths
             if any(term in r for term in ["login", "register", "auth", "signup", "signin"])
+            and r not in traced_route_paths
             and not any(r in ep for ep in covered_eps)
         ]
         if auth_routes:
@@ -559,6 +562,7 @@ class ApplicationMapper:
         checkout_routes = [
             r for r in route_paths
             if any(term in r for term in ["checkout", "payment", "order", "cart"])
+            and r not in traced_route_paths
             and not any(r in ep for ep in covered_eps)
         ]
         if checkout_routes:
@@ -618,10 +622,37 @@ class ApplicationMapper:
                 target_file = wf.related_files[0] if wf.related_files else (sorted_files[0].path if sorted_files else "app.py")
                 # Look up actual line number of target symbol in project_index
                 actual_line = 1
-                for sym in self.project_index.symbols.values():
-                    if sym.file_path == target_file:
-                        actual_line = sym.line_number
-                        break
+                handler_match = re.search(r"->\s*(\w+)\(\)", wf.entry_point or "")
+                if handler_match:
+                    h_name = handler_match.group(1)
+                    sym_key = f"{target_file}::{h_name}"
+                    if sym_key in self.project_index.symbols:
+                        actual_line = self.project_index.symbols[sym_key].line_number
+                    elif h_name in self.project_index.symbols_by_name:
+                        file_matches = [s for s in self.project_index.symbols_by_name[h_name] if s.file_path == target_file]
+                        if file_matches:
+                            actual_line = file_matches[0].line_number
+                        else:
+                            actual_line = self.project_index.symbols_by_name[h_name][0].line_number
+
+                if actual_line == 1:
+                    for r in (routes + apis):
+                        r_p = getattr(r, "path", None) or getattr(r, "endpoint", "")
+                        if r_p and r_p in (wf.entry_point or "") and getattr(r, "file_path", None) == target_file:
+                            actual_line = r.line_number
+                            break
+
+                if actual_line == 1:
+                    for sym in self.project_index.symbols.values():
+                        if sym.file_path == target_file and (sym.name.lower() in feat_name.lower() or feat_name.lower() in sym.name.lower()):
+                            actual_line = sym.line_number
+                            break
+
+                if actual_line == 1:
+                    for sym in self.project_index.symbols.values():
+                        if sym.file_path == target_file:
+                            actual_line = sym.line_number
+                            break
                 flag = re.sub(r'[^A-Z0-9_]', '_', feat_name.upper())[:30]
                 features.append(
                     FeatureRecord(

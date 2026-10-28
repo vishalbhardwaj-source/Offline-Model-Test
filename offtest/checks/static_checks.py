@@ -268,7 +268,7 @@ class OfflineStaticChecker:
                     counter += 1
 
         # Check project-wide unreachable functions, classes, and no-ops
-        uncalled_findings = self._check_project_uncalled_code(branch, counter)
+        uncalled_findings = self._check_project_uncalled_code(branch, counter, existing_findings=findings)
         findings.extend(uncalled_findings)
         return findings
 
@@ -1149,7 +1149,8 @@ class OfflineStaticChecker:
         c = counter_start
         f_sha = self.file_hashes.get(rel_path)
 
-        builtins_set = set(dir(__builtins__)) | {
+        import builtins
+        builtins_set = set(dir(builtins)) | {
             "__name__", "__file__", "__doc__", "__all__", "__path__", "__package__",
             "__spec__", "True", "False", "None", "self", "cls"
         }
@@ -1357,9 +1358,15 @@ class OfflineStaticChecker:
         visitor.visit(tree)
         return findings
 
-    def _check_project_uncalled_code(self, branch: Optional[str], counter_start: int) -> List[Finding]:
+    def _check_project_uncalled_code(
+        self,
+        branch: Optional[str],
+        counter_start: int,
+        existing_findings: Optional[List[Finding]] = None,
+    ) -> List[Finding]:
         """
         Reports uncalled functions, classes, and no-op stubs discovered via project-wide call graph.
+        Consolidates internal defects located within uncalled functions into a single finding to minimize noise.
         """
         findings: List[Finding] = []
         c = counter_start
@@ -1367,46 +1374,155 @@ class OfflineStaticChecker:
         if not hasattr(self, "project_index") or self.project_index is None:
             return findings
 
+        def _severity_rank(sev: Severity) -> int:
+            ranks = {
+                Severity.CRITICAL: 5,
+                Severity.HIGH: 4,
+                Severity.MEDIUM: 3,
+                Severity.LOW: 2,
+                Severity.INFORMATIONAL: 1,
+            }
+            return ranks.get(sev, 0)
+
         # 1. Unreachable functions and classes from call graph
         for sym in self.project_index.unreachable_symbols:
             f_sha = self.file_hashes.get(sym.file_path)
-            # Determine confidence level
             conf = Confidence.CONFIRMED if sym.is_private else Confidence.LIKELY
             if sym.name in self.project_index.dynamic_names or sym.name in self.project_index.exported_names:
                 conf = Confidence.POSSIBLE
 
-            findings.append(
-                Finding(
-                    id=f"FIND-{c:04d}",
-                    title=f"Uncalled Dead Code: {sym.symbol_type.capitalize()} '{sym.name}' Is Never Called",
-                    severity=Severity.LOW,
-                    confidence=conf,
-                    provenance="symbolic",
-                    status=EvidenceStatus.OBSERVED,
-                    branch=branch,
-                    file_path=sym.file_path,
-                    line_number=sym.line_number,
-                    file_sha256=f_sha,
-                    impact=f"{sym.symbol_type.capitalize()} '{sym.name}' defined at line {sym.line_number} is unreachable from any application entry point or test.",
-                    evidence=f"{sym.file_path}:{sym.line_number}: {sym.symbol_type} '{sym.name}' has 0 incoming call references in the project call graph.",
-                    suggested_action="Remove uncalled code or wire it into an active application workflow.",
-                    check_tool="project-callgraph-analyzer",
-                    cwe_id="CWE-561",
-                    cwe_name="Dead Code",
-                    cvss_score_estimate=None,
-                    cvss_vector_estimate=None,
-                    cvss_is_estimate=False,
-                    environmental_context_assumed="Cross-file call graph reachability analysis from entry points (routes, CLI, __main__, tests).",
-                    oracle_origin="symbolic_invariant",
-                    reproduced=True,
-                    sandbox_artifact=False,
-                )
-            )
-            c += 1
+            # Check if existing findings fall inside this uncalled symbol
+            internal_findings: List[Finding] = []
+            if existing_findings:
+                to_remove = []
+                for ef in existing_findings:
+                    if (
+                        ef.file_path == sym.file_path
+                        and ef.line_number is not None
+                        and sym.line_number <= ef.line_number <= sym.end_line_number
+                    ):
+                        internal_findings.append(ef)
+                        to_remove.append(ef)
+                for rem in to_remove:
+                    existing_findings.remove(rem)
 
-        # 2. No-op functions and NotImplemented stubs
+            defect_labels: List[str] = []
+            for ef in internal_findings:
+                st = ef.title
+                if "Division by Zero" in st:
+                    defect_labels.append("Division by Zero")
+                elif "Undefined Name" in st:
+                    defect_labels.append(st)
+                elif "Constant False" in st:
+                    defect_labels.append("Constant False Condition ('if False:')")
+                elif "Unreachable Statement" in st:
+                    defect_labels.append("Unreachable Statement After Return")
+                else:
+                    defect_labels.append(st)
+
+            if sym.is_noop:
+                defect_labels.append(f"No-Op Function: '{sym.name}()'")
+            if sym.raises_not_implemented:
+                defect_labels.append(f"Unimplemented Function Stub: '{sym.name}()' Always Raises NotImplementedError")
+
+            if defect_labels or internal_findings:
+                top_defect = (
+                    max(internal_findings, key=lambda f: _severity_rank(f.severity))
+                    if internal_findings
+                    else None
+                )
+                title_defect = "; ".join(defect_labels)
+                finding_title = f"Uncalled Dead Code: {sym.symbol_type.capitalize()} '{sym.name}' Is Never Called ({title_defect})"
+                impact_str = (
+                    f"{sym.symbol_type.capitalize()} '{sym.name}' defined at line {sym.line_number} is unreachable from any application entry point or test (dead code)."
+                )
+                if internal_findings:
+                    impact_str += " In addition, it contains internal defect(s): " + " ".join(f.impact for f in internal_findings)
+                elif sym.is_noop:
+                    impact_str += f" Function executes no operational logic ({sym.noop_reason})."
+                elif sym.raises_not_implemented:
+                    impact_str += " Function unconditionally raises NotImplementedError."
+
+                evidence_str = (
+                    f"{sym.file_path}:{sym.line_number}: {sym.symbol_type} '{sym.name}' has 0 incoming call references in the project call graph."
+                )
+                if internal_findings:
+                    evidence_str += " Internal defects: " + "; ".join(f.evidence for f in internal_findings)
+                elif sym.noop_reason:
+                    evidence_str += f" {sym.noop_reason}"
+
+                sev = top_defect.severity if top_defect else (Severity.MEDIUM if sym.raises_not_implemented else Severity.LOW)
+                cwe_id = top_defect.cwe_id if top_defect else "CWE-561"
+                cwe_name = top_defect.cwe_name if top_defect else "Dead Code"
+                cvss_score = top_defect.cvss_score_estimate if top_defect else None
+                cvss_vector = top_defect.cvss_vector_estimate if top_defect else None
+                cvss_is_est = top_defect.cvss_is_estimate if top_defect else False
+
+                findings.append(
+                    Finding(
+                        id=f"FIND-{c:04d}",
+                        title=finding_title,
+                        severity=sev,
+                        confidence=Confidence.CONFIRMED if any(f.confidence == Confidence.CONFIRMED for f in internal_findings) else conf,
+                        provenance="symbolic",
+                        status=EvidenceStatus.OBSERVED,
+                        branch=branch,
+                        file_path=sym.file_path,
+                        line_number=sym.line_number,
+                        file_sha256=f_sha,
+                        impact=impact_str,
+                        evidence=evidence_str,
+                        suggested_action="Remove uncalled code or repair internal defects before wiring into active application workflows.",
+                        check_tool="project-callgraph-analyzer",
+                        cwe_id=cwe_id,
+                        cwe_name=cwe_name,
+                        cvss_score_estimate=cvss_score,
+                        cvss_vector_estimate=cvss_vector,
+                        cvss_is_estimate=cvss_is_est,
+                        environmental_context_assumed="Cross-file call graph reachability analysis from entry points (routes, CLI, __main__, tests).",
+                        oracle_origin="symbolic_invariant",
+                        reproduced=True,
+                        sandbox_artifact=False,
+                    )
+                )
+                c += 1
+            else:
+                findings.append(
+                    Finding(
+                        id=f"FIND-{c:04d}",
+                        title=f"Uncalled Dead Code: {sym.symbol_type.capitalize()} '{sym.name}' Is Never Called",
+                        severity=Severity.LOW,
+                        confidence=conf,
+                        provenance="symbolic",
+                        status=EvidenceStatus.OBSERVED,
+                        branch=branch,
+                        file_path=sym.file_path,
+                        line_number=sym.line_number,
+                        file_sha256=f_sha,
+                        impact=f"{sym.symbol_type.capitalize()} '{sym.name}' defined at line {sym.line_number} is unreachable from any application entry point or test.",
+                        evidence=f"{sym.file_path}:{sym.line_number}: {sym.symbol_type} '{sym.name}' has 0 incoming call references in the project call graph.",
+                        suggested_action="Remove uncalled code or wire it into an active application workflow.",
+                        check_tool="project-callgraph-analyzer",
+                        cwe_id="CWE-561",
+                        cwe_name="Dead Code",
+                        cvss_score_estimate=None,
+                        cvss_vector_estimate=None,
+                        cvss_is_estimate=False,
+                        environmental_context_assumed="Cross-file call graph reachability analysis from entry points (routes, CLI, __main__, tests).",
+                        oracle_origin="symbolic_invariant",
+                        reproduced=True,
+                        sandbox_artifact=False,
+                    )
+                )
+                c += 1
+
+        # 2. No-op functions and NotImplemented stubs for reachable symbols
+        unreachable_keys = {f"{s.file_path}::{s.name}" for s in self.project_index.unreachable_symbols}
         for sym in self.project_index.symbols.values():
             if "test" in sym.file_path.lower():
+                continue
+            key = f"{sym.file_path}::{sym.name}"
+            if key in unreachable_keys:
                 continue
             f_sha = self.file_hashes.get(sym.file_path)
             if sym.is_noop:
