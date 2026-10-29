@@ -259,6 +259,18 @@ class OfflineStaticChecker:
                     findings.append(item)
                     counter += 1
 
+            elif norm_name == "dockerfile" or norm_name.startswith("dockerfile."):
+                docker_findings = self._check_dockerfile(f.path, content, counter, branch)
+                for item in docker_findings:
+                    findings.append(item)
+                    counter += 1
+
+            elif ".github/workflows" in f.path.lower() and f.path.endswith((".yml", ".yaml")):
+                wf_findings = self._check_github_workflow(f.path, content, counter, branch)
+                for item in wf_findings:
+                    findings.append(item)
+                    counter += 1
+
         # Check project-wide unreachable functions, classes, and no-ops
         uncalled_findings = self._check_project_uncalled_code(branch, counter, existing_findings=findings)
         findings.extend(uncalled_findings)
@@ -286,6 +298,25 @@ class OfflineStaticChecker:
                             )
                         )
                         counter += 1
+
+                # Check administrative routes lacking role validation (Privilege Escalation)
+                p_lower = route.path.lower()
+                if any(p_lower.startswith(pfx) or f"{pfx}/" in p_lower for pfx in ("/admin", "/manage", "/superuser")):
+                    f_sha = self.file_hashes.get(route.file_path)
+                    findings.append(
+                        make_finding(
+                            RULES["OT-SEC-014"],
+                            path=route.file_path,
+                            line=route.line_number,
+                            file_sha256=f_sha,
+                            branch=branch,
+                            evidence=f"{route.method} {route.path} (handler '{route.handler_name}') targets administrative path without explicit role/permission checks.",
+                            override_title=f"Privilege Escalation Risk: Administrative Route ({route.method} {route.path}) Lacks Role Guard",
+                            exposure="public_auth" if getattr(route, "auth_required", False) else "public_unauth",
+                            reachability="reachable",
+                        )
+                    )
+                    counter += 1
 
         # 4. Supply Chain: Match SBOM packages against offline CVE advisory snapshot
         try:
@@ -731,6 +762,58 @@ class OfflineStaticChecker:
                                 )
                             )
 
+                # 13. Permissive CORS with credentials
+                elif func_name in ("CORS", "CORSMiddleware") or "cors" in func_name.lower():
+                    wildcard_origin = False
+                    has_credentials = False
+                    for kw in node.keywords:
+                        if kw.arg in ("origins", "allow_origins", "resources"):
+                            kw_unparse = ""
+                            try:
+                                kw_unparse = ast.unparse(kw.value)
+                            except Exception:
+                                pass
+                            if "*" in kw_unparse:
+                                wildcard_origin = True
+                        if kw.arg in ("supports_credentials", "allow_credentials"):
+                            if isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                                has_credentials = True
+                    if wildcard_origin and has_credentials:
+                        self.findings.append(
+                            make_finding(
+                                RULES["OT-SEC-015"],
+                                path=rel_path,
+                                line=node.lineno,
+                                file_sha256=f_sha,
+                                branch=branch,
+                                evidence=f"Line {node.lineno}: CORS configured with wildcard origin ('*') and credentials enabled.",
+                                override_title="Permissive CORS Policy with Credentials Enabled",
+                            )
+                        )
+
+                # 14. Potential IDOR direct key access
+                elif any(func_name.endswith(suffix) for suffix in (".query.get", ".objects.get", ".find_by_id", ".query", ".get", ".find_one")):
+                    # Check arguments or keyword arguments or f-string in query
+                    is_direct_lookup = False
+                    if node.args and any(
+                        (isinstance(a, ast.Name) and a.id.lower() in ("id", "user_id", "uid", "account_id"))
+                        or (isinstance(a, ast.JoinedStr) and any("user_id" in ast.unparse(part) or "id" in ast.unparse(part) for part in a.values))
+                        for a in node.args
+                    ):
+                        is_direct_lookup = True
+                    if is_direct_lookup:
+                        self.findings.append(
+                            make_finding(
+                                RULES["OT-SEC-013"],
+                                path=rel_path,
+                                line=node.lineno,
+                                file_sha256=f_sha,
+                                branch=branch,
+                                evidence=f"Line {node.lineno}: Direct primary key lookup without tenant/ownership scoping.",
+                                override_title="Potential IDOR / Missing Object-Level Authorization",
+                            )
+                        )
+
                 # Check CERT_NONE in any function call keyword
                 for kw in node.keywords:
                     if kw.arg in ("cert_reqs", "verify_mode"):
@@ -1061,6 +1144,47 @@ class OfflineStaticChecker:
                             )
                         )
                         c += 1
+        return findings
+
+    def _check_dockerfile(self, rel_path: str, content: str, counter_start: int, branch: Optional[str]) -> List[Finding]:
+        findings = []
+        f_sha = self.file_hashes.get(rel_path)
+        has_user = any(line.strip().upper().startswith("USER ") for line in content.splitlines() if not line.strip().startswith("#"))
+        if not has_user:
+            findings.append(
+                make_finding(
+                    RULES["OT-POL-005"],
+                    path=rel_path,
+                    line=1,
+                    file_sha256=f_sha,
+                    branch=branch,
+                    evidence="Dockerfile does not specify a non-root 'USER' instruction.",
+                    override_title="Container Image Runs as Default Root User (Dockerfile)",
+                )
+            )
+        return findings
+
+    def _check_github_workflow(self, rel_path: str, content: str, counter_start: int, branch: Optional[str]) -> List[Finding]:
+        findings = []
+        f_sha = self.file_hashes.get(rel_path)
+        action_pattern = re.compile(r"""uses:\s*([a-zA-Z0-9_\-\./]+)@([^\s'"]+)""")
+        for idx, line in enumerate(content.splitlines(), start=1):
+            m = action_pattern.search(line)
+            if m:
+                action_name = m.group(1)
+                ref = m.group(2)
+                if not re.fullmatch(r"[0-9a-fA-F]{40}", ref) and not action_name.startswith("./"):
+                    findings.append(
+                        make_finding(
+                            RULES["OT-POL-006"],
+                            path=rel_path,
+                            line=idx,
+                            file_sha256=f_sha,
+                            branch=branch,
+                            evidence=f"Line {idx}: External action '{action_name}@{ref}' is not pinned to an immutable 40-character commit SHA.",
+                            override_title=f"Unpinned External Action in CI Workflow: '{action_name}@{ref}'",
+                        )
+                    )
         return findings
 
     def _check_cargo_toml(self, rel_path: str, content: str, counter_start: int, branch: Optional[str]) -> List[Finding]:

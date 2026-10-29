@@ -499,3 +499,149 @@ def test_sarif_codeflows_and_tags():
     assert result["baselineState"] == "new"
     assert "priorityScore" in result["properties"]
 
+
+def test_advisory_staleness_and_snapshot_metadata():
+    from offtest.inventory.advisory_matcher import (
+        ADVISORY_SNAPSHOT_DATE,
+        ADVISORY_STALENESS_THRESHOLD_DAYS,
+        check_advisory_staleness,
+    )
+    assert ADVISORY_SNAPSHOT_DATE == "2026-10-01"
+    assert ADVISORY_STALENESS_THRESHOLD_DAYS == 90
+
+    # check staleness execution
+    is_stale, age_days, message = check_advisory_staleness()
+    assert isinstance(is_stale, bool)
+    assert isinstance(age_days, int)
+    assert "2026-10-01" in message
+
+
+def test_access_control_expanded_rules():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+
+        # 1. OT-SEC-013: IDOR / Missing object authorization
+        idor_code = """
+from flask import Flask, request
+
+app = Flask(__name__)
+
+@app.route('/user/<user_id>/profile')
+def get_user_profile(user_id):
+    # Direct lookup without tenant / user match check
+    return db.query(f"SELECT * FROM profiles WHERE id = {user_id}")
+"""
+        (tmp_path / "idor.py").write_text(idor_code, encoding="utf-8")
+
+        # 2. OT-SEC-014: Admin route lacking role check
+        priv_esc_code = """
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route('/admin/settings/delete')
+def delete_settings():
+    return "deleted"
+"""
+        (tmp_path / "priv_esc.py").write_text(priv_esc_code, encoding="utf-8")
+
+        # 3. OT-SEC-015: Permissive CORS with credentials
+        cors_code = """
+from flask import Flask
+from flask_cors import CORS
+
+app = Flask(__name__)
+CORS(app, origins="*", supports_credentials=True)
+"""
+        (tmp_path / "cors_app.py").write_text(cors_code, encoding="utf-8")
+
+        engine = InventoryEngine(str(tmp_path))
+        files, _ = engine.scan()
+
+        checker = OfflineStaticChecker(tmp_path, files)
+        findings = checker.run_all()
+
+        rule_ids = {f.rule_id for f in findings}
+        assert "OT-SEC-013" in rule_ids
+        assert "OT-SEC-014" in rule_ids
+        assert "OT-SEC-015" in rule_ids
+
+
+def test_policy_and_supply_chain_expanded_rules():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+
+        # 1. OT-POL-005: Dockerfile root user
+        dockerfile = """
+FROM python:3.12-slim
+WORKDIR /app
+COPY . .
+CMD ["python", "main.py"]
+"""
+        (tmp_path / "Dockerfile").write_text(dockerfile, encoding="utf-8")
+
+        # 2. OT-POL-006: Unpinned GitHub action
+        ci_dir = tmp_path / ".github" / "workflows"
+        ci_dir.mkdir(parents=True, exist_ok=True)
+        workflow_yml = """
+name: CI
+on: [push]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+"""
+        (ci_dir / "ci.yml").write_text(workflow_yml, encoding="utf-8")
+
+        engine = InventoryEngine(str(tmp_path))
+        files, _ = engine.scan()
+
+        checker = OfflineStaticChecker(tmp_path, files)
+        findings = checker.run_all()
+
+        rule_ids = {f.rule_id for f in findings}
+        assert "OT-POL-005" in rule_ids
+        assert "OT-POL-006" in rule_ids
+
+
+def test_test_confirmation_feedback_loop():
+    from offtest.checks.planner import calibrate_findings_with_test_results
+    from offtest.core.models import CheckResult, CheckStatus
+
+    # Create a finding with static-only evidence level and LIKELY confidence
+    finding = make_finding(
+        RULES["OT-SEC-008"],
+        path="api/handlers.py",
+        line=42,
+        evidence="cursor.execute('SELECT * FROM users WHERE name = ' + user)",
+        confidence=Confidence.LIKELY,
+    )
+    assert finding.evidence_level == "static-only"
+    assert finding.confidence == Confidence.LIKELY
+
+    # Simulate check results containing a test failure in api/handlers.py
+    failing_result = CheckResult(
+        tool_name="pytest",
+        tool_version="8.0.0",
+        check_name="Unit and Integration Tests",
+        check_type="unit_test",
+        command="pytest",
+        exit_code=1,
+        duration_sec=0.15,
+        status=CheckStatus.FAILED,
+        stdout="FAIL: test_sql_injection (tests.test_api) in api/handlers.py",
+        stderr="AssertionError: SQL injection occurred",
+        gate_outcome="Fail",
+    )
+
+    findings = [finding]
+    calibrate_findings_with_test_results(findings, [failing_result])
+
+    # Finding should be elevated to CONFIRMED and evidence_level="test-confirmed"
+    assert finding.confidence == Confidence.CONFIRMED
+    assert finding.evidence_level == "test-confirmed"
+    assert "Dynamic Test Failure Corroboration" in finding.context["test_feedback"]
+
+

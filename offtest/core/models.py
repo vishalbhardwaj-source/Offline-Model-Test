@@ -200,6 +200,7 @@ class Finding(BaseModel):
     suppressed: bool = False
     suppression_reason: Optional[str] = None
     root_cause_cluster: Optional[str] = None
+    context: Optional[Dict[str, Any]] = None
 
 
 def compute_priority(

@@ -198,4 +198,86 @@ class CheckPlanner:
         adapter_results = test_adapter.discover_and_run()
         check_results.extend(adapter_results)
 
+        # 3. Test-Confirmation Feedback Loop: calibrate findings based on dynamic execution
+        findings = calibrate_findings_with_test_results(findings, check_results)
+
         return check_results, findings
+
+
+def calibrate_findings_with_test_results(
+    findings: List[Finding],
+    check_results: List[CheckResult],
+    flakiness_report: Optional[Any] = None,
+) -> List[Finding]:
+    """
+    Test-confirmation feedback loop:
+    - If dynamic execution or test assertion reproduces a defect in the target file,
+      elevates evidence_level to 'test-confirmed' and confidence to CONFIRMED.
+    - If a test associated with a finding is determined to be flaky, marks evidence_level
+      as 'flaky-test' and demotes certainty.
+    - Recomputes exposure-weighted priority score dynamically based on updated certainty.
+    """
+    from offtest.core.models import Confidence, compute_priority
+
+    failed_outputs = []
+    passed_outputs = []
+    for c in check_results:
+        text = f"{c.stdout}\n{c.stderr}"
+        if c.status == CheckStatus.FAILED:
+            failed_outputs.append(text)
+        elif c.status == CheckStatus.PASSED:
+            passed_outputs.append(text)
+
+    quarantined_ids = set()
+    if flakiness_report and getattr(flakiness_report, "quarantined_tests", None):
+        for q in flakiness_report.quarantined_tests:
+            quarantined_ids.add(getattr(q, "test_identifier", ""))
+
+    for f in findings:
+        if not f.file_path:
+            continue
+        fname = Path(f.file_path).name
+
+        # 1. Check if an executed test failure confirms this defect
+        is_confirmed_by_test = False
+        for out in failed_outputs:
+            out_lower = out.lower()
+            file_match = (f.file_path and f.file_path.lower() in out_lower) or (fname and fname.lower() in out_lower)
+            if file_match:
+                specific_match = (
+                    (f.cwe_id and f.cwe_id.lower() in out_lower)
+                    or (f.line_number and (f":{f.line_number}" in out or f"line {f.line_number}" in out_lower))
+                    or (f.rule_id and f.rule_id.lower() in out_lower)
+                    or (getattr(f, "title", "") and any(w.lower() in out_lower for w in f.title.lower().split() if len(w) >= 3))
+                    or (getattr(f, "cwe_name", "") and any(w.lower() in out_lower for w in f.cwe_name.lower().split() if len(w) >= 3))
+                )
+                if specific_match:
+                    is_confirmed_by_test = True
+                    break
+
+        if is_confirmed_by_test:
+            f.evidence_level = "test-confirmed"
+            f.confidence = Confidence.CONFIRMED
+            f.reproduced = True
+            f.reachability = "reachable"
+            if f.context is None:
+                f.context = {}
+            f.context["test_feedback"] = "Dynamic Test Failure Corroboration"
+        elif f.evidence_level == "model-hypothesis":
+            if any(f.file_path in out or fname in out for out in passed_outputs):
+                f.confidence = Confidence.POSSIBLE
+
+        # 2. Check if related to flaky test
+        if any(f.file_path in qid or fname in qid for qid in quarantined_ids):
+            f.evidence_level = "flaky-test"
+            f.confidence = Confidence.POSSIBLE
+
+        # Recompute priority with updated certainty
+        f.priority_score = compute_priority(
+            f.severity,
+            f.confidence,
+            reachability=f.reachability,
+            exposure=f.exposure,
+        )
+
+    return findings

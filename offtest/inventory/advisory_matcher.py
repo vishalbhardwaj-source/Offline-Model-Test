@@ -7,6 +7,7 @@ and uses call-graph / import reachability to provide VEX-style statuses
 """
 from __future__ import annotations
 
+import datetime
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,6 +19,28 @@ from offtest.core.models import (
     Severity,
 )
 from offtest.core.rules import RULES, make_finding
+
+# Offline curated advisory database snapshot metadata
+ADVISORY_SNAPSHOT_DATE = "2026-10-01"
+ADVISORY_STALENESS_THRESHOLD_DAYS = 90
+
+
+def check_advisory_staleness() -> Tuple[bool, int, str]:
+    """
+    Evaluates whether the local offline advisory database snapshot is stale.
+    Returns: (is_stale, age_days, message)
+    """
+    try:
+        snap_dt = datetime.date.fromisoformat(ADVISORY_SNAPSHOT_DATE)
+        today = datetime.date.today()
+        age = (today - snap_dt).days
+        is_stale = age > ADVISORY_STALENESS_THRESHOLD_DAYS
+        msg = f"Offline advisory snapshot is {age} days old (snapshot date: {ADVISORY_SNAPSHOT_DATE})."
+        if is_stale:
+            msg += f" WARNING: Exceeds threshold of {ADVISORY_STALENESS_THRESHOLD_DAYS} days. Consider refreshing the offline advisory mirror."
+        return is_stale, age, msg
+    except Exception:
+        return False, 0, "Advisory snapshot date verification unavailable."
 
 
 def _parse_version(ver_str: str) -> Tuple[int, ...]:
@@ -217,9 +240,10 @@ class OfflineAdvisoryMatcher:
                         finding_sev = Severity.LOW if adv["base_severity"] != Severity.CRITICAL else Severity.MEDIUM
                         confidence = Confidence.LIKELY
 
+                    is_stale, age, staleness_msg = check_advisory_staleness()
                     impact_desc = (
                         f"{adv['title']} ({adv['cve']}). Fixed in version {adv['fixed_version']}. "
-                        f"VEX Status: {vex_status}. {adv['summary']}"
+                        f"VEX Status: {vex_status}. Snapshot: {ADVISORY_SNAPSHOT_DATE} ({staleness_msg}). {adv['summary']}"
                     )
                     evidence_text = (
                         f"Component '{comp.name}' version '{comp.version}' ({comp.source_file}) "

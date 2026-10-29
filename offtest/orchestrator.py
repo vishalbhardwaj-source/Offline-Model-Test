@@ -151,7 +151,11 @@ class AssessmentOrchestrator:
         flakiness_runner = FlakinessRepeatSampler(target_dir, quarantine_policy=self.quarantine_policy)
         flakiness_report = flakiness_runner.analyze_results(check_results, enabled=self.detect_flaky)
 
-        # 5c. AST Branch Predicates & Constrained Test Generation
+        # 5c. Test-Confirmation Feedback Loop & Dynamic Priority Recalibration
+        from offtest.checks.planner import calibrate_findings_with_test_results
+        findings = calibrate_findings_with_test_results(findings, check_results, flakiness_report=flakiness_report)
+
+        # 5d. AST Branch Predicates & Constrained Test Generation
         if self.generate_tests:
             generator = ConstrainedTestGenerator(target_dir, files, project_index=project_index)
             generated_test_suite = generator.generate_suite(output_dir=run_folder)
