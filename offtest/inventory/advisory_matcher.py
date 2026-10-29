@@ -18,6 +18,7 @@ from offtest.core.models import (
     SBOMComponent,
     Severity,
 )
+from offtest.core.project_index import ProjectIndex
 from offtest.core.rules import RULES, make_finding
 
 # Offline curated advisory database snapshot metadata
