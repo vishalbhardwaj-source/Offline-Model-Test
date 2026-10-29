@@ -83,6 +83,7 @@ class ProjectIndex:
         self.entry_points: Set[str] = set()  # set of symbol keys (f"{file_path}::{name}")
         self.dynamic_names: Set[str] = set()  # names used via getattr, __all__, etc.
         self.exported_names: Set[str] = set()  # names explicitly in __all__
+        self.imported_modules: Set[str] = set()  # all packages/modules imported across project
 
         # Call Graph adjacencies
         self.adjacency: Dict[str, Set[str]] = {}  # caller_key -> set(callee_keys)
@@ -154,6 +155,18 @@ class ProjectIndex:
                 self.outer = outer
                 self.current_class: Optional[str] = None
                 self.current_function: Optional[str] = None
+
+            def visit_Import(self, node: ast.Import):
+                for alias in node.names:
+                    self.outer.imported_modules.add(alias.name)
+                    self.outer.imported_modules.add(alias.name.split(".")[0])
+                self.generic_visit(node)
+
+            def visit_ImportFrom(self, node: ast.ImportFrom):
+                if node.module:
+                    self.outer.imported_modules.add(node.module)
+                    self.outer.imported_modules.add(node.module.split(".")[0])
+                self.generic_visit(node)
 
             def visit_Assign(self, node: ast.Assign):
                 # Check for __all__ = [...]
@@ -398,6 +411,14 @@ class ProjectIndex:
     def _index_js_ts_file(self, rel_path: str):
         content = self.get_content(rel_path)
         lines = content.splitlines()
+
+        # Track imported JS/TS packages
+        for m in re.finditer(r"""(?:require\s*\(\s*['"]([^'"]+)['"]\s*\)|from\s+['"]([^'"]+)['"])""", content):
+            mod_name = m.group(1) or m.group(2)
+            if mod_name and not mod_name.startswith((".", "/")):
+                self.imported_modules.add(mod_name)
+                if "/" in mod_name and not mod_name.startswith("@"):
+                    self.imported_modules.add(mod_name.split("/")[0])
 
         # Regex extract Express routes
         js_route_pattern = re.compile(

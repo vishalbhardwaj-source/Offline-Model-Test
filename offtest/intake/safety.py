@@ -9,20 +9,33 @@ from pathlib import Path
 from typing import List, Optional, Tuple, Union
 from offtest.core.config import OfflineConfig
 
-_INSTALL_KEY_FILE = Path(tempfile.gettempdir()) / ".offtest_hmac_install_key"
-
-
 def _get_installation_hmac_key() -> bytes:
     try:
-        if _INSTALL_KEY_FILE.exists():
-            data = _INSTALL_KEY_FILE.read_bytes()
+        key_dir = Path(os.environ.get("OFFTEST_KEY_DIR", Path.home() / ".offtest"))
+        key_file = key_dir / ".install_hmac_key"
+        if key_file.exists():
+            data = key_file.read_bytes()
             if len(data) >= 16:
                 return data
+        key_dir.mkdir(parents=True, exist_ok=True)
         key = os.urandom(32)
-        _INSTALL_KEY_FILE.write_bytes(key)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        fd = os.open(str(key_file), flags, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(key)
         return key
     except Exception:
-        return b"offtest-default-fallback-installation-key-32b"
+        try:
+            fallback_file = Path(tempfile.gettempdir()) / f".offtest_hmac_{os.getpid()}"
+            if fallback_file.exists():
+                return fallback_file.read_bytes()
+            key = os.urandom(32)
+            fallback_file.write_bytes(key)
+            return key
+        except Exception:
+            return b"offtest-default-fallback-installation-key-32b"
 
 
 def calculate_shannon_entropy(data: str) -> float:
@@ -307,6 +320,18 @@ def scan_for_secrets(content: str, file_path: str) -> List[Tuple[int, str, str, 
         if not matched:
             for token_m in candidate_token_pattern.finditer(line):
                 token = token_m.group(1)
+                start_idx = token_m.start(1)
+                prefix_context = line[max(0, start_idx - 50) : start_idx].lower()
+
+                # Integrity hashes and digest variables must not be flagged as secrets
+                if any(k in prefix_context for k in ["commit_hash", "file_sha256", "sha256", "sha1", "md5", "checksum", "digest", "git_sha", "hash"]):
+                    if re.fullmatch(r"[0-9a-fA-F]{32}|[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", token):
+                        continue
+
+                # Safe tool, telemetry, platform, or package metadata
+                if any(k in prefix_context for k in ["purl", "platform", "operating_system", "os", "system", "arch", "run_id", "schema_version"]):
+                    continue
+
                 is_secret, entropy, cset = is_high_entropy_secret(token)
                 if is_secret:
                     fingerprint = compute_secret_fingerprint(token)

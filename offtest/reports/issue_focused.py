@@ -58,15 +58,30 @@ class IssueFocusedReportGenerator:
             if not group:
                 continue
             lines.append(f"\n## {title} ({len(group)})")
-            for f in group:
+            # Sort within severity group by exposure-weighted priority score descending
+            sorted_group = sorted(group, key=lambda x: getattr(x, "priority_score", 1.0), reverse=True)
+            for f in sorted_group:
                 loc = f"`{f.file_path}:{f.line_number}`" if f.line_number else (f"`{f.file_path}`" if f.file_path else "Repository level")
                 branch_str = f" | Branch: `{f.branch}`" if f.branch else ""
-                lines.append(f"\n### [{f.id}] {f.title}")
-                lines.append(f"- **Severity:** `{f.severity.value}` | **Confidence:** `{f.confidence.value}` | **Status:** `{f.status.value}`{branch_str}")
+                suppr_badge = " [SUPPRESSED]" if getattr(f, "suppressed", False) else ""
+                lines.append(f"\n### [{f.id}]{suppr_badge} {f.title}")
+                priority_val = getattr(f, "priority_score", 1.0)
+                reach_val = getattr(f, "reachability", "unknown")
+                expo_val = getattr(f, "exposure", "internal")
+                lines.append(f"- **Priority Score:** `{priority_val}` | **Severity:** `{f.severity.value}` | **Confidence:** `{f.confidence.value}` | **Reachability:** `{reach_val}` | **Exposure:** `{expo_val}`{branch_str}")
                 if f.cwe_id:
                     lines.append(f"- **Taxonomy:** `{f.cwe_id}` ({f.cwe_name})")
+                if getattr(f, "owasp_category", None) or getattr(f, "asvs_chapter", None):
+                    stds = []
+                    if getattr(f, "owasp_category", None):
+                        stds.append(f"OWASP: {f.owasp_category}")
+                    if getattr(f, "asvs_chapter", None):
+                        stds.append(f"ASVS: {f.asvs_chapter}")
+                    lines.append(f"- **Standards:** {' | '.join(stds)}")
                 if f.cvss_score_estimate is not None:
                     lines.append(f"- **Estimated CVSS Base:** `{f.cvss_score_estimate}` _[Heuristic Estimate]_")
+                if getattr(f, "suppressed", False):
+                    lines.append(f"> [!NOTE]\n> **Suppression Justification:** {getattr(f, 'suppression_reason', 'Inline comment directive')}")
                 lines.append(f"- **Location:** {loc}")
                 lines.append(f"- **Impact:** {f.impact}")
                 lines.append(f"- **Evidence / Reproduction:**\n```\n{f.evidence}\n```")

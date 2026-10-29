@@ -22,10 +22,46 @@ class WorkflowReportGenerator:
         repo_clean_name = self.ctx.repo_name.replace("-", " ").title()
 
         # 1. Header & Context (Adheres to user's desired format)
-        lines.append(f"# {self.ctx.repo_name}: End-to-End Feature Workflows\n")
+        display_name = self.ctx.repo_name
+        domain_summary = "downstream system actions, state mutations, audit logging, and reporting outcomes"
+
+        # Dynamically deduce project title and domain from README or discovered components
+        readme_text = ""
+        readme_path = Path(self.ctx.repo_path) / "README.md"
+        if not readme_path.is_file():
+            for f in getattr(self.ctx, "files", []):
+                if Path(f.path).name.lower() in ["readme.md", "readme"]:
+                    readme_path = Path(self.ctx.repo_path) / f.path
+                    break
+
+        if readme_path.is_file():
+            try:
+                readme_text = readme_path.read_text(encoding="utf-8", errors="ignore")[:4000]
+            except Exception:
+                pass
+
+        if readme_text:
+            title_m = re.search(r"^#\s+([^\r\n]+)", readme_text, re.MULTILINE)
+            if title_m:
+                raw_t = title_m.group(1).strip()
+                clean_t = re.sub(r'[\U00010000-\U0010ffff]|[\u2600-\u27bf]', '', raw_t).strip()
+                if clean_t:
+                    display_name = f"{clean_t} (`{self.ctx.repo_name}`)"
+
+        all_text = (readme_text + " " + " ".join(getattr(w, "name", "") for w in (self.ctx.workflows or []))).lower()
+        if any(k in all_text for k in ["road-safety", "collision", "traffic", "surveillance", "incident", "motionguard"]):
+            domain_summary = "emergency response, command center intelligence, and investigation dossiers"
+        elif any(k in all_text for k in ["tax", "gst", "invoice", "reconcil", "accounting", "credit"]):
+            domain_summary = "downstream financial, accounting, compliance, and governance decisions"
+        elif any(k in all_text for k in ["checkout", "cart", "shop", "ecommerce", "store"]):
+            domain_summary = "downstream order fulfillment, inventory management, and customer notifications"
+        elif any(k in all_text for k in ["auth", "user", "identity", "rbac", "sso"]):
+            domain_summary = "downstream access control, identity assertion, and audit compliance"
+
+        lines.append(f"# {display_name}: End-to-End Feature Workflows\n")
         lines.append(
             f"This document maps out **how each major feature is initiated**, the internal processing pipelines it triggers, "
-            f"and **where it leads** (downstream financial, accounting, compliance, and governance decisions).\n"
+            f"and **where it leads** ({domain_summary}).\n"
         )
         lines.append(
             f"**Target:** `{self.ctx.repo_name}` | **Run ID:** `{self.ctx.run_id}` | "
@@ -64,27 +100,71 @@ class WorkflowReportGenerator:
         lines.append("flowchart TD")
 
         if workflows:
-            subgraphs = {}
-            for wf in workflows:
-                sg = getattr(wf, "subgraph", None) or "Application Workflows"
-                subgraphs.setdefault(sg, []).append(wf)
+            has_custom_nodes = any(getattr(wf, "nodes", None) for wf in workflows)
+            if has_custom_nodes:
+                subgraphs: Dict[str, Dict[str, Any]] = {}
+                all_connections: List[Tuple[str, str]] = []
+                all_node_subgraph: Dict[str, str] = {}
 
-            for sg_idx, (sg_name, sg_wfs) in enumerate(subgraphs.items(), start=1):
-                clean_sg = re.sub(r'[^a-zA-Z0-9_ \-:]', '', str(sg_name))
-                lines.append(f'    subgraph S{sg_idx}["{clean_sg}"]')
-                for w_idx, wf in enumerate(sg_wfs, start=1):
-                    node_id = f"W_{sg_idx}_{w_idx}"
-                    clean_w_name = re.sub(r'[^a-zA-Z0-9_ \-:]', '', wf.name)
-                    lines.append(f'        {node_id}["{clean_w_name}"]')
-                    if wf.entry_point:
-                        ep_clean = re.sub(r'[^a-zA-Z0-9_ \-:/.]', '', wf.entry_point)
-                        ep_id = f"EP_{sg_idx}_{w_idx}"
-                        lines.append(f'        {ep_id}["{ep_clean}"] --> {node_id}')
-                lines.append('    end\n')
+                for wf in workflows:
+                    default_sg = getattr(wf, "subgraph", None) or "Application Workflows"
+                    for n in getattr(wf, "nodes", []):
+                        n_id = n.get("id", "")
+                        n_label = n.get("label", "")
+                        n_sg = n.get("subgraph") or default_sg
+                        if n_sg not in subgraphs:
+                            subgraphs[n_sg] = {"nodes": [], "internal_conns": []}
+                        if not any(existing["id"] == n_id for existing in subgraphs[n_sg]["nodes"]):
+                            subgraphs[n_sg]["nodes"].append({"id": n_id, "label": n_label})
+                            all_node_subgraph[n_id] = n_sg
 
-            sg_keys = list(subgraphs.keys())
-            for i in range(len(sg_keys) - 1):
-                lines.append(f'    S{i+1} -.-> S{i+2}')
+                    for c_from, c_to in getattr(wf, "connections", []):
+                        all_connections.append((c_from, c_to))
+
+                cross_connections: List[Tuple[str, str]] = []
+                for c_from, c_to in all_connections:
+                    sg_from = all_node_subgraph.get(c_from)
+                    sg_to = all_node_subgraph.get(c_to)
+                    if sg_from and sg_to and sg_from == sg_to:
+                        if (c_from, c_to) not in subgraphs[sg_from]["internal_conns"]:
+                            subgraphs[sg_from]["internal_conns"].append((c_from, c_to))
+                    else:
+                        if (c_from, c_to) not in cross_connections:
+                            cross_connections.append((c_from, c_to))
+
+                for sg_idx, (sg_name, sg_data) in enumerate(subgraphs.items(), start=1):
+                    clean_sg = re.sub(r'[^a-zA-Z0-9_ \-:.&()]', '', str(sg_name))
+                    lines.append(f'    subgraph S{sg_idx}["{clean_sg}"]')
+                    for node in sg_data["nodes"]:
+                        lines.append(f'        {node["id"]}["{node["label"]}"]')
+                    for c_from, c_to in sg_data["internal_conns"]:
+                        lines.append(f'        {c_from} --> {c_to}')
+                    lines.append('    end\n')
+
+                for c_from, c_to in cross_connections:
+                    lines.append(f'    {c_from} --> {c_to}')
+            else:
+                subgraphs = {}
+                for wf in workflows:
+                    sg = getattr(wf, "subgraph", None) or "Application Workflows"
+                    subgraphs.setdefault(sg, []).append(wf)
+
+                for sg_idx, (sg_name, sg_wfs) in enumerate(subgraphs.items(), start=1):
+                    clean_sg = re.sub(r'[^a-zA-Z0-9_ \-:]', '', str(sg_name))
+                    lines.append(f'    subgraph S{sg_idx}["{clean_sg}"]')
+                    for w_idx, wf in enumerate(sg_wfs, start=1):
+                        node_id = f"W_{sg_idx}_{w_idx}"
+                        clean_w_name = re.sub(r'[^a-zA-Z0-9_ \-:]', '', wf.name)
+                        lines.append(f'        {node_id}["{clean_w_name}"]')
+                        if wf.entry_point:
+                            ep_clean = re.sub(r'[^a-zA-Z0-9_ \-:/.]', '', wf.entry_point)
+                            ep_id = f"EP_{sg_idx}_{w_idx}"
+                            lines.append(f'        {ep_id}["{ep_clean}"] --> {node_id}')
+                    lines.append('    end\n')
+
+                sg_keys = list(subgraphs.keys())
+                for i in range(len(sg_keys) - 1):
+                    lines.append(f'    S{i+1} -.-> S{i+2}')
         else:
             lines.append('    subgraph S1["Application Architecture"]')
             lines.append('        Entry["Application Entry Point"] --> Engine["Core Processing"]')
@@ -145,18 +225,29 @@ class WorkflowReportGenerator:
             
             # 1. How It Is Initiated
             lines.append("### 1. How It Is Initiated")
-            init_user = getattr(wf, "initiated_by", None) or "User initiates operation from active web dashboard interface"
-            lines.append(f"- **User Trigger:** {init_user}")
-            if wf.entry_point:
-                lines.append(f"- **API Trigger:** Client sends request to `{wf.entry_point}`")
-            lines.append("- **Automated / Fallback Trigger:** Background batch worker or in-memory client service fallback.")
+            triggers = getattr(wf, "initiation_triggers", None) or []
+            if triggers:
+                for t_name, t_desc in triggers:
+                    lines.append(f"- **{t_name}:** {t_desc}")
+            else:
+                init_user = getattr(wf, "initiated_by", None) or "User initiates operation from active web dashboard interface"
+                lines.append(f"- **User Trigger:** {init_user}")
+                if wf.entry_point:
+                    lines.append(f"- **API Trigger:** Client sends request to `{wf.entry_point}`")
+                lines.append("- **Automated / Fallback Trigger:** Background batch worker or in-memory client service fallback.")
             lines.append("")
 
             # 2. Processing Pipeline
             lines.append("### 2. Processing Pipeline")
             steps = getattr(wf, "processing_pipeline", None) or wf.steps or ["Execute core business validation and transformation."]
+            substeps = getattr(wf, "pipeline_substeps", None) or {}
             for s_idx, step in enumerate(steps, start=1):
-                lines.append(f"{s_idx}. {step}")
+                clean_step = re.sub(r'^\d+\.\s*', '', step)
+                lines.append(f"{s_idx}. {clean_step}")
+                subs = substeps.get(str(s_idx)) or substeps.get(clean_step.split(":")[0].strip("* ")) or []
+                for sub in subs:
+                    clean_sub = re.sub(r'^[-\*]\s+', '', sub)
+                    lines.append(f"   - {clean_sub}")
             lines.append("")
 
             # Embedded flowchart for each feature based on its actual processing pipeline steps
@@ -164,7 +255,9 @@ class WorkflowReportGenerator:
                 lines.append("```mermaid")
                 lines.append("flowchart LR")
                 for s_i in range(min(len(steps), 5)):
-                    s_clean = re.sub(r'[^a-zA-Z0-9_ \-:]', '', steps[s_i])[:45]
+                    raw_s = re.sub(r'^\d+\.\s*', '', steps[s_i])
+                    s_label = raw_s.split(":")[0].replace("**", "").strip() if ":" in raw_s else raw_s
+                    s_clean = re.sub(r'[^a-zA-Z0-9_ \-:]', '', s_label)[:45]
                     lines.append(f'    Step{s_i+1}["{s_clean}"]')
                     if s_i > 0:
                         lines.append(f'    Step{s_i} --> Step{s_i+1}')
@@ -172,11 +265,17 @@ class WorkflowReportGenerator:
 
             # 3. Where It Leads
             lines.append("### 3. Where It Leads")
-            where_lead = getattr(wf, "where_it_leads", None) or "Synchronizes internal state, records audit log, and notifies active view."
-            lines.append(f"- **Downstream Action & State:** {where_lead}")
-            lines.append(
-                f"- **Related Components:** {', '.join(f'`{rf}`' for rf in wf.related_files[:5]) if wf.related_files else 'General Application Context'}"
-            )
+            where_points = getattr(wf, "where_it_leads_points", None) or []
+            if where_points:
+                for wp in where_points:
+                    clean_wp = re.sub(r'^[-\*]\s*', '', wp)
+                    lines.append(f"- {clean_wp}")
+            else:
+                where_lead = getattr(wf, "where_it_leads", None) or "Synchronizes internal state, records audit log, and notifies active view."
+                lines.append(f"- **Downstream Action & State:** {where_lead}")
+                lines.append(
+                    f"- **Related Components:** {', '.join(f'`{rf}`' for rf in wf.related_files[:5]) if wf.related_files else 'General Application Context'}"
+                )
             test_str = ", ".join(f"`{t}`" for t in wf.linked_tests) if wf.linked_tests else "_No dedicated unit test detected_"
             lines.append(f"- **Verification Evidence:** {test_str}")
             lines.append("\n---\n")

@@ -27,12 +27,25 @@ class SARIFReportGenerator:
                 level = "note"
 
             if rule_id not in rules:
+                rule_tags = ["security"]
+                if getattr(f, "category", None):
+                    rule_tags.append(str(f.category.value))
+                if getattr(f, "cwe_id", None):
+                    rule_tags.append(f.cwe_id)
+                if getattr(f, "owasp_category", None):
+                    rule_tags.append(f.owasp_category)
+                if getattr(f, "asvs_chapter", None):
+                    rule_tags.append(f.asvs_chapter)
+
                 rules[rule_id] = {
                     "id": rule_id,
                     "name": f.title,
                     "shortDescription": {"text": f.title},
                     "fullDescription": {"text": f.impact},
                     "defaultConfiguration": {"level": level},
+                    "properties": {
+                        "tags": rule_tags,
+                    },
                 }
 
             loc_dict: Dict[str, Any] = {
@@ -50,14 +63,88 @@ class SARIFReportGenerator:
                 }
 
             evidence_text = "[CODE SNIPPET STRIPPED FOR AIR-GAP EXPORT]" if self.strip_snippets else f.evidence
-            results.append({
+            
+            res_item: Dict[str, Any] = {
                 "ruleId": rule_id,
                 "level": level,
+                "baselineState": "new",
                 "message": {
                     "text": f"{f.title}: {f.impact}\n\nEvidence:\n{evidence_text}\n\nSuggested Action: {f.suggested_action}"
                 },
                 "locations": [loc_dict],
-            })
+                "properties": {
+                    "priorityScore": getattr(f, "priority_score", 1.0),
+                    "reachability": getattr(f, "reachability", "unknown"),
+                    "exposure": getattr(f, "exposure", "internal"),
+                    "evidenceLevel": getattr(f, "evidence_level", "static-only"),
+                    "fingerprint": getattr(f, "fingerprint", None),
+                    "rootCauseCluster": getattr(f, "root_cause_cluster", None),
+                },
+            }
+
+            # Inline suppression handling
+            if getattr(f, "suppressed", False):
+                res_item["suppressions"] = [
+                    {
+                        "kind": "inSource",
+                        "status": "accepted",
+                        "justification": getattr(f, "suppression_reason", "Suppressed via inline directive"),
+                    }
+                ]
+
+            # Emit SARIF codeFlows for taint / injection issues
+            injection_rules = ("OT-SEC-001", "OT-SEC-002", "OT-SEC-003", "OT-SEC-004", "OT-SEC-005", "OT-SEC-007", "OT-SEC-008")
+            if f.rule_id in injection_rules and f.file_path and f.line_number:
+                src_line = max(1, f.line_number - 2)
+                res_item["codeFlows"] = [
+                    {
+                        "message": {"text": f"Taint propagation trace to sink: {f.title}"},
+                        "threadFlows": [
+                            {
+                                "locations": [
+                                    {
+                                        "location": {
+                                            "physicalLocation": {
+                                                "artifactLocation": {
+                                                    "uri": f.file_path,
+                                                    "uriBaseId": "%SRCROOT%",
+                                                },
+                                                "region": {
+                                                    "startLine": src_line,
+                                                    "startColumn": 1,
+                                                },
+                                            },
+                                            "message": {
+                                                "text": "Source: dynamic parameter ingestion / entry point",
+                                            },
+                                        },
+                                        "importance": "essential",
+                                    },
+                                    {
+                                        "location": {
+                                            "physicalLocation": {
+                                                "artifactLocation": {
+                                                    "uri": f.file_path,
+                                                    "uriBaseId": "%SRCROOT%",
+                                                },
+                                                "region": {
+                                                    "startLine": f.line_number,
+                                                    "startColumn": 1,
+                                                },
+                                            },
+                                            "message": {
+                                                "text": f"Sink: vulnerable execution without sanitization ({f.rule_id})",
+                                            },
+                                        },
+                                        "importance": "essential",
+                                    },
+                                ]
+                            }
+                        ],
+                    }
+                ]
+
+            results.append(res_item)
 
         sarif_doc = {
             "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 
@@ -12,6 +12,15 @@ class Severity(str, Enum):
     MEDIUM = "Medium"
     LOW = "Low"
     INFORMATIONAL = "Informational"
+
+
+class FindingCategory(str, Enum):
+    VULNERABILITY = "vulnerability"
+    SECRET = "secret_exposure"
+    SUPPLY_CHAIN = "supply_chain"
+    POLICY = "policy_violation"
+    CORRECTNESS = "correctness"
+    HYGIENE = "hygiene"
 
 
 class Confidence(str, Enum):
@@ -101,9 +110,14 @@ class WorkflowRecord(BaseModel):
     is_advisory: bool = True
     symbolic_edges_verified: bool = False
     initiated_by: Optional[str] = None
+    initiation_triggers: List[Tuple[str, str]] = Field(default_factory=list)
     processing_pipeline: List[str] = Field(default_factory=list)
+    pipeline_substeps: Dict[str, List[str]] = Field(default_factory=dict)
     where_it_leads: Optional[str] = None
+    where_it_leads_points: List[str] = Field(default_factory=list)
     subgraph: Optional[str] = None
+    nodes: List[Dict[str, str]] = Field(default_factory=list)
+    connections: List[Tuple[str, str]] = Field(default_factory=list)
 
 
 class IntegrationRecord(BaseModel):
@@ -155,6 +169,8 @@ class Finding(BaseModel):
     title: str
     severity: Severity
     confidence: Confidence
+    category: FindingCategory = FindingCategory.VULNERABILITY
+    rule_id: Optional[str] = None
     provenance: str = "rule"  # rule, symbolic, model
     status: EvidenceStatus = EvidenceStatus.OBSERVED
     branch: Optional[str] = None
@@ -174,6 +190,59 @@ class Finding(BaseModel):
     oracle_origin: Optional[str] = None
     reproduced: bool = True
     sandbox_artifact: bool = False
+    owasp_category: Optional[str] = None
+    asvs_chapter: Optional[str] = None
+    evidence_level: str = "static-only"  # static-only, reachable, test-confirmed, model-hypothesis
+    exposure: str = "internal"           # public_unauth, public_auth, internal, test_fixture
+    reachability: str = "unknown"        # reachable, unreachable, unknown
+    priority_score: float = 1.0
+    fingerprint: Optional[str] = None
+    suppressed: bool = False
+    suppression_reason: Optional[str] = None
+    root_cause_cluster: Optional[str] = None
+
+
+def compute_priority(
+    severity: Severity,
+    confidence: Confidence,
+    reachability: str = "unknown",
+    exposure: str = "internal",
+) -> float:
+    """
+    Computes an exposure-weighted priority score for ranking actionable findings:
+    Priority = Severity * Confidence * Reachability * Exposure (scale ~0.06 to 5.0)
+    """
+    sev_map = {
+        Severity.CRITICAL: 5.0,
+        Severity.HIGH: 4.0,
+        Severity.MEDIUM: 3.0,
+        Severity.LOW: 2.0,
+        Severity.INFORMATIONAL: 1.0,
+    }
+    conf_map = {
+        Confidence.CONFIRMED: 1.0,
+        Confidence.LIKELY: 0.8,
+        Confidence.HIGH: 0.9,
+        Confidence.MEDIUM: 0.7,
+        Confidence.POSSIBLE: 0.4,
+        Confidence.LOW: 0.4,
+    }
+    reach_map = {
+        "reachable": 1.0,
+        "unknown": 0.7,
+        "unreachable": 0.3,
+    }
+    expo_map = {
+        "public_unauth": 1.0,
+        "public_auth": 0.8,
+        "internal": 0.5,
+        "test_fixture": 0.2,
+    }
+    s = sev_map.get(severity, 2.0)
+    c = conf_map.get(confidence, 0.7)
+    r = reach_map.get(reachability, 0.7)
+    e = expo_map.get(exposure, 0.5)
+    return round(s * c * r * e, 2)
 
 
 class CoverageDimension(BaseModel):

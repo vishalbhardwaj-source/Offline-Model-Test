@@ -6,7 +6,16 @@ from typing import Any, List, Optional, Tuple
 from offtest.checks.isolated_runner import IsolatedRunner
 from offtest.checks.static_checks import OfflineStaticChecker
 from offtest.checks.test_adapter import TestAdapter
-from offtest.core.models import CheckResult, CheckStatus, FileRecord, Finding, ToolManifestItem
+from offtest.core.models import (
+    CheckResult,
+    CheckStatus,
+    Confidence,
+    FileRecord,
+    Finding,
+    FindingCategory,
+    Severity,
+    ToolManifestItem,
+)
 
 
 def get_tool_manifest() -> List[ToolManifestItem]:
@@ -115,18 +124,56 @@ class CheckPlanner:
         _static_elapsed = time.perf_counter() - _static_start
         findings.extend(static_findings)
 
-        crit_count = len([f for f in static_findings if f.severity.value == "Critical"])
-        high_count = len([f for f in static_findings if f.severity.value == "High"])
-        has_critical_or_high = (crit_count + high_count) > 0
+        # Gate evaluation based on Category, Severity, and Certainty:
+        # 1. Blocking security defects: VULNERABILITY or SECRET at Critical/High with Confirmed/Likely confidence.
+        # (Possible-confidence and suppressed findings do not block gate)
+        blocking_security = [
+            f for f in static_findings
+            if getattr(f, "category", FindingCategory.VULNERABILITY) in (FindingCategory.VULNERABILITY, FindingCategory.SECRET)
+            and f.severity in (Severity.CRITICAL, Severity.HIGH)
+            and f.confidence in (Confidence.CONFIRMED, Confidence.LIKELY)
+            and not getattr(f, "suppressed", False)
+        ]
 
-        failure_reason = None
-        if has_critical_or_high:
-            reasons = []
-            if crit_count > 0:
-                reasons.append(f"{crit_count} Critical")
-            if high_count > 0:
-                reasons.append(f"{high_count} High")
-            failure_reason = f"{', '.join(reasons)} security defect(s) detected"
+        # 2. Air-gap policy violations: POLICY at Critical/High with Confirmed/Likely confidence
+        blocking_policy = [
+            f for f in static_findings
+            if getattr(f, "category", None) == FindingCategory.POLICY
+            and f.severity in (Severity.CRITICAL, Severity.HIGH)
+            and f.confidence in (Confidence.CONFIRMED, Confidence.LIKELY)
+            and not getattr(f, "suppressed", False)
+        ]
+
+        # 3. Code correctness defects (SyntaxError, etc.) at Critical/High with Confirmed confidence
+        blocking_correctness = [
+            f for f in static_findings
+            if getattr(f, "category", None) == FindingCategory.CORRECTNESS
+            and f.severity in (Severity.CRITICAL, Severity.HIGH)
+            and f.confidence in (Confidence.CONFIRMED, Confidence.LIKELY)
+            and not getattr(f, "suppressed", False)
+        ]
+
+        # Note: HYGIENE and SUPPLY_CHAIN (unpinned deps) findings never fail the gate.
+        gate_failed = bool(blocking_security or blocking_policy or blocking_correctness)
+
+        failure_reasons = []
+        if blocking_security:
+            crit_s = sum(1 for f in blocking_security if f.severity == Severity.CRITICAL)
+            high_s = sum(1 for f in blocking_security if f.severity == Severity.HIGH)
+            sec_parts = []
+            if crit_s:
+                sec_parts.append(f"{crit_s} Critical")
+            if high_s:
+                sec_parts.append(f"{high_s} High")
+            failure_reasons.append(f"{', '.join(sec_parts)} security vulnerability/secret defect(s)")
+
+        if blocking_policy:
+            failure_reasons.append(f"{len(blocking_policy)} air-gap policy violation(s)")
+
+        if blocking_correctness:
+            failure_reasons.append(f"{len(blocking_correctness)} code correctness error(s)")
+
+        failure_reason = "; ".join(failure_reasons) if failure_reasons else None
 
         check_results.append(
             CheckResult(
@@ -135,13 +182,13 @@ class CheckPlanner:
                 check_name="Static AST, Security & Secret Analysis",
                 check_type="security",
                 command="internal static ast inspection",
-                exit_code=1 if has_critical_or_high else 0,
+                exit_code=1 if gate_failed else 0,
                 duration_sec=round(_static_elapsed, 4),
                 stdout=f"Processed eligible source files. Generated {len(static_findings)} findings.",
                 stderr="",
-                status=CheckStatus.FAILED if has_critical_or_high else CheckStatus.PASSED,
+                status=CheckStatus.FAILED if gate_failed else CheckStatus.PASSED,
                 execution_status="Completed",
-                gate_outcome="Fail" if has_critical_or_high else "Pass",
+                gate_outcome="Fail" if gate_failed else "Pass",
                 skip_or_blocked_reason=failure_reason,
             )
         )

@@ -7,8 +7,10 @@ from offtest.core.models import (
     EvidenceStatus,
     FileRecord,
     Finding,
+    FindingCategory,
     Severity,
 )
+from offtest.core.rules import RULES, make_finding
 from offtest.intake.safety import scan_for_secrets
 
 # Curated deterministic rule-to-CWE mapping table with estimated CVSS baselines
@@ -102,6 +104,12 @@ class OfflineStaticChecker:
         else:
             self.project_index = project_index
 
+    def is_fixture_or_test(self, rel_path: str, f: Optional[FileRecord] = None) -> bool:
+        if f and getattr(f, "category", "") in ("test", "fixture", "test_data"):
+            return True
+        path_parts = [p.lower() for p in Path(rel_path).parts]
+        return any(p in ("tests", "test", "fixtures", "fixture", "mocks", "mock") for p in path_parts)
+
     def run_all(self, branch: Optional[str] = None) -> List[Finding]:
         findings: List[Finding] = []
         counter = 1
@@ -122,34 +130,24 @@ class OfflineStaticChecker:
                 continue
 
             f_sha256 = self.file_hashes.get(f.path)
+            path_parts = [p.lower() for p in Path(f.path).parts]
+            is_test_or_doc = (
+                any(p in ("tests", "test", "fixtures", "fixture", "mocks", "mock", "docs", "doc", "examples", "example") for p in path_parts)
+                or f.path.lower().endswith((".example", ".sample", ".template", ".md", ".rst"))
+                or getattr(f, "category", "") in ("test", "fixture", "doc", "test_data")
+            )
 
             # 0. File encoding check (e.g. Windows UTF-8 BOM)
             if has_bom and f.language in ("Python", "JavaScript", "TypeScript", "JSON", "YAML"):
                 findings.append(
-                    Finding(
-                        id=f"FIND-{counter:04d}",
-                        title="Non-Standard UTF-8 BOM (Byte Order Mark) Detected",
-                        severity=Severity.LOW,
-                        confidence=Confidence.CONFIRMED,
-                        provenance="rule",
-                        status=EvidenceStatus.OBSERVED,
-                        branch=branch,
-                        file_path=f.path,
-                        line_number=1,
+                    make_finding(
+                        RULES["OT-HYG-004"],
+                        path=f.path,
+                        line=1,
                         file_sha256=f_sha256,
-                        impact="File begins with a UTF-8 Byte Order Mark (0xEF 0xBB 0xBF / U+FEFF). While standard Python runtimes strip the BOM automatically when running files from disk, strict CI linters, non-Windows compilers, or string-based AST parsers may flag or mishandle BOM characters.",
+                        branch=branch,
                         evidence="Line 1: File starts with 3-byte UTF-8 BOM sequence (0xEF 0xBB 0xBF)",
-                        suggested_action="Re-save file as standard UTF-8 without BOM to ensure universal cross-platform and linter compatibility.",
-                        check_tool="file-encoding-checker",
-                        cwe_id=None,
-                        cwe_name=None,
-                        cvss_score_estimate=None,
-                        cvss_vector_estimate=None,
-                        cvss_is_estimate=False,
-                        environmental_context_assumed="Assumes standard source repository formatting expectations.",
-                        oracle_origin="static_rule",
-                        reproduced=True,
-                        sandbox_artifact=False,
+                        override_title="Non-Standard UTF-8 BOM (Byte Order Mark) Detected",
                     )
                 )
                 counter += 1
@@ -157,52 +155,46 @@ class OfflineStaticChecker:
             # 1. Hardcoded secrets check
             secret_hits = scan_for_secrets(content, f.path)
             for line_no, label, preview, fingerprint in secret_hits:
-                severity = Severity.CRITICAL
-                title = f"{label} Detected"
-                
-                if "Example Key" in label:
-                    severity = Severity.INFORMATIONAL
-                    title = "Documented AWS Example Key (AKIA...EXAMPLE) Detected"
-                    impact = "Token matches public sample/example AWS Access Key ID from documentation (e.g. AWS SDK documentation). Low operational risk, but recommended to remove before production."
-                    suggested_action = "Remove documentation sample key and configure credentials via local environment variables."
-                elif "AWS" in label:
-                    impact = "Detected non-example token matching AWS credential structure (prefix 'AKIA'). High risk of AWS cloud credential exposure if repository is shared."
-                    suggested_action = "Rotate AWS credentials immediately via AWS IAM and move secrets to local environment variables."
-                elif "Entropy" in label:
-                    impact = "Detected high-entropy string exceeding randomness threshold. High likelihood of custom API key, token, or secret."
-                    suggested_action = "Rotate token and move credentials to local environment variables or an offline secret store."
-                else:
-                    impact = "High risk of credential exposure if repository is shared or breached."
-                    suggested_action = "Rotate credentials immediately and move secrets to local environment variables or an offline vault."
-
                 evidence_str = f"Line {line_no} [detector: {label}, fingerprint: {fingerprint}]: {preview}"
                 conf, is_sandbox = classify_defect_confidence(evidence_str, oracle_origin="static_rule", reproduced=True)
-                cwe_id, cwe_name, cvss_score, cvss_vector = resolve_cwe_cvss(title)
+
+                if is_test_or_doc:
+                    rule = RULES["OT-SCR-004"]
+                    title = f"{label} Detected (Test/Documentation File)"
+                    sev = Severity.INFORMATIONAL
+                    conf = Confidence.POSSIBLE
+                elif "Example Key" in label:
+                    rule = RULES["OT-SCR-004"]
+                    title = "Documented AWS Example Key (AKIA...EXAMPLE) Detected"
+                    sev = Severity.INFORMATIONAL
+                    conf = Confidence.CONFIRMED
+                elif "Entropy" in label:
+                    rule = RULES["OT-SCR-003"]
+                    title = f"{label} Detected"
+                    sev = Severity.MEDIUM
+                    conf = Confidence.POSSIBLE
+                elif "AWS" in label:
+                    rule = RULES["OT-SCR-001"]
+                    title = f"{label} Detected"
+                    sev = Severity.CRITICAL
+                    conf = Confidence.CONFIRMED if not is_sandbox else Confidence.POSSIBLE
+                else:
+                    rule = RULES["OT-SCR-002"]
+                    title = f"{label} Detected"
+                    sev = Severity.CRITICAL
+                    conf = Confidence.CONFIRMED if not is_sandbox else Confidence.POSSIBLE
 
                 findings.append(
-                    Finding(
-                        id=f"FIND-{counter:04d}",
-                        title=title,
-                        severity=severity,
-                        confidence=conf,
-                        provenance="rule",
-                        status=EvidenceStatus.OBSERVED,
-                        branch=branch,
-                        file_path=f.path,
-                        line_number=line_no,
+                    make_finding(
+                        rule,
+                        path=f.path,
+                        line=line_no,
                         file_sha256=f_sha256,
-                        impact=impact,
+                        branch=branch,
                         evidence=evidence_str,
-                        suggested_action=suggested_action,
-                        check_tool="offtest-secret-scanner",
-                        cwe_id=cwe_id,
-                        cwe_name=cwe_name,
-                        cvss_score_estimate=cvss_score,
-                        cvss_vector_estimate=cvss_vector,
-                        cvss_is_estimate=True,
-                        environmental_context_assumed="Assumes standard exposure; static scan cannot evaluate live environmental firewall/auth controls.",
-                        oracle_origin="static_rule",
-                        reproduced=True,
+                        severity=sev,
+                        confidence=conf,
+                        override_title=title,
                         sandbox_artifact=is_sandbox,
                     )
                 )
@@ -228,7 +220,7 @@ class OfflineStaticChecker:
                         findings.append(item)
                         counter += 1
 
-            # 3. Dependency and remote reference configuration analysis (Round 9)
+            # 3. Dependency and remote reference configuration analysis
             norm_name = Path(f.path).name.lower()
             if ((norm_name.startswith(("requirement", "constraint", "req")) and norm_name.endswith(".txt"))
                     or "requirements" in norm_name or "constraints" in norm_name):
@@ -270,6 +262,119 @@ class OfflineStaticChecker:
         # Check project-wide unreachable functions, classes, and no-ops
         uncalled_findings = self._check_project_uncalled_code(branch, counter, existing_findings=findings)
         findings.extend(uncalled_findings)
+
+        # 3. RBAC Access Control: Detect unauthenticated state-changing routes
+        if self.project_index and getattr(self.project_index, "routes", None):
+            for route in self.project_index.routes:
+                meth = route.method.upper()
+                if meth in ("POST", "PUT", "DELETE", "PATCH") and not getattr(route, "auth_required", False):
+                    p_lower = route.path.lower()
+                    if not any(k in p_lower for k in ("login", "signin", "register", "signup", "auth/token", "token")):
+                        f_sha = self.file_hashes.get(route.file_path)
+                        findings.append(
+                            make_finding(
+                                RULES["OT-SEC-012"],
+                                path=route.file_path,
+                                line=route.line_number,
+                                file_sha256=f_sha,
+                                branch=branch,
+                                evidence=f"{meth} {route.path} (handler '{route.handler_name}') has no auth decorators or guards.",
+                                override_title=f"Unauthenticated State-Changing Route ({meth} {route.path})",
+                                exposure="public_unauth",
+                                reachability="reachable",
+                                evidence_level="reachable",
+                            )
+                        )
+                        counter += 1
+
+        # 4. Supply Chain: Match SBOM packages against offline CVE advisory snapshot
+        try:
+            from offtest.inventory.sbom import SBOMGenerator
+            from offtest.inventory.advisory_matcher import OfflineAdvisoryMatcher
+            sbom_gen = SBOMGenerator(self.repo_dir, self.files)
+            sbom_rep = sbom_gen.generate()
+            if sbom_rep.components:
+                adv_matcher = OfflineAdvisoryMatcher(project_index=self.project_index)
+                advisory_findings = adv_matcher.match(sbom_rep.components)
+                findings.extend(advisory_findings)
+        except Exception:
+            pass
+
+        # 5. Inline Suppression Parsing (# offtest: ignore[RULE_ID]) & Root-Cause Clustering
+        file_lines_cache: Dict[str, List[str]] = {}
+        suppression_regex = re.compile(
+            r"#\s*offtest:\s*ignore(?:\[([a-zA-Z0-9_\-]+)\])?(?:\s*:\s*(.*))?",
+            re.IGNORECASE,
+        )
+
+        unreachable_symbols_set = set()
+        if self.project_index and getattr(self.project_index, "unreachable_symbols", None):
+            unreachable_symbols_set = {
+                f"{s.file_path}::{s.name}" for s in self.project_index.unreachable_symbols
+            }
+
+        for f in findings:
+            # Set root cause cluster
+            if not f.root_cause_cluster:
+                f.root_cause_cluster = f"{f.rule_id or 'GENERAL'}::{f.file_path or 'ROOT'}"
+
+            # Downgrade reachability if defect is in an unreachable symbol
+            if f.file_path and f.line_number and unreachable_symbols_set and self.project_index:
+                for sym in getattr(self.project_index, "unreachable_symbols", []):
+                    if sym.file_path == f.file_path and sym.line_number <= f.line_number <= sym.end_line_number:
+                        f.reachability = "unreachable"
+                        f.evidence_level = "static-only"
+                        break
+
+            # Adjust exposure if inside test or docs
+            if f.file_path:
+                parts = [p.lower() for p in Path(f.file_path).parts]
+                if any(p in ("tests", "test", "fixtures", "fixture", "mocks", "mock") for p in parts):
+                    f.exposure = "test_fixture"
+
+            # Parse inline suppression comments
+            if f.file_path and f.line_number:
+                if f.file_path not in file_lines_cache:
+                    try:
+                        fp = self.repo_dir / f.file_path
+                        if fp.is_file():
+                            file_lines_cache[f.file_path] = fp.read_text(encoding="utf-8-sig", errors="ignore").splitlines()
+                        else:
+                            file_lines_cache[f.file_path] = []
+                    except Exception:
+                        file_lines_cache[f.file_path] = []
+
+                lines_in_file = file_lines_cache[f.file_path]
+                ln = f.line_number
+                candidates = []
+                if 1 <= ln <= len(lines_in_file):
+                    candidates.append(lines_in_file[ln - 1])
+                if ln > 1 and (ln - 1) <= len(lines_in_file):
+                    candidates.append(lines_in_file[ln - 2])
+
+                for cand in candidates:
+                    m = suppression_regex.search(cand)
+                    if m:
+                        rule_target = m.group(1)
+                        reason_target = m.group(2)
+                        if not rule_target or (f.rule_id and rule_target.upper() == f.rule_id.upper()):
+                            f.suppressed = True
+                            f.suppression_reason = (
+                                reason_target.strip()
+                                if reason_target
+                                else "Suppressed via inline comment directive"
+                            )
+                            break
+
+            # Update priority score dynamically with final reachability and exposure
+            from offtest.core.models import compute_priority
+            f.priority_score = compute_priority(
+                f.severity,
+                f.confidence,
+                reachability=f.reachability,
+                exposure=f.exposure,
+            )
+
         return findings
 
     def _check_python_syntax(self, rel_path: str, content: str, counter: int, branch: Optional[str]):
@@ -278,213 +383,369 @@ class OfflineStaticChecker:
             tree = ast.parse(content, filename=rel_path)
             return None, tree
         except SyntaxError as se:
-            finding = Finding(
-                id=f"FIND-{counter:04d}",
-                title=f"Python Syntax Error: {se.msg}",
-                severity=Severity.HIGH,
-                confidence=Confidence.CONFIRMED,
-                provenance="rule",
-                status=EvidenceStatus.OBSERVED,
-                branch=branch,
-                file_path=rel_path,
-                line_number=se.lineno,
+            finding = make_finding(
+                RULES["OT-COR-001"],
+                path=rel_path,
+                line=se.lineno,
                 file_sha256=f_sha,
-                impact="Code fails to compile or execute in Python runtime (code-quality defect).",
+                branch=branch,
                 evidence=f"SyntaxError on line {se.lineno}: {se.text.strip() if se.text else se.msg}",
-                suggested_action="Fix syntax error to ensure valid Python execution.",
-                check_tool="python-ast-validator",
-                cwe_id=None,
-                cwe_name=None,
-                cvss_score_estimate=None,
-                cvss_vector_estimate=None,
-                cvss_is_estimate=False,
-                oracle_origin="static_rule",
-                reproduced=True,
-                sandbox_artifact=False,
+                override_title=f"Python Syntax Error: {se.msg}",
+                confidence=Confidence.CONFIRMED,
             )
             return finding, None
         except (RecursionError, MemoryError) as re:
-            finding = Finding(
-                id=f"FIND-{counter:04d}",
-                title="AST Parsing Error: Pathological nesting or resource limit exceeded",
-                severity=Severity.HIGH,
-                confidence=Confidence.CONFIRMED,
-                provenance="rule",
-                status=EvidenceStatus.OBSERVED,
-                branch=branch,
-                file_path=rel_path,
-                line_number=1,
+            finding = make_finding(
+                RULES["OT-COR-001"],
+                path=rel_path,
+                line=1,
                 file_sha256=f_sha,
-                impact="File contains pathological nesting or excessive token complexity that triggers parser memory/recursion limits (code-quality defect).",
+                branch=branch,
                 evidence=f"Parser resource exhaustion: {type(re).__name__}",
-                suggested_action="Refactor code structure to reduce excessive expression or block nesting.",
-                check_tool="python-ast-validator",
-                cwe_id=None,
-                cwe_name=None,
-                cvss_score_estimate=None,
-                cvss_vector_estimate=None,
-                cvss_is_estimate=False,
-                oracle_origin="static_rule",
-                reproduced=True,
-                sandbox_artifact=False,
+                override_title="AST Parsing Error: Pathological nesting or resource limit exceeded",
+                confidence=Confidence.CONFIRMED,
             )
             return finding, None
 
     def _check_python_security_ast(self, rel_path: str, tree: ast.AST, counter_start: int, branch: Optional[str]) -> List[Finding]:
         findings = []
         c = counter_start
+        f_sha = self.file_hashes.get(rel_path)
+        self_checker = self
 
         class SecurityVisitor(ast.NodeVisitor):
             def __init__(self):
-                self.issues = []
+                self.aliases: Dict[str, str] = {}
+                self.findings: List[Finding] = []
 
-            def visit_FunctionDef(self, node: ast.FunctionDef):
-                # Check decorators for GET method with auth/login route
+            def visit_Import(self, node: ast.Import):
+                for alias in node.names:
+                    name = alias.name
+                    asname = alias.asname or name
+                    self.aliases[asname] = name
+                self.generic_visit(node)
+
+            def visit_ImportFrom(self, node: ast.ImportFrom):
+                mod = node.module or ""
+                for alias in node.names:
+                    full = f"{mod}.{alias.name}" if mod else alias.name
+                    asname = alias.asname or alias.name
+                    self.aliases[asname] = full
+                self.generic_visit(node)
+
+            def _resolve_func_name(self, func_node: ast.AST) -> str:
+                if isinstance(func_node, ast.Name):
+                    return self.aliases.get(func_node.id, func_node.id)
+                elif isinstance(func_node, ast.Attribute):
+                    val_name = self._resolve_func_name(func_node.value)
+                    return f"{val_name}.{func_node.attr}" if val_name else func_node.attr
+                return ""
+
+            def _check_auth_route(self, node: ast.FunctionDef | ast.AsyncFunctionDef):
                 for dec in node.decorator_list:
-                    # e.g. @app.get("/api/v1/auth/login")
                     if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute) and dec.func.attr.lower() == "get":
                         if dec.args and isinstance(dec.args[0], ast.Constant) and isinstance(dec.args[0].value, str):
                             route_path = dec.args[0].value.lower()
                             if any(k in route_path for k in ["login", "token", "signin", "authenticate"]):
                                 arg_names = [a.arg.lower() for a in node.args.args]
                                 has_pwd = any(c in arg_names for c in ["password", "secret", "passwd", "pwd"])
-                                if has_pwd:
-                                    conf = Confidence.HIGH
-                                    trigger = f"GET query parameters accept sensitive arguments: [{', '.join(arg_names)}]"
-                                else:
-                                    conf = Confidence.MEDIUM
-                                    trigger = f"Route-name heuristic matched authentication path '{dec.args[0].value}' on HTTP GET (handler arguments: [{', '.join(arg_names) or 'none'}]; no explicit password parameter detected)"
                                 dec_line = getattr(dec, "lineno", node.lineno)
-                                self.issues.append((
-                                    dec_line,
-                                    "Insecure Authentication Endpoint Defined via HTTP GET",
-                                    Severity.HIGH,
-                                    conf,
-                                    "Authentication, login, and token issuance endpoints must not use HTTP GET. Query parameters in GET requests are persisted in plain text within web server access logs, browser history, and HTTP Referer headers.",
-                                    f"Line {dec_line} (handler '{node.name}' at line {node.lineno}): @app.get('{dec.args[0].value}') uses HTTP GET for an authentication route. Trigger: {trigger}.",
-                                    "Change the HTTP route method from GET to POST and accept credentials/payload within the request body."
-                                ))
+                                if has_pwd:
+                                    self.findings.append(
+                                        make_finding(
+                                            RULES["OT-SEC-011"],
+                                            path=rel_path,
+                                            line=dec_line,
+                                            file_sha256=f_sha,
+                                            branch=branch,
+                                            evidence=f"Line {dec_line} (handler '{node.name}'): @app.get('{dec.args[0].value}') accepts sensitive parameters: [{', '.join(arg_names)}]",
+                                            override_title="Insecure Authentication Endpoint Defined via HTTP GET",
+                                        )
+                                    )
+                                else:
+                                    self.findings.append(
+                                        make_finding(
+                                            RULES["OT-HYG-008"],
+                                            path=rel_path,
+                                            line=dec_line,
+                                            file_sha256=f_sha,
+                                            branch=branch,
+                                            evidence=f"Line {dec_line} (handler '{node.name}'): @app.get('{dec.args[0].value}') defines authentication route without sensitive parameter exposure.",
+                                            override_title="HTTP GET Route Used for Authentication View",
+                                        )
+                                    )
+
+            def visit_FunctionDef(self, node: ast.FunctionDef):
+                self._check_auth_route(node)
+                self.generic_visit(node)
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
+                self._check_auth_route(node)
                 self.generic_visit(node)
 
             def visit_Call(self, node: ast.Call):
-                # Check eval() / exec()
-                if isinstance(node.func, ast.Name):
-                    if node.func.id in ("eval", "exec"):
-                        self.issues.append((
-                            node.lineno,
-                            f"Use of dangerous built-in '{node.func.id}()'",
-                            Severity.HIGH,
-                            Confidence.HIGH,
-                            f"Direct execution of dynamic strings via {node.func.id}() can lead to remote code execution.",
-                            f"Line {node.lineno}: {node.func.id}(...)",
-                            f"Refactor to avoid {node.func.id}() using safe static data parsing (e.g. ast.literal_eval, json.loads)."
-                        ))
-                    elif node.func.id == "open":
-                        pass
+                func_name = self._resolve_func_name(node.func)
 
-                # Check os.system(...)
-                elif isinstance(node.func, ast.Attribute):
-                    if isinstance(node.func.value, ast.Name):
-                        if node.func.value.id == "os" and node.func.attr == "system":
-                            is_dynamic = False
-                            if node.args:
-                                arg0 = node.args[0]
-                                if not isinstance(arg0, ast.Constant):
-                                    is_dynamic = True
-                            if is_dynamic:
-                                self.issues.append((
-                                    node.lineno,
-                                    "Dynamic Command Execution via os.system()",
-                                    Severity.HIGH,
-                                    Confidence.LIKELY,
-                                    "os.system executes shell commands with dynamic parameters without escaping, creating high risk of command injection if arguments incorporate external input (taint is unverified statically).",
-                                    f"Line {node.lineno}: os.system(...)",
-                                    "Replace os.system() with subprocess.run(..., shell=False) passing command arguments as a list."
-                                ))
-                            else:
-                                self.issues.append((
-                                    node.lineno,
-                                    "Direct Shell Execution Present ('os.system()')",
-                                    Severity.INFORMATIONAL,
-                                    Confidence.POSSIBLE,
-                                    "Advisory observation: Process spawns an OS shell with fixed constant arguments. Not a defect or command injection; informational observation only.",
-                                    f"Line {node.lineno}: os.system(...)",
-                                    "Consider replacing os.system() with subprocess.run(..., shell=False) passing arguments as a list."
-                                ))
-                        # Check yaml.load without SafeLoader
-                        elif node.func.value.id == "yaml" and node.func.attr == "load":
-                            safe_loader = False
-                            for kw in node.keywords:
-                                if kw.arg == "Loader":
-                                    loader_name = ""
-                                    if isinstance(kw.value, ast.Name):
-                                        loader_name = kw.value.id
-                                    elif isinstance(kw.value, ast.Attribute):
-                                        loader_name = kw.value.attr
-                                    if "safe" in loader_name.lower():
-                                        safe_loader = True
-                            if not safe_loader:
-                                self.issues.append((
-                                    node.lineno,
-                                    "Unsafe YAML Deserialization ('yaml.load' without SafeLoader)",
-                                    Severity.HIGH,
-                                    Confidence.POSSIBLE,
-                                    "Calling yaml.load() without SafeLoader allows arbitrary Python object instantiation (AST rule match; exploitability unconfirmed).",
-                                    f"Line {node.lineno}: yaml.load(...)",
-                                    "Use yaml.safe_load(...) or specify Loader=yaml.SafeLoader."
-                                ))
-                        # Check pickle.loads
-                        elif node.func.value.id == "pickle" and node.func.attr in ("load", "loads"):
-                            is_fixture = any(t in rel_path.lower() for t in ["test", "fixture", "mock"])
-                            self.issues.append((
-                                node.lineno,
-                                "Insecure Object Deserialization ('pickle.loads')",
-                                Severity.LOW if is_fixture else Severity.MEDIUM,
-                                Confidence.POSSIBLE,
-                                "Pickle deserialization AST call detected. Rule match on call syntax; exploitability depends on whether external untrusted data reaches the call.",
-                                f"Line {node.lineno}: pickle.{node.func.attr}(...)",
-                                "Use safer serialization formats like JSON or Protocol Buffers for untrusted payloads."
-                            ))
-                        # Check verify=False in requests
-                        elif node.func.value.id == "requests" and node.func.attr in ("get", "post", "put", "delete", "request"):
-                            for kw in node.keywords:
-                                if kw.arg == "verify" and isinstance(kw.value, ast.Constant) and kw.value.value is False:
-                                    is_fixture = any(t in rel_path.lower() for t in ["test", "fixture", "mock"])
-                                    conf = Confidence.POSSIBLE if is_fixture else Confidence.LIKELY
-                                    self.issues.append((
-                                        node.lineno,
-                                        "Disabled SSL Certificate Verification (verify=False)",
-                                        Severity.MEDIUM if is_fixture else Severity.HIGH,
-                                        conf,
-                                        "Disabling SSL verification allows man-in-the-middle attacks.",
-                                        f"Line {node.lineno}: requests.{node.func.attr}(..., verify=False)",
-                                        "Remove verify=False and ensure valid local CA certificates are provided."
-                                    ))
-                        # Check ssl._create_unverified_context
-                        elif node.func.value.id == "ssl" and node.func.attr == "_create_unverified_context":
-                            self.issues.append((
-                                node.lineno,
-                                "Disabled SSL Certificate Verification (ssl._create_unverified_context)",
-                                Severity.HIGH,
-                                Confidence.LIKELY,
-                                "Creating unverified SSL context disables server certificate validation.",
-                                f"Line {node.lineno}: ssl._create_unverified_context()",
-                                "Use ssl.create_default_context() with trusted certificates."
-                            ))
+                # 1. eval / exec
+                if func_name in ("eval", "exec") or (isinstance(node.func, ast.Name) and node.func.id in ("eval", "exec")):
+                    raw_id = func_name if func_name in ("eval", "exec") else node.func.id
+                    is_const = node.args and isinstance(node.args[0], ast.Constant)
+                    if is_const:
+                        self.findings.append(
+                            make_finding(
+                                RULES["OT-HYG-007"],
+                                path=rel_path,
+                                line=node.lineno,
+                                file_sha256=f_sha,
+                                branch=branch,
+                                evidence=f"Line {node.lineno}: {raw_id}(...) with static constant argument",
+                                override_title=f"Static Constant Evaluated via '{raw_id}()'",
+                            )
+                        )
+                    else:
+                        self.findings.append(
+                            make_finding(
+                                RULES["OT-SEC-001"],
+                                path=rel_path,
+                                line=node.lineno,
+                                file_sha256=f_sha,
+                                branch=branch,
+                                evidence=f"Line {node.lineno}: {raw_id}(...)",
+                                override_title=f"Use of dangerous built-in '{raw_id}()'",
+                            )
+                        )
+
+                # 2. os.system
+                elif func_name == "os.system" or (isinstance(node.func, ast.Attribute) and getattr(node.func.value, "id", None) == "os" and node.func.attr == "system"):
+                    is_dynamic = False
+                    if node.args and not isinstance(node.args[0], ast.Constant):
+                        is_dynamic = True
+                    if is_dynamic:
+                        self.findings.append(
+                            make_finding(
+                                RULES["OT-SEC-002"],
+                                path=rel_path,
+                                line=node.lineno,
+                                file_sha256=f_sha,
+                                branch=branch,
+                                evidence=f"Line {node.lineno}: os.system(...)",
+                                override_title="Dynamic Command Execution via os.system()",
+                            )
+                        )
+                    else:
+                        self.findings.append(
+                            make_finding(
+                                RULES["OT-HYG-006"],
+                                path=rel_path,
+                                line=node.lineno,
+                                file_sha256=f_sha,
+                                branch=branch,
+                                evidence=f"Line {node.lineno}: os.system(...) with constant string",
+                                override_title="Direct Shell Execution Present ('os.system()')",
+                            )
+                        )
+
+                # 3. subprocess with shell=True
+                elif func_name.startswith("subprocess.") or func_name in ("subprocess.run", "subprocess.Popen", "subprocess.call", "subprocess.check_call", "subprocess.check_output"):
+                    has_shell_true = any(kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True for kw in node.keywords)
+                    if has_shell_true:
+                        self.findings.append(
+                            make_finding(
+                                RULES["OT-SEC-003"],
+                                path=rel_path,
+                                line=node.lineno,
+                                file_sha256=f_sha,
+                                branch=branch,
+                                evidence=f"Line {node.lineno}: {func_name}(..., shell=True)",
+                                override_title="Subprocess Executed with shell=True",
+                            )
+                        )
+
+                # 4. yaml.load without SafeLoader
+                elif func_name == "yaml.load" or (isinstance(node.func, ast.Attribute) and getattr(node.func.value, "id", None) == "yaml" and node.func.attr == "load"):
+                    safe_loader = False
+                    # Check positional Loader argument (e.g. yaml.load(stream, yaml.SafeLoader))
+                    if len(node.args) >= 2:
+                        arg1 = node.args[1]
+                        arg1_name = arg1.id if isinstance(arg1, ast.Name) else (arg1.attr if isinstance(arg1, ast.Attribute) else "")
+                        if any(s in arg1_name.lower() for s in ["safe", "base", "csafe"]):
+                            safe_loader = True
+                    for kw in node.keywords:
+                        if kw.arg == "Loader":
+                            loader_name = kw.value.id if isinstance(kw.value, ast.Name) else (kw.value.attr if isinstance(kw.value, ast.Attribute) else "")
+                            if any(s in loader_name.lower() for s in ["safe", "base", "csafe"]):
+                                safe_loader = True
+                    if not safe_loader:
+                        self.findings.append(
+                            make_finding(
+                                RULES["OT-SEC-004"],
+                                path=rel_path,
+                                line=node.lineno,
+                                file_sha256=f_sha,
+                                branch=branch,
+                                evidence=f"Line {node.lineno}: yaml.load(...)",
+                                override_title="Unsafe YAML Deserialization ('yaml.load' without SafeLoader)",
+                            )
+                        )
+
+                # 5. pickle.loads / pickle.load
+                elif func_name in ("pickle.load", "pickle.loads") or (isinstance(node.func, ast.Attribute) and getattr(node.func.value, "id", None) == "pickle" and node.func.attr in ("load", "loads")):
+                    attr_name = node.func.attr if isinstance(node.func, ast.Attribute) else func_name.split(".")[-1]
+                    is_fixture = self_checker.is_fixture_or_test(rel_path)
+                    self.findings.append(
+                        make_finding(
+                            RULES["OT-SEC-005"],
+                            path=rel_path,
+                            line=node.lineno,
+                            file_sha256=f_sha,
+                            branch=branch,
+                            severity=Severity.LOW if is_fixture else Severity.MEDIUM,
+                            confidence=Confidence.POSSIBLE,
+                            evidence=f"Line {node.lineno}: pickle.{attr_name}(...)",
+                            override_title="Insecure Object Deserialization ('pickle.loads')",
+                        )
+                    )
+
+                # 6. verify=False in requests / httpx / session
+                elif any(func_name.startswith(p) for p in ["requests.", "httpx.", "session.", "client.", "http."]) and func_name.split(".")[-1] in ("get", "post", "put", "delete", "request", "head", "patch"):
+                    for kw in node.keywords:
+                        if kw.arg == "verify" and isinstance(kw.value, ast.Constant) and kw.value.value is False:
+                            is_fixture = self_checker.is_fixture_or_test(rel_path)
+                            self.findings.append(
+                                make_finding(
+                                    RULES["OT-SEC-006"],
+                                    path=rel_path,
+                                    line=node.lineno,
+                                    file_sha256=f_sha,
+                                    branch=branch,
+                                    severity=Severity.MEDIUM if is_fixture else Severity.HIGH,
+                                    confidence=Confidence.POSSIBLE if is_fixture else Confidence.LIKELY,
+                                    evidence=f"Line {node.lineno}: {func_name}(..., verify=False)",
+                                    override_title="Disabled SSL Certificate Verification (verify=False)",
+                                )
+                            )
+
+                # 7. ssl._create_unverified_context
+                elif func_name == "ssl._create_unverified_context" or (isinstance(node.func, ast.Attribute) and getattr(node.func.value, "id", None) == "ssl" and node.func.attr == "_create_unverified_context"):
+                    self.findings.append(
+                        make_finding(
+                            RULES["OT-SEC-006"],
+                            path=rel_path,
+                            line=node.lineno,
+                            file_sha256=f_sha,
+                            branch=branch,
+                            evidence=f"Line {node.lineno}: ssl._create_unverified_context()",
+                            override_title="Disabled SSL Certificate Verification (ssl._create_unverified_context)",
+                        )
+                    )
+
+                # 8. Archive extraction (Zip-Slip)
+                elif func_name.endswith(".extractall") or (isinstance(node.func, ast.Attribute) and node.func.attr == "extractall"):
+                    has_safe_filter = False
+                    for kw in node.keywords:
+                        if kw.arg == "filter" and isinstance(kw.value, ast.Constant) and kw.value.value in ("data", "tar"):
+                            has_safe_filter = True
+                    if not has_safe_filter:
+                        self.findings.append(
+                            make_finding(
+                                RULES["OT-SEC-007"],
+                                path=rel_path,
+                                line=node.lineno,
+                                file_sha256=f_sha,
+                                branch=branch,
+                                evidence=f"Line {node.lineno}: extractall(...) without safe extraction filter",
+                                override_title="Arbitrary File Extraction via Archive (Zip Slip)",
+                            )
+                        )
+
+                # 9. SQL Injection via string formatting
+                elif (isinstance(node.func, ast.Attribute) and node.func.attr in ("execute", "executemany")) or func_name.endswith((".execute", ".executemany")):
+                    if node.args:
+                        arg0 = node.args[0]
+                        is_formatted = False
+                        if isinstance(arg0, ast.BinOp) and isinstance(arg0.op, ast.Mod):
+                            is_formatted = True
+                        elif isinstance(arg0, ast.JoinedStr):
+                            is_formatted = True
+                        elif isinstance(arg0, ast.Call) and isinstance(arg0.func, ast.Attribute) and arg0.func.attr == "format":
+                            is_formatted = True
+                        if is_formatted:
+                            self.findings.append(
+                                make_finding(
+                                    RULES["OT-SEC-008"],
+                                    path=rel_path,
+                                    line=node.lineno,
+                                    file_sha256=f_sha,
+                                    branch=branch,
+                                    evidence=f"Line {node.lineno}: database query constructed via string formatting",
+                                    override_title="SQL Query Constructed via String Formatting",
+                                )
+                            )
+
+                # 10. tempfile.mktemp
+                elif func_name == "tempfile.mktemp" or (isinstance(node.func, ast.Attribute) and getattr(node.func.value, "id", None) == "tempfile" and node.func.attr == "mktemp"):
+                    self.findings.append(
+                        make_finding(
+                            RULES["OT-SEC-009"],
+                            path=rel_path,
+                            line=node.lineno,
+                            file_sha256=f_sha,
+                            branch=branch,
+                            evidence=f"Line {node.lineno}: tempfile.mktemp()",
+                            override_title="Insecure Temporary File Creation ('tempfile.mktemp')",
+                        )
+                    )
+
+                # 11. Weak hashes: hashlib.md5 / hashlib.sha1
+                elif func_name in ("hashlib.md5", "hashlib.sha1"):
+                    used_for_sec = True
+                    for kw in node.keywords:
+                        if kw.arg == "usedforsecurity" and isinstance(kw.value, ast.Constant) and kw.value.value is False:
+                            used_for_sec = False
+                    if used_for_sec:
+                        self.findings.append(
+                            make_finding(
+                                RULES["OT-SEC-010"],
+                                path=rel_path,
+                                line=node.lineno,
+                                file_sha256=f_sha,
+                                branch=branch,
+                                evidence=f"Line {node.lineno}: {func_name}()",
+                                override_title="Use of Broken or Weak Cryptographic Hash ('md5' / 'sha1')",
+                            )
+                        )
+
+                # 12. app.run(debug=True)
+                elif func_name.endswith(".run") or (isinstance(node.func, ast.Attribute) and node.func.attr == "run"):
+                    for kw in node.keywords:
+                        if kw.arg == "debug" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                            self.findings.append(
+                                make_finding(
+                                    RULES["OT-HYG-005"],
+                                    path=rel_path,
+                                    line=node.lineno,
+                                    file_sha256=f_sha,
+                                    branch=branch,
+                                    evidence=f"Line {node.lineno}: {func_name}(..., debug=True)",
+                                    override_title="Debug Mode Left Active ('DEBUG = True')",
+                                )
+                            )
 
                 # Check CERT_NONE in any function call keyword
                 for kw in node.keywords:
                     if kw.arg in ("cert_reqs", "verify_mode"):
                         if isinstance(kw.value, ast.Attribute) and kw.value.attr == "CERT_NONE":
-                            self.issues.append((
-                                node.lineno,
-                                "Disabled SSL Certificate Verification (CERT_NONE)",
-                                Severity.HIGH,
-                                Confidence.LIKELY,
-                                "Setting SSL verify_mode to CERT_NONE bypasses certificate checks.",
-                                f"Line {node.lineno}: {kw.arg}=ssl.CERT_NONE",
-                                "Require valid certificates (ssl.CERT_REQUIRED)."
-                            ))
+                            self.findings.append(
+                                make_finding(
+                                    RULES["OT-SEC-006"],
+                                    path=rel_path,
+                                    line=node.lineno,
+                                    file_sha256=f_sha,
+                                    branch=branch,
+                                    evidence=f"Line {node.lineno}: {kw.arg}=ssl.CERT_NONE",
+                                    override_title="Disabled SSL Certificate Verification (CERT_NONE)",
+                                )
+                            )
 
                 self.generic_visit(node)
 
@@ -493,56 +754,39 @@ class OfflineStaticChecker:
                 for target in node.targets:
                     if isinstance(target, ast.Name) and target.id == "DEBUG":
                         if isinstance(node.value, ast.Constant) and node.value.value is True:
-                            self.issues.append((
-                                node.lineno,
-                                "Debug Mode Left Active ('DEBUG = True')",
-                                Severity.MEDIUM,
-                                Confidence.HIGH,
-                                "Debug mode reveals sensitive stack traces, environment details, and internal state.",
-                                f"Line {node.lineno}: DEBUG = True",
-                                "Set DEBUG = False or load dynamically from non-production configuration."
-                            ))
+                            self.findings.append(
+                                make_finding(
+                                    RULES["OT-HYG-005"],
+                                    path=rel_path,
+                                    line=node.lineno,
+                                    file_sha256=f_sha,
+                                    branch=branch,
+                                    evidence=f"Line {node.lineno}: DEBUG = True",
+                                    override_title="Debug Mode Left Active ('DEBUG = True')",
+                                )
+                            )
+                self.generic_visit(node)
+
+            def visit_AnnAssign(self, node: ast.AnnAssign):
+                # Check DEBUG: bool = True
+                if isinstance(node.target, ast.Name) and node.target.id == "DEBUG":
+                    if isinstance(node.value, ast.Constant) and node.value.value is True:
+                        self.findings.append(
+                            make_finding(
+                                RULES["OT-HYG-005"],
+                                path=rel_path,
+                                line=node.lineno,
+                                file_sha256=f_sha,
+                                branch=branch,
+                                evidence=f"Line {node.lineno}: DEBUG: ... = True",
+                                override_title="Debug Mode Left Active ('DEBUG = True')",
+                            )
+                        )
                 self.generic_visit(node)
 
         visitor = SecurityVisitor()
         visitor.visit(tree)
-
-        f_sha = self.file_hashes.get(rel_path)
-        for line_no, title, sev, conf, impact, ev, action in visitor.issues:
-            cwe_id, cwe_name, cvss_score, cvss_vector = resolve_cwe_cvss(title)
-            # Principle: CVSS base estimates MUST NOT be attached to unverified / Possible findings
-            if conf == Confidence.POSSIBLE:
-                cvss_score = None
-                cvss_vector = None
-            findings.append(
-                Finding(
-                    id=f"FIND-{c:04d}",
-                    title=title,
-                    severity=sev,
-                    confidence=conf,
-                    provenance="symbolic",
-                    status=EvidenceStatus.OBSERVED,
-                    branch=branch,
-                    file_path=rel_path,
-                    line_number=line_no,
-                    file_sha256=f_sha,
-                    impact=impact,
-                    evidence=ev,
-                    suggested_action=action,
-                    check_tool="python-ast-security-checker",
-                    cwe_id=cwe_id,
-                    cwe_name=cwe_name,
-                    cvss_score_estimate=cvss_score,
-                    cvss_vector_estimate=cvss_vector,
-                    cvss_is_estimate=True,
-                    environmental_context_assumed="Assumes standard network exposure; offline static analysis cannot determine local firewall/VPC boundary or runtime auth middleware without environmental configuration.",
-                    oracle_origin="symbolic_invariant",
-                    reproduced=True,
-                    sandbox_artifact=False,
-                )
-            )
-            c += 1
-
+        findings.extend(visitor.findings)
         return findings
 
     def _check_python_dead_code(self, rel_path: str, tree: ast.AST, counter_start: int, branch: Optional[str]) -> List[Finding]:
@@ -554,62 +798,63 @@ class OfflineStaticChecker:
         c = counter_start
         f_sha = self.file_hashes.get(rel_path)
 
+        # Check if this file is __init__.py (re-exports are standard)
+        is_init_py = Path(rel_path).name == "__init__.py"
+
         # --- 1. Unused top-level imports ---
-        # Collect all imported names, then collect all Name references in the rest of the AST.
         import_names: Dict[str, int] = {}  # name -> line_number
 
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    bound_name = alias.asname if alias.asname else alias.name.split(".")[0]
-                    import_names[bound_name] = node.lineno
-            elif isinstance(node, ast.ImportFrom):
-                for alias in node.names:
-                    if alias.name == "*":
-                        continue  # star import — can't track
-                    bound_name = alias.asname if alias.asname else alias.name
-                    import_names[bound_name] = node.lineno
+        if not is_init_py:
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        bound_name = alias.asname if alias.asname else alias.name.split(".")[0]
+                        import_names[bound_name] = node.lineno
+                elif isinstance(node, ast.ImportFrom):
+                    # Skip compiler directives (__future__ imports e.g. annotations)
+                    if node.module == "__future__":
+                        continue
+                    for alias in node.names:
+                        if alias.name == "*":
+                            continue  # star import — can't track
+                        bound_name = alias.asname if alias.asname else alias.name
+                        import_names[bound_name] = node.lineno
 
-        # Collect all Name loads in the module body (excluding the import statements themselves)
-        used_names: Set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                used_names.add(node.id)
-            elif isinstance(node, ast.Attribute):
-                # attr access like `os.path` — the root name `os` is used
-                root = node
-                while isinstance(root, ast.Attribute):
-                    root = root.value
-                if isinstance(root, ast.Name):
-                    used_names.add(root.id)
+            # Collect all Name loads in the module body
+            used_names: Set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                    used_names.add(node.id)
+                elif isinstance(node, ast.Attribute):
+                    root = node
+                    while isinstance(root, ast.Attribute):
+                        root = root.value
+                    if isinstance(root, ast.Name):
+                        used_names.add(root.id)
 
-        for name, line_no in import_names.items():
-            if name not in used_names and name != "_":
+            # Collect names in __all__ definitions
+            for stmt in getattr(tree, "body", []):
+                if isinstance(stmt, ast.Assign):
+                    for target in stmt.targets:
+                        if isinstance(target, ast.Name) and target.id == "__all__":
+                            if isinstance(stmt.value, (ast.List, ast.Tuple, ast.Set)):
+                                for elt in stmt.value.elts:
+                                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                                        used_names.add(elt.value)
+
+            unused_imports = [name for name, line_no in import_names.items() if name not in used_names and name != "_"]
+            if unused_imports:
+                first_line = import_names[unused_imports[0]]
+                title = f"Unused Import: '{unused_imports[0]}'" if len(unused_imports) == 1 else f"Unused Imports ({len(unused_imports)} symbols in {Path(rel_path).name})"
                 findings.append(
-                    Finding(
-                        id=f"FIND-{c:04d}",
-                        title=f"Unused Import: '{name}'",
-                        severity=Severity.LOW,
-                        confidence=Confidence.LIKELY,
-                        provenance="symbolic",
-                        status=EvidenceStatus.OBSERVED,
-                        branch=branch,
-                        file_path=rel_path,
-                        line_number=line_no,
+                    make_finding(
+                        RULES["OT-HYG-001"],
+                        path=rel_path,
+                        line=first_line,
                         file_sha256=f_sha,
-                        impact=f"Import '{name}' is defined but never referenced in this module. Dead imports increase cognitive load and surface area.",
-                        evidence=f"Line {line_no}: import '{name}' — no reference found in module body.",
-                        suggested_action=f"Remove the unused import of '{name}' or add a usage if intentional.",
-                        check_tool="python-dead-code-checker",
-                        cwe_id="CWE-561",
-                        cwe_name="Dead Code",
-                        cvss_score_estimate=None,
-                        cvss_vector_estimate=None,
-                        cvss_is_estimate=False,
-                        environmental_context_assumed="Static AST analysis — dynamic __all__ exports or re-export patterns may produce false positives.",
-                        oracle_origin="symbolic_invariant",
-                        reproduced=True,
-                        sandbox_artifact=False,
+                        branch=branch,
+                        evidence=f"Line {first_line}: Unused import(s): {', '.join(sorted(unused_imports))}",
+                        override_title=title,
                     )
                 )
                 c += 1
@@ -621,37 +866,20 @@ class OfflineStaticChecker:
             nonlocal c
             for i, stmt in enumerate(stmts):
                 if isinstance(stmt, terminal_nodes):
-                    # Everything after this in the same block is unreachable
                     unreachable = stmts[i + 1:]
                     for dead_stmt in unreachable:
                         if isinstance(dead_stmt, (ast.Pass,)):
                             continue  # `pass` after return is trivial
                         dead_line = getattr(dead_stmt, "lineno", parent_lineno)
                         findings.append(
-                            Finding(
-                                id=f"FIND-{c:04d}",
-                                title="Unreachable Statement After Control Flow Terminator",
-                                severity=Severity.LOW,
-                                confidence=Confidence.LIKELY,
-                                provenance="symbolic",
-                                status=EvidenceStatus.OBSERVED,
-                                branch=branch,
-                                file_path=rel_path,
-                                line_number=dead_line,
+                            make_finding(
+                                RULES["OT-HYG-003"],
+                                path=rel_path,
+                                line=dead_line,
                                 file_sha256=f_sha,
-                                impact="Statement appears after a return/raise/break/continue and will never execute.",
+                                branch=branch,
                                 evidence=f"Line {dead_line}: statement follows a {type(stmt).__name__} at line {stmt.lineno}.",
-                                suggested_action="Remove the unreachable statement or restructure the control flow.",
-                                check_tool="python-dead-code-checker",
-                                cwe_id="CWE-561",
-                                cwe_name="Dead Code",
-                                cvss_score_estimate=None,
-                                cvss_vector_estimate=None,
-                                cvss_is_estimate=False,
-                                environmental_context_assumed="Static AST analysis — exception handlers and finally blocks may execute; only linear block reachability is checked.",
-                                oracle_origin="symbolic_invariant",
-                                reproduced=True,
-                                sandbox_artifact=False,
+                                override_title="Unreachable Statement After Control Flow Terminator",
                             )
                         )
                         c += 1
@@ -708,6 +936,8 @@ class OfflineStaticChecker:
         c = counter_start
         f_sha = self.file_hashes.get(rel_path)
         lines = content.splitlines()
+        unpinned_items = []
+
         for idx, line in enumerate(lines, start=1):
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
@@ -725,30 +955,14 @@ class OfflineStaticChecker:
                     idx_target = m.group(1).strip("'\"")
                     if not any(local in idx_target for local in ["127.0.0.1", "localhost"]):
                         findings.append(
-                            Finding(
-                                id=f"FIND-{c:04d}",
-                                title="Remote Package Index or Registry Reference in Dependency File",
-                                severity=Severity.HIGH,
-                                confidence=Confidence.CONFIRMED,
-                                provenance="rule",
-                                status=EvidenceStatus.OBSERVED,
-                                branch=branch,
-                                file_path=rel_path,
-                                line_number=idx,
+                            make_finding(
+                                RULES["OT-POL-001"],
+                                path=rel_path,
+                                line=idx,
                                 file_sha256=f_sha,
-                                impact=f"Dependency file references an external package index or repository ({idx_target}). Resolving packages against external indices violates air-gap boundaries.",
+                                branch=branch,
                                 evidence=f"Line {idx}: {stripped}",
-                                suggested_action="Remove external index URL and use local offline wheel directory with --no-index --find-links.",
-                                check_tool="dependency-pin-checker",
-                                cwe_id="CWE-829",
-                                cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
-                                cvss_score_estimate=7.5,
-                                cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
-                                cvss_is_estimate=True,
-                                environmental_context_assumed="Assumes strict offline air-gap build requirements.",
-                                oracle_origin="static_rule",
-                                reproduced=True,
-                                sandbox_artifact=False,
+                                override_title="Remote Package Index or Registry Reference in Dependency File",
                             )
                         )
                         c += 1
@@ -765,30 +979,14 @@ class OfflineStaticChecker:
                     depth = self._get_requirements_nesting_depth(rel_path, nested_target, visited=set())
                     if depth > 5:
                         findings.append(
-                            Finding(
-                                id=f"FIND-{c:04d}",
-                                title="Excessive Recursion Depth in Requirements Inclusion (-r)",
-                                severity=Severity.HIGH,
-                                confidence=Confidence.CONFIRMED,
-                                provenance="rule",
-                                status=EvidenceStatus.OBSERVED,
-                                branch=branch,
-                                file_path=rel_path,
-                                line_number=idx,
+                            make_finding(
+                                RULES["OT-SUP-003"],
+                                path=rel_path,
+                                line=idx,
                                 file_sha256=f_sha,
-                                impact=f"Nested requirements file inclusion depth exceeds safety limit ({depth} > 5). Deeply nested or recursive includes can cause parser denial of service or evade scanners.",
+                                branch=branch,
                                 evidence=f"Line {idx}: {stripped} (chain depth: {depth})",
-                                suggested_action="Flatten requirements hierarchy and limit nested include depth to <= 5.",
-                                check_tool="dependency-pin-checker",
-                                cwe_id="CWE-674",
-                                cwe_name="Uncontrolled Recursion",
-                                cvss_score_estimate=5.3,
-                                cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L",
-                                cvss_is_estimate=True,
-                                environmental_context_assumed="Assumes standard offline parsing limits.",
-                                oracle_origin="static_rule",
-                                reproduced=True,
-                                sandbox_artifact=False,
+                                override_title="Excessive Recursion Depth in Requirements Inclusion (-r)",
                             )
                         )
                         c += 1
@@ -800,30 +998,14 @@ class OfflineStaticChecker:
                 target_arg = stripped[2:].strip()
             if is_unc_or_remote_path(target_arg):
                 findings.append(
-                    Finding(
-                        id=f"FIND-{c:04d}",
-                        title="Remote UNC or Network Reference in Dependency Specification",
-                        severity=Severity.HIGH,
-                        confidence=Confidence.CONFIRMED,
-                        provenance="rule",
-                        status=EvidenceStatus.OBSERVED,
-                        branch=branch,
-                        file_path=rel_path,
-                        line_number=idx,
+                    make_finding(
+                        RULES["OT-POL-002"],
+                        path=rel_path,
+                        line=idx,
                         file_sha256=f_sha,
-                        impact="Dependency file specifies a remote UNC, SMB, or external network target. Installing or resolving this requirement can trigger an outbound connection or NTLM credential leak.",
+                        branch=branch,
                         evidence=f"Line {idx}: {stripped}",
-                        suggested_action="Remove remote network reference and vendor dependency locally inside the repository.",
-                        check_tool="dependency-pin-checker",
-                        cwe_id="CWE-829",
-                        cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
-                        cvss_score_estimate=7.5,
-                        cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
-                        cvss_is_estimate=True,
-                        environmental_context_assumed="Assumes strict offline air-gap build requirements.",
-                        oracle_origin="static_rule",
-                        reproduced=True,
-                        sandbox_artifact=False,
+                        override_title="Remote UNC or Network Reference in Dependency Specification",
                     )
                 )
                 c += 1
@@ -831,45 +1013,29 @@ class OfflineStaticChecker:
 
             # Check for unpinned dependencies (e.g. 'requests' or 'flask>=2.0' without exact pin '==')
             if "==" not in stripped and "@" not in stripped and not stripped.startswith("-"):
-                is_min_constraint = any(op in stripped for op in [">=", "<=", "~=", ">", "<"])
-                title = "Minimum Version Constraint (Unpinned Python Dependency)" if is_min_constraint else "Unpinned Python Dependency"
-                impact = (
-                    f"Dependency specifies a minimum or range constraint ('{stripped}') rather than an exact pinned version ('=='). While standard during local development, unpinned builds can pull unexpected upstream changes and cause non-deterministic offline environments."
-                    if is_min_constraint else
-                    "Unpinned dependencies without version constraints can introduce breaking changes or untracked upstream supply-chain differences when running offline."
+                unpinned_items.append((idx, stripped))
+
+        # Aggregate unpinned dependencies per file to prevent report flooding
+        if unpinned_items:
+            first_idx, first_raw = unpinned_items[0]
+            pkg_list = [raw.split(">=")[0].split("<=")[0].split("~=")[0].split(">")[0].split("<")[0].strip() for _, raw in unpinned_items]
+            ev = "; ".join(f"L{i}: {r}" for i, r in unpinned_items[:6])
+            if len(unpinned_items) > 6:
+                ev += f"; ... and {len(unpinned_items) - 6} more"
+            title = f"Unpinned Python Dependency: '{pkg_list[0]}'" if len(unpinned_items) == 1 else f"Unpinned Python Dependencies ({len(unpinned_items)} unpinned packages in {Path(rel_path).name})"
+            findings.append(
+                make_finding(
+                    RULES["OT-SUP-001"],
+                    path=rel_path,
+                    line=first_idx,
+                    file_sha256=f_sha,
+                    branch=branch,
+                    evidence=f"Unpinned package specifications: {ev}",
+                    override_title=title,
                 )
-                pkg_base = stripped.split(">=")[0].split("<=")[0].split("~=")[0].split(">")[0].split("<")[0].strip()
-                suggested_action = (
-                    f"Pin exact version in requirements.txt (e.g. {pkg_base}==x.y.z) for deterministic offline builds."
-                )
-                cwe_id, cwe_name, cvss_score, cvss_vector = resolve_cwe_cvss("Unpinned Python Dependency")
-                findings.append(
-                    Finding(
-                        id=f"FIND-{c:04d}",
-                        title=title,
-                        severity=Severity.LOW,
-                        confidence=Confidence.CONFIRMED,
-                        provenance="rule",
-                        status=EvidenceStatus.OBSERVED,
-                        branch=branch,
-                        file_path=rel_path,
-                        line_number=idx,
-                        file_sha256=f_sha,
-                        impact=impact,
-                        evidence=f"Line {idx}: {stripped}",
-                        suggested_action=suggested_action,
-                        check_tool="dependency-pin-checker",
-                        cwe_id=cwe_id,
-                        cwe_name=cwe_name,
-                        cvss_score_estimate=cvss_score,
-                        cvss_vector_estimate=cvss_vector,
-                        cvss_is_estimate=True,
-                        oracle_origin="static_rule",
-                        reproduced=True,
-                        sandbox_artifact=False,
-                    )
-                )
-                c += 1
+            )
+            c += 1
+
         return findings
 
     def _check_gitmodules(self, rel_path: str, content: str, counter_start: int, branch: Optional[str]) -> List[Finding]:
@@ -884,30 +1050,14 @@ class OfflineStaticChecker:
                     url = parts[1].strip().strip("'\"")
                     if url.startswith(("http://", "https://", "git://", "ssh://", "git@")) or "://" in url:
                         findings.append(
-                            Finding(
-                                id=f"FIND-{c:04d}",
-                                title="Remote Submodule URL in .gitmodules",
-                                severity=Severity.HIGH,
-                                confidence=Confidence.CONFIRMED,
-                                provenance="rule",
-                                status=EvidenceStatus.OBSERVED,
-                                branch=branch,
-                                file_path=rel_path,
-                                line_number=idx,
+                            make_finding(
+                                RULES["OT-POL-004"],
+                                path=rel_path,
+                                line=idx,
                                 file_sha256=f_sha,
-                                impact=f"Submodule references remote git URL '{url}'. Cloning or updating submodules violates air-gap boundary.",
+                                branch=branch,
                                 evidence=f"Line {idx}: {stripped}",
-                                suggested_action="Vendor submodule tree directly within the repository or provide local mirror.",
-                                check_tool="gitmodule-remote-checker",
-                                cwe_id="CWE-829",
-                                cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
-                                cvss_score_estimate=7.5,
-                                cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
-                                cvss_is_estimate=True,
-                                environmental_context_assumed="Assumes strict offline air-gap build requirements.",
-                                oracle_origin="static_rule",
-                                reproduced=True,
-                                sandbox_artifact=False,
+                                override_title="Remote Submodule URL in .gitmodules",
                             )
                         )
                         c += 1
@@ -923,32 +1073,15 @@ class OfflineStaticChecker:
             # Remote git dependency
             git_m = re.search(r"""git\s*=\s*['"]([^'"]+)['"]""", stripped)
             if git_m:
-                git_url = git_m.group(1)
                 findings.append(
-                    Finding(
-                        id=f"FIND-{c:04d}",
-                        title="Remote Git Dependency in Cargo.toml",
-                        severity=Severity.HIGH,
-                        confidence=Confidence.CONFIRMED,
-                        provenance="rule",
-                        status=EvidenceStatus.OBSERVED,
-                        branch=branch,
-                        file_path=rel_path,
-                        line_number=idx,
+                    make_finding(
+                        RULES["OT-POL-002"],
+                        path=rel_path,
+                        line=idx,
                         file_sha256=f_sha,
-                        impact=f"Cargo manifest specifies remote git dependency '{git_url}'. Cargo fetch will attempt remote network connection.",
+                        branch=branch,
                         evidence=f"Line {idx}: {stripped}",
-                        suggested_action="Vendor crate locally via 'cargo vendor' or supply offline .cargo/config.toml source replacement.",
-                        check_tool="cargo-remote-checker",
-                        cwe_id="CWE-829",
-                        cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
-                        cvss_score_estimate=7.5,
-                        cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
-                        cvss_is_estimate=True,
-                        environmental_context_assumed="Assumes strict offline air-gap build requirements.",
-                        oracle_origin="static_rule",
-                        reproduced=True,
-                        sandbox_artifact=False,
+                        override_title="Remote Git Dependency in Cargo.toml",
                     )
                 )
                 c += 1
@@ -961,30 +1094,14 @@ class OfflineStaticChecker:
                 lexical_p = os.path.normpath(os.path.join(parent_dir, local_p)).replace("\\", "/")
                 if lexical_p.startswith("..") or lexical_p.startswith("/") or ":" in lexical_p:
                     findings.append(
-                        Finding(
-                            id=f"FIND-{c:04d}",
-                            title="Escaping Path Dependency in Cargo.toml",
-                            severity=Severity.HIGH,
-                            confidence=Confidence.CONFIRMED,
-                            provenance="rule",
-                            status=EvidenceStatus.OBSERVED,
-                            branch=branch,
-                            file_path=rel_path,
-                            line_number=idx,
+                        make_finding(
+                            RULES["OT-POL-002"],
+                            path=rel_path,
+                            line=idx,
                             file_sha256=f_sha,
-                            impact=f"Path dependency '{local_p}' traverses lexically outside the repository boundary ({lexical_p}).",
+                            branch=branch,
                             evidence=f"Line {idx}: {stripped}",
-                            suggested_action="Keep all path dependencies inside the repository root.",
-                            check_tool="cargo-path-checker",
-                            cwe_id="CWE-829",
-                            cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
-                            cvss_score_estimate=7.5,
-                            cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
-                            cvss_is_estimate=True,
-                            environmental_context_assumed="Assumes strict offline air-gap build requirements.",
-                            oracle_origin="static_rule",
-                            reproduced=True,
-                            sandbox_artifact=False,
+                            override_title="Escaping Path Dependency in Cargo.toml",
                         )
                     )
                     c += 1
@@ -994,36 +1111,35 @@ class OfflineStaticChecker:
         findings = []
         c = counter_start
         f_sha = self.file_hashes.get(rel_path)
+        current_section = ""
         for idx, line in enumerate(content.splitlines(), start=1):
             stripped = line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                current_section = stripped.strip("[]").strip().lower()
+                continue
+
+            # Skip metadata/documentation sections like [project.urls], [tool.poetry.urls], [metadata]
+            if any(sec in current_section for sec in ["project.urls", "tool.poetry.urls", "metadata", "project.scripts"]):
+                continue
+
+            # Skip metadata key-value assignments
+            line_lower = stripped.lower()
+            if any(line_lower.startswith(k) for k in ["repository =", "homepage =", "documentation =", "issues =", "changelog =", "url ="]):
+                continue
+
             if any(proto in stripped for proto in ["git+http://", "git+https://", "git+ssh://", "https://", "http://"]):
-                # Avoid flagging benign documentation links
-                if any(dep_k in stripped.lower() for dep_k in ["dependencies", "requires", "@", "find-links", "index-url", "repository"]):
+                is_dep_section = any(sec in current_section for sec in ["dependencies", "requires", "tool.poetry.dependencies", "tool.poetry.dev-dependencies"])
+                has_dep_indicator = any(dep_k in line_lower for dep_k in ["dependencies", "requires", "@", "find-links", "index-url"])
+                if is_dep_section or has_dep_indicator:
                     findings.append(
-                        Finding(
-                            id=f"FIND-{c:04d}",
-                            title="Remote VCS or Network Dependency in Python Manifest",
-                            severity=Severity.HIGH,
-                            confidence=Confidence.CONFIRMED,
-                            provenance="rule",
-                            status=EvidenceStatus.OBSERVED,
-                            branch=branch,
-                            file_path=rel_path,
-                            line_number=idx,
+                        make_finding(
+                            RULES["OT-POL-002"],
+                            path=rel_path,
+                            line=idx,
                             file_sha256=f_sha,
-                            impact=f"Build manifest specifies remote network dependency reference. Resolving package will trigger outbound network traffic.",
+                            branch=branch,
                             evidence=f"Line {idx}: {stripped}",
-                            suggested_action="Vendor dependency locally or install from pre-cached offline wheelhouse.",
-                            check_tool="pyproject-remote-checker",
-                            cwe_id="CWE-829",
-                            cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
-                            cvss_score_estimate=7.5,
-                            cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
-                            cvss_is_estimate=True,
-                            environmental_context_assumed="Assumes strict offline air-gap build requirements.",
-                            oracle_origin="static_rule",
-                            reproduced=True,
-                            sandbox_artifact=False,
+                            override_title="Remote VCS or Network Dependency in Python Manifest",
                         )
                     )
                     c += 1
@@ -1042,30 +1158,14 @@ class OfflineStaticChecker:
                 url = reg_m.group(1).strip("'\"")
                 if not any(loc in url for loc in ["127.0.0.1", "localhost"]):
                     findings.append(
-                        Finding(
-                            id=f"FIND-{c:04d}",
-                            title=f"External Package Registry Configured in {Path(rel_path).name}",
-                            severity=Severity.HIGH,
-                            confidence=Confidence.CONFIRMED,
-                            provenance="rule",
-                            status=EvidenceStatus.OBSERVED,
-                            branch=branch,
-                            file_path=rel_path,
-                            line_number=idx,
+                        make_finding(
+                            RULES["OT-POL-003"],
+                            path=rel_path,
+                            line=idx,
                             file_sha256=f_sha,
-                            impact=f"Package manager config specifies remote registry URL '{url}'. Package installations will attempt outbound requests.",
+                            branch=branch,
                             evidence=f"Line {idx}: {stripped}",
-                            suggested_action="Configure local mirror (127.0.0.1) or supply packages via offline disk cache.",
-                            check_tool="registry-config-checker",
-                            cwe_id="CWE-829",
-                            cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
-                            cvss_score_estimate=7.5,
-                            cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
-                            cvss_is_estimate=True,
-                            environmental_context_assumed="Assumes strict offline air-gap build requirements.",
-                            oracle_origin="static_rule",
-                            reproduced=True,
-                            sandbox_artifact=False,
+                            override_title=f"External Package Registry Configured in {Path(rel_path).name}",
                         )
                     )
                     c += 1
@@ -1080,68 +1180,46 @@ class OfflineStaticChecker:
             data = json.loads(content)
         except Exception:
             return findings
+
+        has_lockfile = any(
+            Path(f.path).name.lower() in ("package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml")
+            for f in self.files
+        )
+
         deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
         for pkg, ver in deps.items():
-            ver_str = str(ver).strip()
-            from offtest.intake.intake import is_unc_or_remote_path
-            if is_unc_or_remote_path(ver_str) or ver_str.startswith(("git://", "git+http", "git+ssh", "http://", "https://")):
-                findings.append(
-                    Finding(
-                        id=f"FIND-{c:04d}",
-                        title=f"Remote Network or UNC Dependency Reference in package.json: '{pkg}'",
-                        severity=Severity.HIGH,
-                        confidence=Confidence.CONFIRMED,
-                        provenance="rule",
-                        status=EvidenceStatus.OBSERVED,
-                        branch=branch,
-                        file_path=rel_path,
-                        line_number=None,
-                        file_sha256=f_sha,
-                        impact="Package dependency specifies a remote network or UNC repository URL. Installation triggers outbound network traffic across air-gap.",
-                        evidence=f"\"{pkg}\": \"{ver_str}\"",
-                        suggested_action="Vendor dependency locally within repository or supply offline tarball archive.",
-                        check_tool="dependency-pin-checker",
-                        cwe_id="CWE-829",
-                        cwe_name="Inclusion of Functionality from Untrusted Control Sphere",
-                        cvss_score_estimate=7.5,
-                        cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
-                        cvss_is_estimate=True,
-                        environmental_context_assumed="Assumes strict offline air-gap build requirements.",
-                        oracle_origin="static_rule",
-                        reproduced=True,
-                        sandbox_artifact=False,
+            try:
+                ver_str = str(ver).strip()
+                from offtest.intake.intake import is_unc_or_remote_path
+                if is_unc_or_remote_path(ver_str) or ver_str.startswith(("git://", "git+http", "git+ssh", "http://", "https://")):
+                    findings.append(
+                        make_finding(
+                            RULES["OT-POL-002"],
+                            path=rel_path,
+                            line=None,
+                            file_sha256=f_sha,
+                            branch=branch,
+                            evidence=f"\"{pkg}\": \"{ver_str}\"",
+                            override_title=f"Remote Network or UNC Dependency Reference in package.json: '{pkg}'",
+                        )
                     )
-                )
-                c += 1
-            elif ver.startswith("^") or ver.startswith("~") or ver == "*" or ver == "latest":
-                cwe_id, cwe_name, cvss_score, cvss_vector = resolve_cwe_cvss("Floating Node.js Dependency")
-                findings.append(
-                    Finding(
-                        id=f"FIND-{c:04d}",
-                        title=f"Floating Node.js Dependency: '{pkg}'",
-                        severity=Severity.LOW,
-                        confidence=Confidence.CONFIRMED,
-                        provenance="rule",
-                        status=EvidenceStatus.OBSERVED,
-                        branch=branch,
-                        file_path=rel_path,
-                        line_number=None,
-                        file_sha256=f_sha,
-                        impact="Floating dependency range requires network resolution unless exact package-lock.json is committed.",
-                        evidence=f"\"{pkg}\": \"{ver}\"",
-                        suggested_action=f"Pin exact version or ensure package-lock.json / offline cache is provided.",
-                        check_tool="npm-package-pin-checker",
-                        cwe_id=cwe_id,
-                        cwe_name=cwe_name,
-                        cvss_score_estimate=cvss_score,
-                        cvss_vector_estimate=cvss_vector,
-                        cvss_is_estimate=True,
-                        oracle_origin="static_rule",
-                        reproduced=True,
-                        sandbox_artifact=False,
-                    )
-                )
-                c += 1
+                    c += 1
+                elif ver_str.startswith("^") or ver_str.startswith("~") or ver_str == "*" or ver_str == "latest":
+                    if not has_lockfile:
+                        findings.append(
+                            make_finding(
+                                RULES["OT-SUP-002"],
+                                path=rel_path,
+                                line=None,
+                                file_sha256=f_sha,
+                                branch=branch,
+                                evidence=f"\"{pkg}\": \"{ver_str}\"",
+                                override_title=f"Floating Node.js Dependency: '{pkg}'",
+                            )
+                        )
+                        c += 1
+            except Exception:
+                continue
         return findings
 
     def _check_python_semantic_bugs(self, rel_path: str, tree: ast.AST, counter_start: int, branch: Optional[str]) -> List[Finding]:
@@ -1203,29 +1281,14 @@ class OfflineStaticChecker:
                             pass
                     if is_zero:
                         findings.append(
-                            Finding(
-                                id=f"FIND-{c:04d}",
-                                title="Division by Zero Detected in Binary Operation",
-                                severity=Severity.HIGH,
-                                confidence=Confidence.CONFIRMED,
-                                provenance="symbolic",
-                                status=EvidenceStatus.OBSERVED,
-                                branch=branch,
-                                file_path=rel_path,
-                                line_number=node.lineno,
+                            make_finding(
+                                RULES["OT-COR-003"],
+                                path=rel_path,
+                                line=node.lineno,
                                 file_sha256=f_sha,
-                                impact="Execution will trigger ZeroDivisionError causing unhandled runtime failure.",
+                                branch=branch,
                                 evidence=ev,
-                                suggested_action="Ensure denominator is validated before division.",
-                                check_tool="python-semantic-analyzer",
-                                cwe_id="CWE-369",
-                                cwe_name="Divide By Zero",
-                                cvss_score_estimate=7.5,
-                                cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
-                                cvss_is_estimate=True,
-                                oracle_origin="symbolic_invariant",
-                                reproduced=True,
-                                sandbox_artifact=False,
+                                override_title="Division by Zero Detected in Binary Operation",
                             )
                         )
                         c += 1
@@ -1237,57 +1300,27 @@ class OfflineStaticChecker:
                     val = node.test.value
                     if val in (False, 0, "", None, [], {}):
                         findings.append(
-                            Finding(
-                                id=f"FIND-{c:04d}",
-                                title=f"Unreachable Code: Constant False Condition ('if {val}:')",
-                                severity=Severity.MEDIUM,
-                                confidence=Confidence.CONFIRMED,
-                                provenance="symbolic",
-                                status=EvidenceStatus.OBSERVED,
-                                branch=branch,
-                                file_path=rel_path,
-                                line_number=node.lineno,
+                            make_finding(
+                                RULES["OT-COR-004"],
+                                path=rel_path,
+                                line=node.lineno,
                                 file_sha256=f_sha,
-                                impact=f"The conditional branch 'if {val}:' will never execute under any circumstances (dead code).",
+                                branch=branch,
                                 evidence=f"Line {node.lineno}: 'if {ast.unparse(node.test)}:' is permanently false.",
-                                suggested_action="Remove the dead conditional block or correct the condition.",
-                                check_tool="python-semantic-analyzer",
-                                cwe_id="CWE-570",
-                                cwe_name="Expression is Always False",
-                                cvss_score_estimate=None,
-                                cvss_vector_estimate=None,
-                                cvss_is_estimate=False,
-                                oracle_origin="symbolic_invariant",
-                                reproduced=True,
-                                sandbox_artifact=False,
+                                override_title=f"Unreachable Code: Constant False Condition ('if {val}:')",
                             )
                         )
                         c += 1
                     elif val in (True, 1) and node.orelse:
                         findings.append(
-                            Finding(
-                                id=f"FIND-{c:04d}",
-                                title="Unreachable Else Block: Constant True Condition ('if True:')",
-                                severity=Severity.MEDIUM,
-                                confidence=Confidence.CONFIRMED,
-                                provenance="symbolic",
-                                status=EvidenceStatus.OBSERVED,
-                                branch=branch,
-                                file_path=rel_path,
-                                line_number=node.lineno,
+                            make_finding(
+                                RULES["OT-COR-004"],
+                                path=rel_path,
+                                line=node.lineno,
                                 file_sha256=f_sha,
-                                impact="The else branch will never execute because the if-condition is constant true.",
+                                branch=branch,
                                 evidence=f"Line {node.lineno}: 'if {ast.unparse(node.test)}:' has an unreachable else block.",
-                                suggested_action="Remove the tautological if-else or correct the condition.",
-                                check_tool="python-semantic-analyzer",
-                                cwe_id="CWE-571",
-                                cwe_name="Expression is Always True",
-                                cvss_score_estimate=None,
-                                cvss_vector_estimate=None,
-                                cvss_is_estimate=False,
-                                oracle_origin="symbolic_invariant",
-                                reproduced=True,
-                                sandbox_artifact=False,
+                                override_title="Unreachable Else Block: Constant True Condition ('if True:')",
                             )
                         )
                         c += 1
@@ -1325,29 +1358,14 @@ class OfflineStaticChecker:
                             in_scope = any(name_id in scope for scope in self.scope_stack)
                             if not in_scope and name_id not in global_names and name_id not in builtins_set:
                                 findings.append(
-                                    Finding(
-                                        id=f"FIND-{c:04d}",
-                                        title=f"Undefined Name: '{name_id}' Used in Function '{node.name}'",
-                                        severity=Severity.HIGH,
-                                        confidence=Confidence.CONFIRMED,
-                                        provenance="symbolic",
-                                        status=EvidenceStatus.OBSERVED,
-                                        branch=branch,
-                                        file_path=rel_path,
-                                        line_number=n.lineno,
+                                    make_finding(
+                                        RULES["OT-COR-002"],
+                                        path=rel_path,
+                                        line=n.lineno,
                                         file_sha256=f_sha,
-                                        impact=f"Name '{name_id}' is referenced before assignment or without import, causing a NameError at runtime.",
+                                        branch=branch,
                                         evidence=f"Line {n.lineno}: '{name_id}' loaded in function '{node.name}' is undefined.",
-                                        suggested_action=f"Define or import '{name_id}' before using it in '{node.name}'.",
-                                        check_tool="python-semantic-analyzer",
-                                        cwe_id="CWE-456",
-                                        cwe_name="Missing Initialization of a Variable",
-                                        cvss_score_estimate=7.5,
-                                        cvss_vector_estimate="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N",
-                                        cvss_is_estimate=True,
-                                        oracle_origin="symbolic_invariant",
-                                        reproduced=True,
-                                        sandbox_artifact=False,
+                                        override_title=f"Undefined Name: '{name_id}' Used in Function '{node.name}'",
                                     )
                                 )
                                 c += 1
@@ -1461,6 +1479,8 @@ class OfflineStaticChecker:
                 findings.append(
                     Finding(
                         id=f"FIND-{c:04d}",
+                        rule_id="OT-HYG-003",
+                        category=FindingCategory.HYGIENE,
                         title=finding_title,
                         severity=sev,
                         confidence=Confidence.CONFIRMED if any(f.confidence == Confidence.CONFIRMED for f in internal_findings) else conf,
@@ -1490,6 +1510,8 @@ class OfflineStaticChecker:
                 findings.append(
                     Finding(
                         id=f"FIND-{c:04d}",
+                        rule_id="OT-HYG-003",
+                        category=FindingCategory.HYGIENE,
                         title=f"Uncalled Dead Code: {sym.symbol_type.capitalize()} '{sym.name}' Is Never Called",
                         severity=Severity.LOW,
                         confidence=conf,
@@ -1529,6 +1551,8 @@ class OfflineStaticChecker:
                 findings.append(
                     Finding(
                         id=f"FIND-{c:04d}",
+                        rule_id="OT-HYG-002",
+                        category=FindingCategory.HYGIENE,
                         title=f"No-Op Function: '{sym.name}()' Has Empty Body",
                         severity=Severity.LOW,
                         confidence=Confidence.LIKELY,
@@ -1557,6 +1581,8 @@ class OfflineStaticChecker:
                 findings.append(
                     Finding(
                         id=f"FIND-{c:04d}",
+                        rule_id="OT-HYG-002",
+                        category=FindingCategory.HYGIENE,
                         title=f"Unimplemented Function Stub: '{sym.name}()' Always Raises NotImplementedError",
                         severity=Severity.MEDIUM,
                         confidence=Confidence.LIKELY,

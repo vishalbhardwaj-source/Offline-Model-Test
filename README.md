@@ -1,10 +1,10 @@
 # Offline App and Website Testing Model (`offtest`)
 
-> **Autonomous, 100% Air-Gapped Codebase Analysis, Neuro-Symbolic Test Synthesis, and Dual-Report Engine**
+> **Autonomous, 100% Air-Gapped Codebase Analysis, Neuro-Symbolic Test Synthesis, and Multi-Report Verification Engine**
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12-3776AB.svg?logo=python)](https://python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests: 85 Passing](https://img.shields.io/badge/Tests-85%20Passing-brightgreen.svg)](tests/)
+[![Tests: 101 Passing](https://img.shields.io/badge/Tests-101%20Passing-brightgreen.svg)](tests/)
 [![Architecture: Neuro--Symbolic](https://img.shields.io/badge/Architecture-Neuro--Symbolic-blueviolet.svg)](BLUEPRINT.md)
 [![Air--Gap: Enforced](https://img.shields.io/badge/Air--Gap-Enforced%20%26%20Sinkholed-red.svg)](offtest/checks/sandbox_interceptor.py)
 
@@ -15,46 +15,77 @@
 **`offtest`** is an offline pipeline and verification engine engineered to ingest, catalog, analyze, and test application repositories **without sending a single byte of source code, configuration, secrets, or telemetry over external networks**.
 
 Built directly against the **[Master Blueprint](file:///c:/Users/visha/Downloads/Testing%20model/BLUEPRINT.md)**, `offtest` implements a **Facts-First, Neuro-Symbolic Architecture**:
-- **Deterministic Truth:** AST analysis, CycloneDX 1.5 SBOM extraction, route/API parsing, and native OS sandboxing provide verifiable ground truth.
-- **Constrained Synthesis:** Generates self-healing branch tests for uncovered conditional logic without hallucinations or untracked claims.
-- **Honest Gap Accounting:** Explicitly distinguishes **Observed** facts from **Inferred** or **Unverified** relationships, measuring coverage across 7 distinct dimensions.
+- **Deterministic Ground Truth:** Multi-language AST analysis, CycloneDX 1.5 SBOM extraction, offline OSV/CVE advisory matching, route/API parsing, and native OS sandboxing provide verifiable facts.
+- **Source-to-Sink Taint Tracking:** Tracks injection paths through AST and emits OASIS SARIF `codeFlows` / `threadFlows`.
+- **Reachability-Based VEX:** Evaluates imported symbols via cross-file call graphs to differentiate actionable `affected` dependencies from harmless `not_affected` lockfile entries.
+- **Constrained Test Synthesis:** Generates self-healing branch tests for uncovered conditional logic without hallucinations or untracked claims.
+- **Exposure-Weighted Priority Scoring:** Ranks defects by $\text{Severity} \times \text{Confidence} \times \text{Reachability} \times \text{Exposure}$.
 
 ---
 
 ## 🏗️ Architecture & Pipeline Flow
 
+<p align="center">
+  <img src="assets/architecture_pipeline.svg" alt="Offtest 5-Phase Architecture Pipeline" width="100%" />
+</p>
+
 ```mermaid
 flowchart TD
-    subgraph Intake["1. AIR-GAPPED INTAKE & INVENTORY"]
+    subgraph P1["PHASE 1: AIR-GAPPED INTAKE & INVENTORY"]
         Target["📂 Target Codebase (Folder / .zip / .tar.gz)"] --> IntakeEngine["Intake Engine + Path Traversal (Zip-Slip) Guard"]
-        IntakeEngine --> SecretScan["Secret Scanner (Shannon Entropy + Token Redaction)"]
+        IntakeEngine --> SecretScan["Secret Scanner (Shannon Entropy + Context Allowlist)"]
         SecretScan --> InvEngine["Exhaustive Inventory (100% Files Classified)"]
         InvEngine --> SBOMGen["Offline SBOM Extractor (CycloneDX 1.5)"]
+        SBOMGen --> AdvisoryMatcher["Offline Advisory Matcher (OSV/CVE Snapshot)"]
     end
 
-    subgraph Discovery["2. STRUCTURE & PERMISSION DISCOVERY"]
-        InvEngine --> AppMapper["Application Mapper (Routes, APIs, Workflows)"]
-        AppMapper --> RBAC["RBAC Matrix Extractor (Anonymous / Auth / Admin)"]
-        AppMapper --> OpenAPI["Offline OpenAPI 3.1 Schema Synthesizer"]
+    subgraph P2["PHASE 2: STATIC GROUNDING & DATAFLOW TRACKING"]
+        InvEngine --> ASTParser["Multi-Language AST & Symbol Indexer"]
+        ASTParser --> CFG["Control Flow Graph & Predicate Extractor"]
+        ASTParser --> CallGraph["Cross-File Call Graph & Reachability Engine"]
+        ASTParser --> TaintEngine["Source-to-Sink Taint Engine (SARIF codeFlows)"]
+        ASTParser --> RuleRegistry["Canonical Rule Registry (4-Axis Taxonomy)"]
+        CallGraph --> AdvisoryMatcher
+        AdvisoryMatcher --> VEXStatus["VEX Reachability Assessment (affected vs not_affected)"]
     end
 
-    subgraph Checks["3. CHECKS, ISOLATION & TEST GENERATOR"]
-        InvEngine --> StaticChecks["AST Syntax, Security & Dependency Pin Scans"]
-        AppMapper --> TestGen["Constrained Branch Test Generator (Predicate Analysis)"]
-        TestGen --> SelfHeal["AST Validation Gate & Self-Healing Loop"]
-        SelfHeal --> IsolatedRunner["Isolated Runner (Windows Job Objects / Egress Guard)"]
-        IsolatedRunner --> FlakyRunner["Flakiness Repeat-Sampling Runner (N >= 3)"]
+    subgraph P3["PHASE 3: APPLICATION MAPPER & ACCESS CONTROL CHECKER"]
+        CallGraph --> RouteExtract["Route & REST API Endpoint Extractor"]
+        CallGraph --> PipelineMapper["Multi-Stage Pipeline & UI Workflow Mapper"]
+        RouteExtract --> RBAC["RBAC Matrix Synthesizer (Anonymous / Auth / Admin)"]
+        RBAC --> RBACFindings["RBAC Anomaly Synthesizer: Unauthenticated Mutating Routes (OT-SEC-012)"]
+        RouteExtract --> OpenAPI["Offline OpenAPI 3.1 Schema Reconstructor"]
     end
 
-    subgraph Reporting["4. DUAL REPORTING & EVIDENCE STORE"]
-        StaticChecks --> EvidenceStore["Structured Evidence Store (evidence.json + SHA-256)"]
-        IsolatedRunner --> EvidenceStore
-        FlakyRunner --> EvidenceStore
-        EvidenceStore --> Rep1["📄 Report 1: Exhaustive Technical Report (10 Sections)"]
-        EvidenceStore --> Rep2["🎯 Report 2: Actionable Issue-Focused Report"]
-        EvidenceStore --> SARIF["🛡️ OASIS SARIF 2.1.0 Static Analysis Export"]
+    subgraph P4["PHASE 4: CONSTRAINED TEST SYNTHESIS & ISOLATED EXECUTION"]
+        CFG --> TestGen["Constrained Branch Test Generator (Predicate Analysis)"]
+        TestGen --> ValidationGate["AST Anti-Tautology & Syntax Validation Gate"]
+        ValidationGate --> SandboxRunner["Isolated Sandbox Runner (Job Objects / Socket Guards)"]
+        SandboxRunner --> FlakyQuarantine["Flakiness Repeat-Sampling Runner (N >= 3)"]
+    end
+
+    subgraph P5["PHASE 5: MULTI-REPORT GENERATION & EVIDENCE STORE"]
+        SandboxRunner --> EvidenceStore["Cryptographic Evidence Store (SHA-256 / Protected HMAC)"]
+        FlakyQuarantine --> EvidenceStore
+        VEXStatus --> EvidenceStore
+        TaintEngine --> EvidenceStore
+        RBACFindings --> EvidenceStore
+        EvidenceStore --> Rep1["📄 1. REPORT_1_DETAILED.md (Exhaustive Technical Dossier)"]
+        EvidenceStore --> Rep2["🎯 2. REPORT_2_ISSUES.md (Actionable Punch-List Ranked by Priority)"]
+        EvidenceStore --> Rep3["🔄 3. REPORT_3_WORKFLOWS.md (End-to-End Execution Journeys)"]
+        EvidenceStore --> Rep4["🛡️ 4. results.sarif (OASIS SARIF 2.1.0 with codeFlows & tags)"]
     end
 ```
+
+### Linear Pipeline Stage Reference Table
+
+| Phase | Core Engine Components | Primary Inputs | AppSec & Verification Function | Primary Outputs |
+| :---: | :--- | :--- | :--- | :--- |
+| **Phase 1** | Intake Engine, Secret Scanner, SBOM Extractor | Source directory or archive | Path traversal guard, high-entropy secret detection with context allowlisting, CycloneDX 1.5 SBOM extraction | Classified file catalog, redacting tokens, SBOM manifest |
+| **Phase 2** | AST Indexer, Call Graph, Taint Tracker, Rule Registry | Analyzed source files, lockfiles | Cross-file symbol resolution, reachability analysis, source $\to$ sink taint propagation, offline OSV/CVE advisory matching with reachability-based VEX | Call graph edges, SARIF `codeFlows`, VEX advisory findings (`OT-SUP-004`) |
+| **Phase 3** | App Mapper, RBAC Matrix Synthesizer, OpenAPI Builder | AST trees, route decorators | Endpoint schema reconstruction, UI pipeline tracing, RBAC access control validation for mutating routes | OpenAPI 3.1 spec, workflow graphs, RBAC findings (`OT-SEC-012`) |
+| **Phase 4** | Branch Test Generator, Isolated Sandbox Runner | CFG predicates, branch conditions | Anti-tautological test synthesis, socket sinkhole execution (`127.0.0.1:9`), Windows Job Object containment, flakiness repeat-sampling | Synthesized test suites, execution verdicts, quarantined flaky tests |
+| **Phase 5** | Evidence Store & Multi-Report Generators | All observed verdicts & evidence | Cryptographic hashing (SHA-256/HMAC), priority score punch-list sorting, SARIF 2.1.0 formatting | 4 synchronized audit reports: `REPORT_1`, `REPORT_2`, `REPORT_3`, `results.sarif` |
 
 ---
 
@@ -160,19 +191,21 @@ python -m offtest manifest
 
 ## 📂 Generated Report Outputs
 
-Every assessment produces four synchronized artifacts:
+Every assessment produces four synchronized artifacts strictly numbered and cross-referenced:
 
 1. **`REPORT_1_DETAILED.md` (Technical Investigation Report):**  
    Exhaustive 10-section report detailing file dispositions, complete CycloneDX SBOM, OpenAPI specifications, RBAC matrix, local git branch diffs, execution logs, and the 7-dimension coverage breakdown.
 
 2. **`REPORT_2_ISSUES.md` (Actionable Issue-Focused Report):**  
-   Prioritized remediation punch-list grouped by severity (`Critical`, `High`, `Medium`, `Low`, `Informational`) with exact file paths, line numbers, CWE taxonomy, CVSS estimates, reproduction evidence, and suggested fixes.
+   Actionable punch-list sorted descending by **Exposure-Weighted Priority Score**:
+   $$\text{Priority Score} = \text{Severity} \times \text{Confidence} \times \text{Reachability} \times \text{Exposure}$$
+   Includes stable fingerprint IDs (`FIND-{rule_id}-{hash}`), CWE taxonomy, OWASP Top 10 tags, ASVS v4.0 chapters, estimated CVSS v3.1 base vectors, line numbers, and actionable remediation actions.
 
 3. **`REPORT_3_WORKFLOWS.md` (Application Workflow & Journey Report):**  
-   Catalog of end-to-end user journeys, reactive state management pipelines (NgRx / Redux / Store), routing transitions, interactive Mermaid diagrams, failure-mode analysis, and workflow test coverage gaps.
+   Catalog of end-to-end user journeys, reactive state management pipelines, routing transitions, interactive Mermaid diagrams, failure-mode analysis, and workflow test coverage gaps.
 
 4. **`results.sarif` (OASIS SARIF 2.1.0):**  
-   Standard static analysis results format compatible with GitHub Code Scanning, SonarQube, and CI/CD security dashboards.
+   Standard static analysis results format compatible with GitHub Code Scanning, SonarQube, and CI/CD security dashboards, containing source-to-sink `codeFlows`, `threadFlows`, OWASP/ASVS tags, and inline suppression records.
 
 ---
 
