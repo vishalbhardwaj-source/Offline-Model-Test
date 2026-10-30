@@ -213,7 +213,8 @@ class Finding(BaseModel):
     asvs_chapter: Optional[str] = None
     evidence_level: str = "static-only"  # static-only, reachable, test-confirmed, model-hypothesis
     exposure: str = "internal"           # public_unauth, public_auth, internal, test_fixture
-    reachability: str = "unknown"        # reachable, unreachable, unknown
+    reachability: str = "unknown"        # proven, reachable, heuristic, unreachable, unknown
+    proven_reachable: bool = False
     priority_score: float = 1.0
     fingerprint: Optional[str] = None
     suppressed: bool = False
