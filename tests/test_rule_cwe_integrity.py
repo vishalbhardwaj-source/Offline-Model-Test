@@ -98,9 +98,9 @@ def test_gate_hard_overrides():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
-        # Create unreferenced internal script with a dynamic eval issue
+        # Create unreferenced internal script with a real hardcoded provider-pattern AWS secret
         p = tmp_path / "helper.py"
-        p.write_text("x = input()\neval(x)", encoding="utf-8")
+        p.write_text('aws_key = "AKIA1234567890ABCDEF"\n', encoding="utf-8")
         files = [
             FileRecord(
                 path="helper.py",
@@ -115,9 +115,10 @@ def test_gate_hard_overrides():
         planner = CheckPlanner(tmp_path, files)
         results, findings = planner.execute_all()
 
-        # Helper dynamic eval finding has Severity=HIGH, Confidence=LIKELY -> must block gate
-        eval_f = next(f for f in findings if f.rule_id == "OT-SEC-001")
-        assert eval_f.severity == Severity.HIGH
+        # Secret finding must trigger Hard Override 4 (provider-pattern match)
+        secret_f = next(f for f in findings if f.rule_id == "OT-SCR-001")
+        assert secret_f.severity == Severity.CRITICAL
+        assert secret_f.priority_score >= 90.0
         stat_result = next(r for r in results if r.tool_name == "offtest-static-scanner")
         assert stat_result.gate_outcome == "Fail"
 

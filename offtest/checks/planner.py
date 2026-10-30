@@ -244,6 +244,26 @@ class CheckPlanner:
         # 3. Test-Confirmation Feedback Loop: calibrate findings based on dynamic execution
         findings = calibrate_findings_with_test_results(findings, check_results)
 
+        # Enforce Gate Hard Overrides priority floor (>= 90.0) so overriding findings sort to top
+        for f in findings:
+            if getattr(f, "suppressed", False) or getattr(f, "evidence_level", "") == "model-hypothesis":
+                continue
+            if (
+                (f.evidence_level == "test-confirmed" and f.severity in (Severity.CRITICAL, Severity.HIGH))
+                or (
+                    f.severity == Severity.CRITICAL
+                    and getattr(f, "reachability", "") == "reachable"
+                    and f.confidence in (Confidence.DETERMINISTIC, Confidence.CONFIRMED, Confidence.LIKELY, Confidence.HIGH)
+                )
+                or (getattr(f, "cisa_kev", False) and getattr(f, "reachability", "") != "unreachable")
+                or (
+                    f.rule_id in ("OT-SCR-001", "OT-SCR-002", "OT-SCR-003")
+                    and f.confidence in (Confidence.DETERMINISTIC, Confidence.CONFIRMED, Confidence.LIKELY, Confidence.HIGH)
+                    and getattr(f, "exposure", "internal") != "test_fixture"
+                )
+            ):
+                f.priority_score = max(f.priority_score, 90.0)
+
         return check_results, findings
 
 
