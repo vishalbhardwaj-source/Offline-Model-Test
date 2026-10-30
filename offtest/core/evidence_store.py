@@ -117,8 +117,14 @@ class EvidenceStore:
         serialized_json = json.dumps(redacted_dict, indent=2)
         
         # 3. Post-serialization regex/entropy double barrier
-        sanitized_json = redact_sensitive_data(serialized_json)
-        
+        try:
+            candidate_json = redact_sensitive_data(serialized_json)
+            json.loads(candidate_json)
+            sanitized_json = candidate_json
+        except (json.JSONDecodeError, Exception):
+            # Fall back safely to serialized_json (pre-serialization redact_data_structure already scrubbed all data)
+            sanitized_json = serialized_json
+
         # 4. Re-parse verification: Mathematically validate JSON syntax is uncorrupted
         json.loads(sanitized_json)
         

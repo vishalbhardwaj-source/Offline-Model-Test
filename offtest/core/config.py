@@ -136,7 +136,7 @@ class OfflineConfig:
         # AWS Access Key ID
         ("AWS Access Key ID Pattern [regex: AKIA...]", re.compile(r"\b(AKIA[0-9A-Z]{16})\b")),
         # AWS Secret Access Key
-        ("AWS Secret Access Key Pattern", re.compile(r"(?i)(?:aws_secret_access_key|aws_secret)\s*[:=]\s*['\"]?([A-Za-z0-9\/+=]{40})['\"]?")),
+        ("AWS Secret Access Key Pattern", re.compile(r"(?i)(?:aws_secret_access_key|aws_secret)\s*[:=]\s*(?:(['\"])([A-Za-z0-9\/+=]{40})\1|([A-Za-z0-9\/+=]{40}))")),
         # GitHub Personal Access Tokens
         ("GitHub Personal Access Token", re.compile(r"\b(gh[pousr]_[A-Za-z0-9_]{36,255})\b")),
         ("GitHub Fine-Grained Token", re.compile(r"\b(github_pat_[A-Za-z0-9_]{82})\b")),
@@ -151,13 +151,13 @@ class OfflineConfig:
         # JWT Tokens (JSON Web Tokens)
         ("JWT Authentication Token", re.compile(r"\b(eyJ[a-zA-Z0-9_\-]{10,}\.eyJ[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]{10,})\b")),
         # Authorization Headers
-        ("HTTP Authorization Header", re.compile(r"(?i)(?:Authorization|Auth)\s*[:=]\s*['\"]?(?:Bearer|Basic)\s+([A-Za-z0-9_\-\.\:\=\+\/]{16,})['\"]?")),
+        ("HTTP Authorization Header", re.compile(r"(?i)(?:Authorization|Auth)\s*[:=]\s*(?:(['\"])(?:Bearer|Basic)\s+([A-Za-z0-9_\-\.\:\=\+\/]{16,})\1|(?:Bearer|Basic)\s+([A-Za-z0-9_\-\.\:\=\+\/]{16,}))")),
         # Generic API key / Bearer token / Secret
-        ("Generic API Key Assignment", re.compile(r"(?i)(api[_-]?key|secret|auth[_-]?token|bearer|client[_-]?secret)\s*[:=]\s*['\"]?([A-Za-z0-9_\-\.]{16,80})['\"]?")),
+        ("Generic API Key Assignment", re.compile(r"(?i)(api[_-]?key|secret|auth[_-]?token|bearer|client[_-]?secret)\s*[:=]\s*(?:(['\"])([A-Za-z0-9_\-\.]{16,80})\2|([A-Za-z0-9_\-\.]{16,80}))")),
         # Private key blocks (RSA, EC, DSA, OPENSSH, PGP)
         ("Private Key Block", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY(?: BLOCK)?-----")),
         # Password assignments
-        ("Plaintext Password Assignment", re.compile(r"(?i)(password|passwd|pwd|db_pass)\s*[:=]\s*['\"]?([^'\"\s\r\n]{6,64})['\"]?")),
+        ("Plaintext Password Assignment", re.compile(r"(?i)(password|passwd|pwd|db_pass)\s*[:=]\s*(?:(['\"])(.*?)\2|([^'\"\s\r\n\(\)\{\}\[\];,]{6,64}))")),
         # Database / Service connection strings with password
         ("Database Connection URI Credential", re.compile(r"(?i)(postgres|postgresql|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^:\s\/]+:([^@\s\/]+)@")),
     ]

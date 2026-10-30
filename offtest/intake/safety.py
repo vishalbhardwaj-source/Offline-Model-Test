@@ -105,8 +105,15 @@ def redact_sensitive_data(text: str) -> str:
             def _replace_match(match: re.Match) -> str:
                 full = match.group(0)
                 if match.lastindex and match.lastindex >= 1:
-                    sensitive = match.group(match.lastindex)
-                    return full.replace(sensitive, "[REDACTED_SECRET]")
+                    s_idx = match.lastindex
+                    for g in range(match.lastindex, 0, -1):
+                        val = match.group(g)
+                        if val is not None and val not in ("'", '"'):
+                            s_idx = g
+                            break
+                    start_offset = match.start(s_idx) - match.start(0)
+                    end_offset = match.end(s_idx) - match.start(0)
+                    return full[:start_offset] + "[REDACTED_SECRET]" + full[end_offset:]
                 return "[REDACTED_SECRET]"
                 
             redacted = pattern.sub(_replace_match, redacted)
@@ -161,7 +168,10 @@ def redact_data_structure(val: Union[dict, list, str, any]) -> any:
     if isinstance(val, str):
         return redact_sensitive_data(val)
     elif isinstance(val, dict):
-        return {k: redact_data_structure(v) for k, v in val.items()}
+        return {
+            (redact_sensitive_data(k) if isinstance(k, str) else k): redact_data_structure(v)
+            for k, v in val.items()
+        }
     elif isinstance(val, list):
         return [redact_data_structure(item) for item in val]
     return val
@@ -316,10 +326,25 @@ def scan_for_secrets(content: str, file_path: str) -> List[Tuple[int, str, str, 
         for det_name, pattern in OfflineConfig.SENSITIVE_DETECTORS:
             match = pattern.search(line)
             if match:
-                raw_secret = match.group(match.lastindex) if (match.lastindex and match.lastindex >= 1) else match.group(0)
+                s_idx = match.lastindex if (match.lastindex and match.lastindex >= 1) else 0
+                for g in range(s_idx, 0, -1):
+                    val = match.group(g)
+                    if val is not None and val not in ("'", '"'):
+                        s_idx = g
+                        break
+                raw_secret = match.group(s_idx) if s_idx > 0 else match.group(0)
                 clean_raw = raw_secret.lower().strip("\"' ;:,")
                 if clean_raw in OfflineConfig.SECRET_PLACEHOLDERS:
                     continue
+
+                # Whitelist references and environment variable lookups (not hardcoded secrets)
+                line_lower = line.lower()
+                if any(ref in line_lower for ref in [
+                    "os.environ", "os.getenv", "process.env", "system.getenv",
+                    "env[", "env::", "${", "$env:", "config.get", "settings."
+                ]):
+                    if any(ref in match.group(0).lower() for ref in ["environ", "getenv", "process.env", "${", "config.get", "settings."]):
+                        continue
 
                 fingerprint = compute_secret_fingerprint(raw_secret)
                 preview = redact_sensitive_data(stripped)

@@ -73,3 +73,61 @@ def test_shannon_entropy_calculation():
     fp2 = compute_secret_fingerprint("my_super_secret_token_123")
     assert fp1 == fp2
     assert len(fp1) == 16
+
+
+def test_env_var_and_reference_not_flagged_as_secret():
+    """Verifies that dynamic lookups like os.environ.get and process.env are not flagged as hardcoded secrets."""
+    content = """
+    username = os.environ.get("UI_TEST_USERNAME")
+    password = os.environ.get("UI_TEST_PASSWORD")
+    token = process.env.AUTH_TOKEN
+    key = ${API_KEY}
+    """
+    hits = scan_for_secrets(content, "auth.py")
+    assert len(hits) == 0
+
+
+def test_evidence_store_round_trip_with_code_snippets_and_quotes(tmp_path):
+    """Verifies that evidence containing quotes, backslashes, and code does not corrupt evidence.json."""
+    import json
+    from offtest.core.evidence_store import EvidenceStore
+    from offtest.core.models import RunContext, Finding, Severity, Confidence, EvidenceStatus
+
+    store = EvidenceStore(base_dir=str(tmp_path))
+    finding = Finding.model_construct(
+        id="FIND-TEST-001",
+        rule_id="OT-SEC-008",
+        file_path="uitest_engine/security/auth.py",
+        line_number=38,
+        severity=Severity.HIGH,
+        confidence=Confidence.HIGH,
+        evidence_status=EvidenceStatus.OBSERVED,
+        title="Test finding with code evidence",
+        impact="Credential exposure",
+        description='Evidence with quotes and escapes: password = os.environ.get("UI_TEST_PASSWORD")',
+        evidence='Line 38 [detector: Hardcoded Secret (Plaintext Password Assignment)]: password = os.environ.get("UI_TEST_PASSWORD")',
+        suggested_action="Review environment variables.",
+        check_tool="offtest-secret-scanner",
+        cwe_id="CWE-798",
+    )
+    ctx = RunContext.model_construct(
+        run_id="run_regression_code_quotes",
+        findings=[finding],
+        check_results=[],
+        workflows=[],
+        routes=[],
+        apis=[],
+        features=[],
+        integrations=[],
+        branches=[],
+        branch_diffs=[],
+    )
+
+    evidence_file = store.save_run(ctx)
+    assert evidence_file.is_file()
+
+    # Re-verify JSON can be cleanly parsed
+    loaded = json.loads(evidence_file.read_text(encoding="utf-8"))
+    assert loaded["run_id"] == "run_regression_code_quotes"
+    assert len(loaded["findings"]) == 1
+    assert "findings" in loaded
