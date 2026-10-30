@@ -65,7 +65,7 @@ flowchart TD
         SandboxRunner --> FlakyQuarantine["Flakiness Repeat-Sampling Runner (N >= 3)"]
     end
 
-    %% All-Source Convergence to Phase 4 (No Bypassing)
+    %% All-Source Convergence to Phase 4 (All defect/vulnerability sources)
     RBACFindings --> ScoringEngine
     VEXStatus --> ScoringEngine
     TaintEngine --> ScoringEngine
@@ -85,10 +85,14 @@ flowchart TD
         RootCauseClustering --> EvidenceStore["Cryptographic Evidence Store (SHA-256 / Protected HMAC)"]
         EvidenceStore --> Rep1["📄 1. offline_testing_model_report.md (Executive Summary & Gate Decision)"]
         EvidenceStore --> Rep2["🎯 2. developer_remediation_plan.md (Remediation Punch-List Ranked by Priority)"]
-        EvidenceStore --> Rep3["🔄 3. system_architecture_report.md (Routes, RBAC Matrix & SBOM)"]
-        EvidenceStore --> Rep4["🛡️ 4. results.sarif (OASIS SARIF 2.1.0 with codeFlows, tags & baselineState)"]
+        EvidenceStore --> Rep3["🔄 3. system_architecture_report.md (Architecture & SBOM Ledger)"]
+        EvidenceStore --> Rep4["🛡️ 4. results.sarif & attestation.json (Machine SARIF & Attestation)"]
     end
 ```
+
+> **Dataflow Convergence Clarification:**
+> **Every security defect and finding source** (Static Rules, Source-to-Sink Taint, Secret Detections, RBAC Violations, and SCA VEX Advisories) **strictly converges into Phase 4 (Scoring Engine)** for normalized priority scoring, exploit oracle feedback, and root-cause deduplication. 
+> The sole non-converging branch is the **Non-Finding Structural Catalog** (the reconstructed OpenAPI 3.1 JSON and raw RBAC matrix schemas extracted in Phase 3A), which routes directly to the Evidence Store to populate the architectural ledger of Report 3 without undergoing defect scoring.
 
 ### End-to-End Pipeline Stage Reference Table
 

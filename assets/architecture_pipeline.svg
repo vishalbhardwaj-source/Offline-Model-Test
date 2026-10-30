@@ -142,8 +142,8 @@
     <text x="25" y="112" fill="#fbbf24" font-size="10">• Flaky test → non-demoting (flaky_test_observed)</text>
     
     <text x="15" y="136" fill="#f8fafc" font-size="12" font-weight="600">2. Priority Scoring &amp; Hard Overrides</text>
-    <text x="25" y="154" fill="#94a3b8" font-size="10">Sev(100..5) × Conf(1.0..0.4) × Evid(1.2/1.0) × R × E</text>
-    <text x="25" y="168" fill="#94a3b8" font-size="10">Hard Overrides: Confirmed Crit/High, KEV, Secrets</text>
+    <text x="25" y="154" fill="#94a3b8" font-size="10">min(100, Sev × Conf × Evid(1.2/1.0/0.5) × Reach × Expo)</text>
+    <text x="25" y="168" fill="#94a3b8" font-size="10">Hard Overrides: test-confirmed, KEV, secrets → floor ≥ 90</text>
     
     <text x="15" y="194" fill="#f8fafc" font-size="12" font-weight="600">3. SARIF Root-Cause Deduplication</text>
     <text x="25" y="212" fill="#94a3b8" font-size="10">Cluster: {file}:{rule}:{parent} + relatedLocations</text>
@@ -170,7 +170,7 @@
       <text x="15" y="22" fill="#38bdf8" font-size="13" font-weight="bold">1. Executive Summary &amp; Gate</text>
       <text x="15" y="38" fill="#94a3b8" font-size="11">offline_testing_model_report.md</text>
       <text x="15" y="60" fill="#e2e8f0" font-size="11">• CI/CD Gate Decision Table (0–100 Scale):</text>
-      <text x="15" y="78" fill="#f43f5e" font-size="10">  FAIL: Priority ≥ 45.0, Policy Breach, Syntax Crash</text>
+      <text x="15" y="78" fill="#f43f5e" font-size="10">  FAIL: Priority ≥ 45.0, Policy Breach, Overrides</text>
       <text x="15" y="96" fill="#34d399" font-size="10">  PASS: Clean scan, hygiene/low defects (&lt; 45.0)</text>
       <text x="15" y="116" fill="#e2e8f0" font-size="11">• Advisory Staleness: CISA KEV &amp; EPSS Risk Audit</text>
     </g>
@@ -239,7 +239,7 @@
       <rect width="295" height="108" rx="6" fill="#111827" stroke="#1f2937"/>
       <text x="15" y="22" fill="#f8fafc" font-size="12.5" font-weight="bold">Axis 3: Rule Precision Confidence</text>
       <text x="15" y="40" fill="#94a3b8" font-size="11">Calibrated static rule precision (0..1)</text>
-      <text x="15" y="58" fill="#64748b" font-size="10.5">• CONFIRMED (1.00) - Unambiguous AST/secret</text>
+      <text x="15" y="58" fill="#64748b" font-size="10.5">• DETERMINISTIC (1.00) - Unambiguous AST/secret</text>
       <text x="15" y="74" fill="#64748b" font-size="10.5">• HIGH / LIKELY (0.85) - High AST pattern match</text>
       <text x="15" y="90" fill="#64748b" font-size="10.5">• MEDIUM (0.65)  • LOW / POSSIBLE (0.40)</text>
     </g>
