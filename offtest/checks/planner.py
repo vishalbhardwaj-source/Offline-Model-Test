@@ -111,12 +111,14 @@ class CheckPlanner:
         repo_dir: Path,
         files: List[FileRecord],
         allow_scripts: bool = False,
+        accept_no_kernel_isolation: bool = False,
         project_index: Optional[Any] = None,
         app_tier: str = "unknown",
     ):
         self.repo_dir = repo_dir
         self.files = files
         self.allow_scripts = allow_scripts
+        self.accept_no_kernel_isolation = accept_no_kernel_isolation
         self.project_index = project_index
         self.app_tier = (app_tier or "unknown").lower()
 
@@ -164,10 +166,12 @@ class CheckPlanner:
                 is_blocking = True
                 f.priority_score = max(f.priority_score, 90.0)
 
-            # Hard Override 2: Reachable Critical defect on internal/public route with precision >= 0.85
+            # Hard Override 2: Proven Reachable Critical defect on internal/public route with precision >= 0.85
+            # Heuristic edges avoid the 0.20 unreachable discount, but only proven semantic edges trigger the floor.
             elif (
                 f.severity == Severity.CRITICAL
-                and getattr(f, "reachability", "") == "reachable"
+                and getattr(f, "reachability", "") in ("proven", "reachable")
+                and getattr(f, "proven_reachable", getattr(f, "reachability", "") == "proven")
                 and f.confidence in (Confidence.DETERMINISTIC, Confidence.CONFIRMED, Confidence.LIKELY, Confidence.HIGH)
             ):
                 is_blocking = True
@@ -251,7 +255,12 @@ class CheckPlanner:
         )
 
         # 2. Run Test Adapter
-        test_adapter = TestAdapter(self.repo_dir, self.files, allow_scripts=self.allow_scripts)
+        test_adapter = TestAdapter(
+            self.repo_dir,
+            self.files,
+            allow_scripts=self.allow_scripts,
+            accept_no_kernel_isolation=self.accept_no_kernel_isolation,
+        )
         adapter_results = test_adapter.discover_and_run()
         check_results.extend(adapter_results)
 
@@ -266,7 +275,8 @@ class CheckPlanner:
                 (f.evidence_level == "test-confirmed" and f.severity in (Severity.CRITICAL, Severity.HIGH))
                 or (
                     f.severity == Severity.CRITICAL
-                    and getattr(f, "reachability", "") == "reachable"
+                    and getattr(f, "reachability", "") in ("proven", "reachable")
+                    and getattr(f, "proven_reachable", getattr(f, "reachability", "") == "proven")
                     and f.confidence in (Confidence.DETERMINISTIC, Confidence.CONFIRMED, Confidence.LIKELY, Confidence.HIGH)
                 )
                 or (getattr(f, "cisa_kev", False) and getattr(f, "reachability", "") != "unreachable")

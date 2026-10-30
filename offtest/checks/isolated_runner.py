@@ -417,9 +417,15 @@ def verify_kernel_sandbox_environment(repo_path: Optional[Path] = None) -> Tuple
 
 
 class IsolatedRunner:
-    def __init__(self, work_dir: Path, timeout_sec: int = OfflineConfig.COMMAND_TIMEOUT_SEC):
-        self.work_dir = work_dir
+    def __init__(
+        self,
+        work_dir: Path,
+        timeout_sec: int = OfflineConfig.COMMAND_TIMEOUT_SEC,
+        require_isolation: bool = False,
+    ):
+        self.work_dir = Path(work_dir).resolve()
         self.timeout_sec = timeout_sec
+        self.require_isolation = require_isolation
         self.sandbox_home = Path(tempfile.gettempdir()) / f"offtest_sandbox_home_{os.getpid()}"
         self.sandbox_home.mkdir(parents=True, exist_ok=True)
         self._setup_interceptor()
@@ -491,6 +497,15 @@ class IsolatedRunner:
         4. Output size cap to prevent memory exhaustion
         Returns: (exit_code, stdout, stderr, duration_sec)
         """
+        if self.require_isolation:
+            from offtest.intake.intake import SecurityError
+            is_iso, diag = verify_kernel_sandbox_environment(self.work_dir)
+            if not is_iso:
+                raise SecurityError(
+                    f"Execution Refused (Fail-Closed): Untrusted script execution blocked because host does not provide verified kernel sandbox isolation ({diag}). "
+                    "Hardened container environment (Linux network namespace / docker --network none) is mandatory."
+                )
+
         # Scrubbed environment: only keep safe system vars
         env = {
             k: v for k, v in os.environ.items()

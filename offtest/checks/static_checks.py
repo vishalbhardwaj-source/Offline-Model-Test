@@ -444,6 +444,18 @@ class OfflineStaticChecker:
                             f.reachability = "unknown"
                         break
 
+            # Distinguish proven vs heuristic reachability from entry points
+            if f.file_path and f.line_number and self.project_index and getattr(f, "reachability", "") != "unreachable":
+                for sym_key, sym in getattr(self.project_index, "symbols", {}).items():
+                    if sym.file_path == f.file_path and sym.line_number <= f.line_number <= sym.end_line_number:
+                        if sym_key in getattr(self.project_index, "proven_reachable_symbols", set()):
+                            f.reachability = "proven"
+                            f.proven_reachable = True
+                        elif sym_key in getattr(self.project_index, "heuristic_reachable_symbols", set()):
+                            f.reachability = "heuristic"
+                            f.proven_reachable = False
+                        break
+
             # Adjust exposure if inside test or docs
             if f.file_path:
                 parts = [p.lower() for p in Path(f.file_path).parts]

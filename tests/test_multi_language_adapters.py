@@ -41,15 +41,15 @@ def test_adapter_coverage_declarations():
     assert py_cov.reachability == FeatureDepth.SEMANTIC
     assert py_cov.test_synthesis == FeatureDepth.SEMANTIC
 
-    # TypeScript / React declares semantic symbols/rules, heuristic reachability, none test synthesis
+    # TypeScript / React declares heuristic symbols/rules, heuristic reachability, none test synthesis
     ts_cov = coverages["typescript"]
-    assert ts_cov.symbols == FeatureDepth.SEMANTIC
+    assert ts_cov.symbols == FeatureDepth.HEURISTIC
     assert ts_cov.reachability == FeatureDepth.HEURISTIC
     assert ts_cov.test_synthesis == FeatureDepth.NONE
 
-    # Java / Spring declares semantic symbols/rules, heuristic reachability, none test synthesis
+    # Java / Spring declares heuristic symbols/rules, heuristic reachability, none test synthesis
     java_cov = coverages["java"]
-    assert java_cov.symbols == FeatureDepth.SEMANTIC
+    assert java_cov.symbols == FeatureDepth.HEURISTIC
     assert java_cov.reachability == FeatureDepth.HEURISTIC
     assert java_cov.test_synthesis == FeatureDepth.NONE
 

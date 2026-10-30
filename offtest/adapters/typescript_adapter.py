@@ -43,13 +43,13 @@ class TypeScriptAdapter(BaseLanguageAdapter):
     def get_coverage(self) -> LanguageCoverage:
         return LanguageCoverage(
             language="TypeScript / React",
-            symbols=FeatureDepth.SEMANTIC,
+            symbols=FeatureDepth.HEURISTIC,
             call_graph=FeatureDepth.HEURISTIC,
             reachability=FeatureDepth.HEURISTIC,
-            routes_and_auth=FeatureDepth.SEMANTIC,
-            taint_and_rules=FeatureDepth.SEMANTIC,
+            routes_and_auth=FeatureDepth.HEURISTIC,
+            taint_and_rules=FeatureDepth.HEURISTIC,
             test_synthesis=FeatureDepth.NONE,
-            notes="TypeScript compiler / AST parser for TS/JS/JSX/TSX; reachability produces unknown (never unreachable); non-Python findings capped at static-only",
+            notes="Python regex/lexical AST parser for TS/JS/JSX/TSX with pattern rules (not dataflow taint analysis); reachability produces heuristic/unknown (never unreachable); non-Python findings capped at static-only",
         )
 
     def index_file(self, rel_path: str, content: str, project_index: Any) -> None:
@@ -296,6 +296,7 @@ class TypeScriptAdapter(BaseLanguageAdapter):
                         callee_name=callee,
                         line_number=line_no,
                         is_dynamic=False,
+                        is_heuristic=True,
                     )
                 )
 

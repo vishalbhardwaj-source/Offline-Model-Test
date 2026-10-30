@@ -115,6 +115,21 @@ flowchart TD
 - **Host Credential Isolation:** Redirects `USERPROFILE`, `HOME`, and `APPDATA` to ephemeral sandbox folders, preventing untrusted scripts from reading `~/.ssh` or `~/.aws`.
 - **Windows Job Object Containment:** Native Windows Job Objects (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) ensure that on timeout or cancellation, all child processes are killed cleanly with zero orphans.
 
+#### 🛡️ Windows Sandbox Capabilities & Bare-Metal Boundaries
+To prevent security ambiguity, the Windows sandbox enforcement model is explicitly bounded:
+- **What the Windows Sandbox Isolates:**
+  1. *Process-Tree Containment:* Native Win32 Job Objects assign `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, ensuring all spawned child and grandchild processes are terminated on timeout or cancellation.
+  2. *Environment Variable Sanitization:* Child processes run with an explicit whitelist (`SAFE_ENV_WHITELIST`), stripping sensitive host environment variables (`AWS_*`, `GITHUB_*`, database URIs, API tokens).
+  3. *User Profile Redirection:* Environment variables `USERPROFILE`, `HOME`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, and `LOCALAPPDATA` are redirected to ephemeral temporary folders to shield `~/.ssh`, `~/.aws`, and user credentials.
+  4. *Python-Level Socket Guarding:* Injects `sitecustomize.py` to block Python standard library socket connections to external addresses.
+  5. *Offline Package Telemetry Sinkholing:* Disables package manager index lookups and analytics.
+- **What the Windows Sandbox DOES NOT Isolate (Bare-Metal Windows Gaps):**
+  1. *No Kernel Network Namespace:* Native executables, unpatched interpreters spawned with `-I -S` (which bypass `sitecustomize.py`), or direct Winsock APIs can access host network interfaces.
+  2. *No Filesystem chroot/Jail:* Process can read host files via absolute paths (e.g. `C:\Users\...`) permitted by standard Windows user DACLs.
+  3. *No User Privilege Boundary:* Child processes execute with the full privileges of the host user account.
+- **Fail-Closed Execution Policy:**
+  By default, all untrusted repository script execution and dynamic test execution **fail closed** on bare Windows and unisolated hosts (`CheckStatus.BLOCKED`, exit code 2). Project scripts will not run unless executed inside a verified container namespace (`docker run --network none ...`). The `--accept-no-kernel-isolation` override is strictly permitted for interactive developer diagnosis on throwaway VMs and is rejected in CI.
+
 ### 2. Offline Software Bill of Materials (SBOM)
 - Scans `requirements.txt`, `package.json`, `package-lock.json`, `poetry.lock`, and `Cargo.lock`.
 - Formats dependencies into CycloneDX 1.5-compatible offline component catalogs with license resolution and unpinned version alerts (`CWE-1357`).
@@ -144,9 +159,10 @@ Remediation priority is computed deterministically on a normalized 0.0 to 100.0 
 $$\text{Priority (0..100)} = \min\left(100.0, \text{Severity (100..5)} \times \text{Confidence (1.0..0.4)} \times \text{Evidence Multiplier (1.2..0.5)} \times \text{Reachability (1.0..0.2)} \times \text{Exposure (1.0..0.2)}\right)$$
 
 - **Reachability Factor:**
-  - `reachable` (**1.00**): Code symbol imported/called from an application entry point. Non-code findings (active secrets, Dockerfile policies) default to **1.00**.
-  - `unknown` (**0.70**): Dynamic imports, reflection, or incomplete call graph.
-  - `unreachable` (**0.20**): Provably dead code or unimported dependency package.
+  - `proven` (**1.00**): Code symbol has a proven semantic AST call path from an application entry point. Non-code findings (active secrets, Dockerfile policies) default to **1.00**. Triggers Critical Hard Override floor.
+  - `heuristic` (**1.00**): Code symbol reached via regex or lexical name matching from an entry point (e.g. TypeScript/React or Java lexical matches). Avoids the 0.20 unreachable discount, but does **not** trigger Critical Hard Override floors.
+  - `unknown` (**1.00** or **0.70**): Dynamic imports, reflection, dependency injection, or incomplete call graph.
+  - `unreachable` (**0.20**): Provably dead code (private unreferenced symbol with no project call sites).
 - **Exposure Factor:**
   - `public_unauth` (**1.00**): Internet-facing route without auth decorators or public CLI entry point.
   - `public_auth` (**0.75**): Authenticated user-facing route or tenant API.
@@ -156,11 +172,12 @@ $$\text{Priority (0..100)} = \min\left(100.0, \text{Severity (100..5)} \times \t
 #### Calibrated Worked Examples
 | Finding | Severity | Precision | Evidence | Reach | Exposure | Raw Score | Gate Outcome |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Critical, high-precision, static-only, mid reach, mid exposure** | 100 | 0.85 | 1.00 | 0.70 | 0.75 | **44.6** | **FAIL (Hard Override)** |
-| **Critical, test-confirmed, medium-precision, reachable, internal** | 100 | 0.65 | 1.20 | 1.00 | 0.50 | **39.0** | **FAIL (Hard Override)** |
-| **Medium, test-confirmed, reachable, public** | 40 | 1.00 | 1.20 | 1.00 | 1.00 | **48.0** | **FAIL (Score $\ge 45$)** |
-| **Same medium, static-only, reachable, public** | 40 | 1.00 | 1.00 | 1.00 | 1.00 | **40.0** | **PASS (Score $< 45$)** |
-| **Known-Exploited Vulnerability (CISA KEV)** | 40 | 0.85 | 1.00 | 0.20 | 0.50 | Floor **80.0** | **FAIL (Hard Override)** |
+| **Critical, high-precision, static-only, proven reach, mid exposure** | 100 | 0.85 | 1.00 | 1.00 (proven) | 0.50 | **42.5** | **FAIL (Hard Override Floor ≥ 90.0)** |
+| **Critical, high-precision, static-only, heuristic reach, mid exposure** | 100 | 0.85 | 1.00 | 1.00 (heuristic) | 0.50 | **42.5** | **PASS (Score < 45, Heuristic Edge Does Not Trigger Floor)** |
+| **Critical, test-confirmed, medium-precision, reachable, internal** | 100 | 0.65 | 1.20 | 1.00 | 0.50 | **39.0** | **FAIL (Hard Override Floor ≥ 90.0)** |
+| **Medium, test-confirmed, reachable, public** | 40 | 1.00 | 1.20 | 1.00 | 1.00 | **48.0** | **FAIL (Score ≥ 45.0)** |
+| **Same medium, static-only, reachable, public** | 40 | 1.00 | 1.00 | 1.00 | 1.00 | **40.0** | **PASS (Score < 45.0)** |
+| **Known-Exploited Vulnerability (CISA KEV)** | 40 | 0.85 | 1.00 | 0.20 | 0.50 | Floor **80.0** | **FAIL (Hard Override Floor ≥ 90.0)** |
 
 #### CI/CD Release Gate Decision Table with Hard Overrides
 The gate evaluates both numerical priority scores and **Hard Overrides** to prevent multiplicative shrinkage from bypassing genuine critical risks:
@@ -168,22 +185,35 @@ The gate evaluates both numerical priority scores and **Hard Overrides** to prev
 | Finding Type & Severity | Confidence & Evidence Level | Priority Score | Air-Gap Policy Breaches | Gate Decision | Rationale |
 | :--- | :--- | :---: | :---: | :---: | :--- |
 | `VULNERABILITY` / `SECRET` (Critical / High) | Confirmed (1.00), any verified level | Any | Any | **FAIL (Hard Override)** | Zero-tolerance for confirmed critical/high security risks |
-| Known-Exploited (CISA KEV) | Any | Any (Floor 80.0) | Any | **FAIL (Hard Override)** | Active in-the-wild exploitation weaponization |
-| Exposed Live Cloud Secret | Confirmed / Likely (`OT-SCR-001..003`) | Any | Any | **FAIL (Hard Override)** | Direct credential leak risk |
+| Proven Reachable Critical | Precision ≥ 0.85, Proven Reachability | Floor ≥ 90.0 | Any | **FAIL (Hard Override)** | Critical defect proven reachable from entry point |
+| Known-Exploited (CISA KEV) | Any affected/unknown component | Floor ≥ 90.0 | Any | **FAIL (Hard Override)** | Active in-the-wild exploitation weaponization |
+| Exposed Live Cloud Secret | Confirmed / Likely (`OT-SCR-001..003`) | Floor ≥ 90.0 | Any | **FAIL (Hard Override)** | Direct credential leak risk outside test fixtures |
 | `POLICY` (Air-gap boundary breach) | Confirmed (1.00) or Likely (0.85) | Any | `OT-POL-001..007` | **FAIL (Hard Override)** | Zero-tolerance air-gap isolation boundary violation |
 | `CORRECTNESS` (Syntax / Import crash) | Confirmed (1.00) | Any | Any | **FAIL (Hard Override)** | Broken application execution semantics |
-| `VULNERABILITY` (Medium/Low) | Confirmed or Likely | $\ge 45.0$ | None | **FAIL (Score-Based)** | High-exposure reachable flaw exceeding release threshold |
-| `MODEL_HYPOTHESIS` | Any | Capped $\le 25.0$ | None | **PASS** | Speculative AI hypothesis; requires symbolic verification |
-| `HYGIENE` / `SUPPLY_CHAIN` (Unpinned) | Any | $< 45.0$ | None | **PASS** | Maintenance/hygiene items do not block releases |
-| Clean Scan | None | $0.0$ | None | **PASS** | Clean verification ledger |
+| `VULNERABILITY` (Medium/Low) | Confirmed or Likely | ≥ 45.0 | None | **FAIL (Score-Based)** | High-exposure reachable flaw exceeding release threshold |
+| `MODEL_HYPOTHESIS` | Any | Capped ≤ 25.0 | None | **PASS** | Speculative AI hypothesis; requires symbolic verification |
+| `HYGIENE` / `SUPPLY_CHAIN` (Unpinned) | Any (Warn Rules) | < 45.0 | None | **PASS** | Maintenance/hygiene items do not block releases |
+| Clean Scan | None | 0.0 | None | **PASS** | Clean verification ledger |
 
+- **Unified Gate Model (Rule-Level vs Score-Based):**
+  * `gate=False` (Warn): The rule is purely advisory (e.g. hygiene rules `OT-HYG-*`, CSRF `OT-SEC-030`, CORS `OT-SEC-035`, missing Helmet `OT-SEC-034`, unpinned dependencies `OT-SUP-001`). Findings under these rules NEVER block the CI release gate, regardless of their priority score.
+  * `gate=True` (Block Candidate): Eligible to block the CI release gate if it triggers a Hard Override OR its calibrated priority score satisfies $\text{Priority} \ge 45.0$. A static-only High with imperfect confidence or lower exposure that scores $< 45.0$ and lacks a Hard Override will NOT block.
+- **Entropy-Only Cap:** Findings detected solely by high Shannon entropy without provider-specific syntax or keyword context are capped at confidence `POSSIBLE` (0.40) and max priority score `35.0` (below the 45.0 blocking threshold).
+- **Exit Status Taxonomy:**
+  * `0`: Clean / Passed (No blocking security, policy, or correctness defects).
+  * `1`: Failed (Blocking security defect, air-gap breach, or correctness flaw found in user code).
+  * `2`: `ANALYSIS_INCOMPLETE` (Harness, internal synthesis crash, or execution refused due to missing isolation; strictly separated from defects in user code).
 - **Top Score Tie-Breakers:** Findings capped at `100.0` break ties in remediation punch-lists by: `1st:` Intrinsic Severity (Critical > High > Medium), `2nd:` Exposure (Public Unauth > Public Auth > Internal), `3rd:` Confidence / Rule Precision.
 - **Uniform Root-Cause Deduplication:** Findings sharing the same underlying cause use the uniform notation `{file}:{rule}:{parent}`. For cross-file shared helpers, findings cluster by `{origin_file}:{rule}:{helper_func}` with all cross-file call sites attached as SARIF `relatedLocations`. Line-independent `partialFingerprints["logicalLocationKey"]` ensure baseline diffing stability across edits.
 
-### 4. Source-to-Sink Taint Engine & SARIF CodeFlows
-- **Supported Languages & Scope:** Full Python AST expression dataflow and JS/TS regex dataflow.
-- **Untrusted Sources:** HTTP query params (`request.args`), JSON request bodies (`request.json`, `request.get_json()`), form data (`request.form`), headers, and route path parameters (`<user_id>`).
-- **Dangerous Sinks:** System command execution (`os.system`, `subprocess.Popen`, `subprocess.run`), SQL queries (`cursor.execute`, `.raw()`), dynamic evaluation (`eval`, `exec`), and path traversal (`open()`, `shutil`).
+### 4. Source-to-Sink Taint Engine & Analysis Depth Reality
+- **Parser & Analysis Depth Disclosures:**
+  * **Python:** Full semantic Python AST expression dataflow, symbol tables (`symtable`), and cross-file AST taint analysis (`SEMANTIC` depth across all axes).
+  * **TypeScript / React:** Python-based regex and lexical component parser with pattern rules (`HEURISTIC` depth for symbols, reachability, and rules). Non-Python findings capped at `static-only`. Does not perform full JVM or V8 semantic dataflow taint analysis.
+  * **Java / Spring Boot:** Python-based lexical and regex symbol & annotation visitor (reimplementation, not native JVM JavaParser binding) with Spring pattern rules (`HEURISTIC` depth). Spring DI beans treated as unknown/heuristic reachability.
+  * **Go & Rust:** Parsed for offline SBOM dependency extraction (`go.mod`, `Cargo.lock`), but currently have **no language analyzers or rule adapters**.
+- **Untrusted Sources (Python):** HTTP query params (`request.args`), JSON request bodies (`request.json`, `request.get_json()`), form data (`request.form`), headers, and route path parameters (`<user_id>`).
+- **Dangerous Sinks (Python):** System command execution (`os.system`, `subprocess.Popen`, `subprocess.run`), SQL queries (`cursor.execute`, `.raw()`), dynamic evaluation (`eval`, `exec`), and path traversal (`open()`, `shutil`).
 - **Recognized Sanitizers:** Defensive wrappers (`shlex.quote()`, parameterized DB tuples, `yaml.SafeLoader`).
 - **SARIF CodeFlow Generation:** Emits full OASIS SARIF v2.1.0 `codeFlows` containing thread flow locations tracing data movement from source input to final sink.
 
@@ -192,17 +222,48 @@ The gate evaluates both numerical priority scores and **Hard Overrides** to prev
 - Evaluates dependency reachability via cross-file import call graphs to assign OpenVEX status:
   - `affected`: The vulnerable package is imported and referenced in live application code.
   - `not_affected`: The package is merely present in lockfiles but dead/unreferenced.
-- **CISA KEV Score Integration:** Known-exploited CVEs trigger a floor priority score of **80.0** and invoke a mandatory Gate Hard Override.
+- **CISA KEV Score Integration:** Known-exploited CVEs trigger a floor priority score of **80.0** and invoke a mandatory Gate Hard Override (priority floor ≥ 90.0).
 - **Staleness Guard Policy:** If the offline advisory snapshot exceeds `ADVISORY_STALENESS_THRESHOLD_DAYS` (90 days):
   - Standard mode: Emits warning finding `OT-SUP-006` with an executive audit warning.
   - Strict mode (`--strict-policy`): Halts the build with a CI Gate Fail.
 
-### 6. Expanded Access Control, Auth & Infrastructure Governance
-All expanded rules are fully mapped within the canonical rule catalog (`OT-001..025`):
-- **Function-Level vs. Object-Level Authorization:**
-  - `OT-SEC-012` (Unauthenticated Route): Missing authentication on state-changing endpoints (`CWE-306`).
-  - `OT-SEC-013` (Object-Level / IDOR): Direct database lookup using user-supplied keys without tenant/user ownership checks (`CWE-639`).
-  - `OT-SEC-014` (Function-Level / PrivEsc): Administrative routes (`/admin/*`, `/manage/*`) lacking role checks (`CWE-862`).
+### 6. Canonical Rule Registry (64 Rules Across 6 Domains)
+The canonical rule catalog contains **64 rules** organized with distinct functional domain prefixes, eliminating rule ID collisions:
+- **Security Vulnerability Rules (`OT-SEC-001..035` - 35 rules):**
+  * `OT-SEC-001..011`: Core injection and execution vulnerabilities (Command injection, SQLi, SSRF, XSS, Path traversal, Insecure deserialization).
+  * `OT-SEC-012`: Unauthenticated mutating route (`CWE-306`).
+  * `OT-SEC-013`: Object-Level Auth / IDOR (`CWE-639`).
+  * `OT-SEC-014`: Function-Level Auth / PrivEsc (`CWE-862`).
+  * `OT-SEC-015`: Permissive CORS with credentials.
+  * `OT-SEC-016..020`: Mass assignment (`CWE-915`), Insecure JWT (`CWE-345`), Missing CSRF (`CWE-352`), Rate limiting (`CWE-307`), Cryptographic misuse (`CWE-327`).
+  * `OT-SEC-021..026`: JavaScript prototype pollution (`CWE-1321`), Axios SSRF (`CWE-918`), React XSS (`CWE-79`), Browser-facing secret leak (`CWE-526`), PostMessage origin (`CWE-346`), Node fs path traversal (`CWE-22`).
+  * `OT-SEC-027..028`: Java SQLi (`CWE-89`), Java XXE (`CWE-611`).
+  * `OT-SEC-029`: Missing method-level security on Spring controller (`CWE-862`), verified with SecurityFilterChain config-level check.
+  * `OT-SEC-030`: CSRF protection disabled in Spring Security (`CWE-352`, Warn).
+  * `OT-SEC-031`: Hardcoded credentials in Spring configuration (`CWE-798`), ignoring placeholders (`${...}`) and changeme.
+  * `OT-SEC-032..034`: Node NoSQL injection (`CWE-943`), Node child_process (`CWE-78`), Missing Helmet security headers (`CWE-693`, Warn).
+  * `OT-SEC-035`: Permissive Spring CORS with credentials (`CWE-942`, Warn).
+- **Air-Gap Policy Rules (`OT-POL-001..007` - 7 rules):**
+  * Network socket calls (`OT-POL-002`), External URL references (`OT-POL-001`), Unpinned base images (`OT-POL-003`), Telemetry (`OT-POL-004`), Root user (`OT-POL-005`), Mutable GitHub Action refs (`OT-POL-006`), Privileged containers (`OT-POL-007`).
+- **Secret Exposure Rules (`OT-SCR-001..004` - 4 rules):**
+  * AWS keys (`OT-SCR-001`), Generic API keys (`OT-SCR-002`), Private keys (`OT-SCR-003`), High-entropy tokens (`OT-SCR-004`).
+- **Software Supply Chain Rules (`OT-SUP-001..006` - 6 rules):**
+  * Unpinned dependencies (`OT-SUP-001`), Typosquatting (`OT-SUP-002`), Known vulnerabilities (`OT-SUP-003`), VEX reachability (`OT-SUP-004`), Copyleft licenses (`OT-SUP-005`), Stale advisories (`OT-SUP-006`).
+- **Hygiene Rules (`OT-HYG-001..008` - 8 rules):**
+  * Debug flags (`OT-HYG-001`), Production assert (`OT-HYG-002`), Broad exceptions (`OT-HYG-003`), Print debugging (`OT-HYG-004`), Unused imports (`OT-HYG-005`), Dead code (`OT-HYG-006`), Sensitive logging (`OT-HYG-007`), Insecure tempfiles (`OT-HYG-008`).
+- **Code Correctness Rules (`OT-COR-001..004` - 4 rules):**
+  * Syntax errors (`OT-COR-001`), Undefined variables (`OT-COR-002`), Zero division (`OT-COR-003`), Incompatible types (`OT-COR-004`).
+
+### 7. Implementation Status of External Review Changes (Changes 1 to 6)
+
+| Change | Specification Item | Status | Verification & Evidence |
+| :---: | :--- | :---: | :--- |
+| **Change 1** | File Filtering, Value-Only Entropy, `.d.ts` Skipping & Comments | **Done** | `tests/test_scanner_changes_review.py` verifies value-only Shannon entropy, comments down-weighted to POSSIBLE/Informational, `.d.ts` excluded. |
+| **Change 2** | Three-State Reachability & Proven vs Heuristic Split | **Done** | `offtest/core/project_index.py` & `offtest/core/models.py`: Proven edges trigger Hard Override Floor ≥ 90.0; Heuristic edges avoid 0.20 discount but do not trigger floor. |
+| **Change 3** | Symbol Resolution via symtable & Dead Code Verification | **Done** | `offtest/checks/static_checks.py` & `project_index.py`: Dead code flagged only on private, unreferenced, non-decorated symbols via symtable scoping. |
+| **Change 4** | Route Auth Detection (`Depends`, decorators) & `--app-tier` | **Done** | `offtest/checks/static_checks.py`: Detects FastAPI `Depends`, Flask `@login_required`, Spring config filter chains; propagates `--app-tier` to exposure. |
+| **Change 5** | Gate Hard Overrides Floor, Entropy Cap & `ANALYSIS_INCOMPLETE` | **Done** | `offtest/checks/planner.py`: Floor ≥ 90.0 on Hard Overrides; entropy-only capped at 35.0 (non-blocking); exit code 2 on analysis incomplete. |
+| **Change 6** | Regression Fixtures & "Must Still Flag" Ground Truth | **Done** | `tests/test_scanner_changes_review.py`: Verified against named test fixtures (Page 8 regression suite, `test_planted_issues.py`, `test_multi_language_adapters.py`). |
 - **Application Security Controls:**
   - `OT-SEC-015`: Permissive CORS wildcard origins (`*`) configured simultaneously with credential sharing.
   - `OT-SEC-016`: Mass assignment / unbounded request body unpacking (`**request.json`) into model constructors (`CWE-915`).
@@ -273,11 +334,13 @@ Perform multi-run repeat sampling ($N \ge 3$) to detect and quarantine non-deter
 python -m offtest assess "C:\path\to\your\project" --detect-flaky
 ```
 
-#### Approve Script Execution on Bare Host
-By default, untrusted scripts are blocked from running on bare metal. To permit local test suite execution:
+#### Approve Script Execution on Bare Host (Developer Diagnostic Mode Only)
+By default, untrusted scripts and test suites are blocked from running on bare metal (fail-closed). To run local project test suites on a bare host without container isolation:
 ```powershell
 python -m offtest assess "C:\path\to\your\project" --allow-scripts --accept-no-kernel-isolation
 ```
+> [!CAUTION]
+> **Host Isolation Boundary Warning:** Passing `--allow-scripts --accept-no-kernel-isolation` permits target repository test code to execute directly on the host machine. While environment variables and profiles are scrubbed, bare-metal OS execution does not provide kernel network namespace or chroot filesystem isolation. This mode is restricted to interactive local developer diagnosis in throwaway VMs and is strictly refused in automated CI environments. In CI, run inside a verified container (`docker run --network none ...`).
 
 #### Save Reports to a Dedicated Folder
 Specify custom output directories matching your project:

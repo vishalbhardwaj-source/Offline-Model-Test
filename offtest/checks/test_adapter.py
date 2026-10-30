@@ -16,14 +16,43 @@ def _detect_pytest_version() -> str:
 class TestAdapter:
     __test__ = False
 
-    def __init__(self, repo_dir: Path, files: List[FileRecord], allow_scripts: bool = False):
+    def __init__(
+        self,
+        repo_dir: Path,
+        files: List[FileRecord],
+        allow_scripts: bool = False,
+        accept_no_kernel_isolation: bool = False,
+    ):
         self.repo_dir = repo_dir
         self.files = files
         self.allow_scripts = allow_scripts
+        self.accept_no_kernel_isolation = accept_no_kernel_isolation
         self.runner = IsolatedRunner(self.repo_dir)
 
     def discover_and_run(self) -> List[CheckResult]:
         results: List[CheckResult] = []
+
+        if self.allow_scripts and not self.accept_no_kernel_isolation:
+            from offtest.checks.isolated_runner import verify_kernel_sandbox_environment
+            is_iso, diag = verify_kernel_sandbox_environment(self.repo_dir)
+            if not is_iso:
+                return [
+                    CheckResult(
+                        tool_name="test-adapter",
+                        tool_version="0.1.0",
+                        check_name="Untrusted Test Suite Execution",
+                        check_type="unit_test",
+                        command="test suite execution",
+                        exit_code=2,
+                        duration_sec=0.0,
+                        stdout="",
+                        stderr="",
+                        status=CheckStatus.BLOCKED,
+                        execution_status="Blocked",
+                        gate_outcome="Blocked",
+                        skip_or_blocked_reason=f"Script execution Refused (Fail-Closed): Host does not provide kernel sandbox isolation ({diag}). Hardened container environment is required.",
+                    )
+                ]
 
         test_files = [f for f in self.files if f.category == "test"]
         has_python_tests = any(f.language == "Python" for f in test_files)

@@ -40,13 +40,13 @@ class JavaAdapter(BaseLanguageAdapter):
     def get_coverage(self) -> LanguageCoverage:
         return LanguageCoverage(
             language="Java / Spring",
-            symbols=FeatureDepth.SEMANTIC,
+            symbols=FeatureDepth.HEURISTIC,
             call_graph=FeatureDepth.HEURISTIC,
             reachability=FeatureDepth.HEURISTIC,
-            routes_and_auth=FeatureDepth.SEMANTIC,
-            taint_and_rules=FeatureDepth.SEMANTIC,
+            routes_and_auth=FeatureDepth.HEURISTIC,
+            taint_and_rules=FeatureDepth.HEURISTIC,
             test_synthesis=FeatureDepth.NONE,
-            notes="JavaParser-compatible symbol & annotation analyzer; Spring DI beans treated as unknown (never unreachable); non-Python findings capped at static-only",
+            notes="Python-based lexical/regex symbol & annotation visitor (reimplementation, not direct JavaParser JVM binding) with pattern rules (not dataflow taint analysis); Spring DI beans treated as unknown/heuristic; non-Python findings capped at static-only",
         )
 
     def index_file(self, rel_path: str, content: str, project_index: Any) -> None:
@@ -142,6 +142,7 @@ class JavaAdapter(BaseLanguageAdapter):
                         callee_name=callee,
                         line_number=line_no,
                         is_dynamic=False,
+                        is_heuristic=True,
                     )
                 )
 
@@ -269,17 +270,30 @@ class JavaAdapter(BaseLanguageAdapter):
                 clean_l = line.strip()
                 if clean_l.startswith("#") or not clean_l:
                     continue
-                # Match hard-coded password/secret assignment without ${...} placeholder
+                # Ignore environment variable placeholders and references such as ${DB_PASSWORD}
+                if "${" in clean_l:
+                    continue
+                # Match hard-coded password/secret assignment
                 prop_m = re.search(
-                    r"""(?:password|secret|api[_-]?key|token)\s*[:=]\s*(['"]?)([^'"\s${}]+)\1""",
+                    r"""(?:password|secret|api[_-]?key|token)\s*[:=]\s*(['"]?)([^'"\s#]+)\1""",
                     clean_l,
                     re.IGNORECASE,
                 )
                 if prop_m:
-                    val = prop_m.group(2)
-                    if len(val) >= 4 and not any(
-                        ph in val.lower() for ph in ("todo", "placeholder", "xxx", "change_me", "changeme")
-                    ):
+                    val = prop_m.group(2).strip()
+                    val_lower = val.lower()
+                    exact_placeholders = {
+                        "password", "secret", "changeme", "change_me", "admin", "guest",
+                        "default", "null", "none", "dummy", "test", "example", "placeholder",
+                        "todo", "xxx", "root", "false", "true",
+                    }
+                    substr_placeholders = {"changeme", "change_me", "placeholder", "todo", "replace_me"}
+                    is_placeholder = (
+                        (val_lower in exact_placeholders)
+                        or any(s in val_lower for s in substr_placeholders)
+                        or val.startswith(("@", "$", "{"))
+                    )
+                    if len(val) >= 4 and not is_placeholder:
                         findings.append(
                             make_finding(
                                 RULES["OT-SEC-031"],
@@ -356,7 +370,19 @@ class JavaAdapter(BaseLanguageAdapter):
                     )
 
         # 5. Missing Method-Level Security on Spring Controller State-Changing Endpoints
-        if "@RestController" in content or "@Controller" in content:
+        # (Check if project-level SecurityFilterChain configures URL-level authorization rules)
+        has_config_level_auth = False
+        if project_index:
+            for p_file, p_content in getattr(project_index, "_content_cache", {}).items():
+                if p_file.endswith(".java") and any(
+                    kw in p_content
+                    for kw in ("SecurityFilterChain", "WebSecurityConfigurerAdapter", "authorizeHttpRequests", "authorizeRequests")
+                ):
+                    if any(sec in p_content for sec in ("authenticated()", "hasRole", "hasAuthority", "denyAll")):
+                        has_config_level_auth = True
+                        break
+
+        if not has_config_level_auth and ("@RestController" in content or "@Controller" in content):
             state_mapping_pattern = re.compile(
                 r"""((?:@\w+(?:\(.*?\))?\s+)*)@(PostMapping|PutMapping|DeleteMapping|PatchMapping)""",
                 re.MULTILINE,
@@ -376,7 +402,7 @@ class JavaAdapter(BaseLanguageAdapter):
                             line=line_no,
                             file_sha256=f_sha,
                             branch=branch,
-                            evidence=f"Line {line_no}: State-changing Spring @{mapping_name} endpoint lacks method-level authorization annotation (@PreAuthorize, @Secured, @RolesAllowed).",
+                            evidence=f"Line {line_no}: State-changing Spring @{mapping_name} endpoint lacks method-level authorization annotation (@PreAuthorize, @Secured, @RolesAllowed) and URL-level authorization filter.",
                         )
                     )
 
@@ -398,12 +424,12 @@ class JavaAdapter(BaseLanguageAdapter):
             elif "setAllowedOrigins" in line and "*" in line and "allowCredentials" in content:
                 findings.append(
                     make_finding(
-                        RULES["OT-SEC-030"],
+                        RULES["OT-SEC-035"],
                         path=rel_path,
                         line=idx,
                         file_sha256=f_sha,
                         branch=branch,
-                        evidence=f"Line {idx}: Permissive Spring CORS configuration with wildcard origin: {line.strip()}",
+                        evidence=f"Line {idx}: Permissive Spring CORS configuration with wildcard origin and credentials: {line.strip()}",
                     )
                 )
 

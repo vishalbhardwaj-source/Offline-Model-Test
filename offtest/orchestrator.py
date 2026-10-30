@@ -155,6 +155,7 @@ class AssessmentOrchestrator:
             target_dir,
             files,
             allow_scripts=self.allow_scripts,
+            accept_no_kernel_isolation=self.accept_no_kernel_isolation,
             project_index=project_index,
             app_tier=self.app_tier,
         )

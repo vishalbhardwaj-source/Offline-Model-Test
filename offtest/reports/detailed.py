@@ -103,6 +103,9 @@ class DetailedReportGenerator:
                 notes = cov_dict.get("notes") or ""
                 lines.append(f"| **{lang_l}** | `{sym_d}` | `{cg_d}` | `{reach_d}` | `{ra_d}` | `{tr_d}` | `{ts_d}` | {notes} |")
 
+            # Document Go and Rust status: SBOM dependency parsing supported, but no language adapters
+            lines.append("| **Go & Rust** | `none` | `none` | `none` | `none` | `none` | `none` | Parsed for offline SBOM dependency extraction (go.mod, Cargo.lock); no language rule adapters |")
+
             # Check if any discovered repo language has no semantic findings
             discovered_langs = set(self.ctx.inventory_summary.languages.keys())
             finding_paths = {f.file_path for f in findings if f.file_path}
@@ -149,9 +152,9 @@ class DetailedReportGenerator:
                 if af.language == "Python":
                     analyzer = "Python AST Validator & Security AST Visitor"
                 elif af.language in ("JavaScript", "TypeScript", "JavaScript (JSX)", "TypeScript (TSX)"):
-                    analyzer = "TypeScript / React AST & Component Security Adapter"
+                    analyzer = "TypeScript / React AST & Component Security Adapter (Lexical/Pattern)"
                 elif af.language == "Java":
-                    analyzer = "Java / Spring Boot Parser & Bean Security Adapter"
+                    analyzer = "Java / Spring Boot Parser & Bean Security Adapter (Lexical/Pattern)"
                 elif af.language == "Properties":
                     analyzer = "Spring Properties Configuration Security Inspector"
                 elif af.language == "HTML":

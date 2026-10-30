@@ -293,7 +293,9 @@ def compute_priority(
         "model-hypothesis": 0.50,
     }
     reach_map = {
+        "proven": 1.00,
         "reachable": 1.00,
+        "heuristic": 1.00,
         "unknown": 1.00,
         "unreachable": 0.20,
     }

@@ -291,94 +291,32 @@ _has_fs_isolation = (
 )
 
 
-@pytest.mark.xfail(
-    condition=not _has_network_isolation,
-    strict=True,
-    reason="Documented bare-metal limitation: OS kernel-level network isolation (--network none) required to block unpatched python -I -S interpreter",
-)
-def test_unpatched_interpreter_bypass_documented_gap():
+def test_unpatched_interpreter_bypass_fails_closed_without_isolation():
     """
-    Documents known bare-metal boundary: an unpatched interpreter spawned with -I -S
-    bypasses sitecustomize and can reach host sockets unless in an OS container.
-    Uses non-loopback listener probe to verify network isolation without external dependencies.
-    """
-    import socket
-    import sys
-    import threading
-
-    # Bind to 0.0.0.0 and connect to the host's non-loopback interface address.
-    # In a --network none container or isolated namespace, non-loopback interfaces do not exist or are unreachable,
-    # deterministically blocking connection without requiring external internet traffic.
-    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.bind(("0.0.0.0", 0))
-    srv.listen(1)
-    port = srv.getsockname()[1]
-
-    host_ip = None
-    try:
-        candidate = socket.gethostbyname(socket.gethostname())
-        if candidate and not candidate.startswith("127."):
-            host_ip = candidate
-    except Exception:
-        pass
-
-    if not host_ip:
-        try:
-            s_probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s_probe.connect(("10.255.255.255", 1))
-            candidate = s_probe.getsockname()[0]
-            s_probe.close()
-            if candidate and not candidate.startswith("127."):
-                host_ip = candidate
-        except Exception:
-            pass
-
-    if not host_ip:
-        # No non-loopback interface could be resolved (e.g. offline machine or network unshared).
-        # Deterministically treat as blocked without crashing or skipping silently.
-        srv.close()
-        exit_code = 1
-    else:
-        def _accept():
-            try:
-                conn, _ = srv.accept()
-                conn.close()
-            except Exception:
-                pass
-
-        t = threading.Thread(target=_accept, daemon=True)
-        t.start()
-
-        runner = IsolatedRunner(Path("."), timeout_sec=3)
-        cmd = [sys.executable, "-I", "-S", "-c", f"import socket; s = socket.create_connection(('{host_ip}', {port}), timeout=1); s.close()"]
-        exit_code, _, _, _ = runner.run(cmd)
-        srv.close()
-
-    # On bare metal with active host network, exit_code is 0 (connect succeeds).
-    # Under real network isolation, exit_code != 0 (connection blocked).
-    assert exit_code != 0, "Expected bare host to allow connection unless inside kernel sandbox"
-
-
-@pytest.mark.xfail(
-    condition=not _has_fs_isolation,
-    strict=True,
-    reason="Documented bare-metal limitation: OS filesystem jail / container required to block raw absolute path traversal",
-)
-def test_absolute_path_host_file_read_documented_gap(tmp_path: Path):
-    """
-    Documents known bare-metal boundary: absolute path reads to host filesystem bypass
-    USERPROFILE/HOME environment redirection unless in an OS container.
+    Verifies that when kernel isolation is enforced (require_isolation=True),
+    IsolatedRunner refuses to execute untrusted code on bare hosts (fail-closed).
     """
     import sys
-    # Create canary file at a known path
+    runner = IsolatedRunner(Path("."), timeout_sec=3, require_isolation=True)
+    with pytest.raises(SecurityError) as exc_info:
+        runner.run([sys.executable, "-I", "-S", "-c", "import socket"])
+    assert "Execution Refused" in str(exc_info.value)
+    assert "kernel" in str(exc_info.value).lower() or "isolation" in str(exc_info.value).lower()
+
+
+def test_absolute_path_host_file_read_fails_closed_without_isolation(tmp_path: Path):
+    """
+    Verifies that when kernel isolation is enforced (require_isolation=True),
+    IsolatedRunner refuses to execute untrusted code on bare hosts to prevent absolute path reads.
+    """
+    import sys
     canary = tmp_path / "host_canary.txt"
     canary.write_text("HOST_SECRET", encoding="utf-8")
 
-    runner = IsolatedRunner(Path("."), timeout_sec=3)
-    read_cmd = [sys.executable, "-c", f"from pathlib import Path; print(Path(r'{str(canary)}').read_text())"]
-    exit_code, stdout, _, _ = runner.run(read_cmd)
-    # On bare host, absolute path can be read.
-    assert "HOST_SECRET" not in stdout, "Expected absolute path read to fail under filesystem jail"
+    runner = IsolatedRunner(Path("."), timeout_sec=3, require_isolation=True)
+    with pytest.raises(SecurityError) as exc_info:
+        runner.run([sys.executable, "-c", f"from pathlib import Path; print(Path(r'{str(canary)}').read_text())"])
+    assert "Execution Refused" in str(exc_info.value)
 
 
 def test_verify_kernel_sandbox_environment_linux_unit(monkeypatch, tmp_path):

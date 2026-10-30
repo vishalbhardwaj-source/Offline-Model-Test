@@ -42,6 +42,7 @@ class CallEdge:
     callee_name: str
     line_number: int
     is_dynamic: bool = False  # getattr, __all__, locals(), globals()
+    is_heuristic: bool = False  # True for lexical/regex matching, False for semantic AST resolution
 
 
 @dataclass
@@ -88,7 +89,10 @@ class ProjectIndex:
 
         # Call Graph adjacencies
         self.adjacency: Dict[str, Set[str]] = {}  # caller_key -> set(callee_keys)
+        self.proven_adjacency: Dict[str, Set[str]] = {}  # caller_key -> set(callee_keys) (semantic AST edges only)
         self.reachable_symbols: Set[str] = set()
+        self.proven_reachable_symbols: Set[str] = set()
+        self.heuristic_reachable_symbols: Set[str] = set()
         self.unreachable_symbols: List[SymbolDef] = []
 
         # Run the full single-pass parse and index
@@ -534,10 +538,13 @@ class ProjectIndex:
     def _resolve_call_graph(self):
         """
         Connects caller symbols to target callee symbols across the project.
+        Maintains both full adjacency (including heuristic edges) and proven adjacency (AST only).
         """
         for edge in self.call_edges:
             caller_key = f"{edge.caller_file}::{edge.caller_symbol}" if edge.caller_symbol else f"{edge.caller_file}::__top__"
             self.adjacency.setdefault(caller_key, set())
+            if not getattr(edge, "is_heuristic", False):
+                self.proven_adjacency.setdefault(caller_key, set())
 
             # Find matching callee definitions
             # 1. First priority: symbol in same file
@@ -554,15 +561,33 @@ class ProjectIndex:
 
             for mk in matched_keys:
                 self.adjacency[caller_key].add(mk)
+                if not getattr(edge, "is_heuristic", False):
+                    self.proven_adjacency[caller_key].add(mk)
 
     def _compute_reachability(self):
         """
         Runs BFS from all identified entry points to compute the reachable subgraph.
+        Split into:
+        - proven_reachable_symbols: proven semantic AST edges from an entry point.
+        - heuristic_reachable_symbols: reachability derived from regex/lexical name matching.
         Three-state reachability model:
-        - reachable: proven edge from an entry point.
+        - proven / reachable: proven edge from an entry point (triggers Critical Hard Override floor).
+        - heuristic: regex/lexical edge from an entry point (avoids unreachable discount, but does not trigger floor).
         - unknown: no edge found, no proof of absence (default).
         - unreachable: positive evidence of a private symbol with zero references across project.
         """
+        # 1. Proven BFS (AST semantic edges only)
+        proven_queue = list(self.entry_points)
+        proven_visited = set(self.entry_points)
+        while proven_queue:
+            curr = proven_queue.pop(0)
+            for neighbor in self.proven_adjacency.get(curr, set()):
+                if neighbor not in proven_visited:
+                    proven_visited.add(neighbor)
+                    proven_queue.append(neighbor)
+        self.proven_reachable_symbols = proven_visited
+
+        # 2. Full BFS (including heuristic edges from TS/Java adapters)
         queue = list(self.entry_points)
         visited = set(self.entry_points)
 
@@ -574,6 +599,7 @@ class ProjectIndex:
                     queue.append(neighbor)
 
         self.reachable_symbols = visited
+        self.heuristic_reachable_symbols = visited - proven_visited
 
         all_referenced = set(self.dynamic_names) | set(self.exported_names) | self.all_loaded_names
 
