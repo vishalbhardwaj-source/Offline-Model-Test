@@ -13,6 +13,7 @@ from offtest.core.models import (
     BranchDiffRecord,
     BranchRecord,
     CheckResult,
+    CheckStatus,
     Finding,
     RunContext,
 )
