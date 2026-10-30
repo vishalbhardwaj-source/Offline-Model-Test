@@ -820,6 +820,8 @@ def make_finding(
     suppressed: bool = False,
     suppression_reason: Optional[str] = None,
     root_cause_cluster: Optional[str] = None,
+    cisa_kev: bool = False,
+    epss_score: Optional[float] = None,
 ) -> Finding:
     """
     Unified factory for creating deterministic, schema-validated Finding instances.
@@ -859,12 +861,19 @@ def make_finding(
             cvss_score = rule.cvss_score
             cvss_vector = rule.cvss_vector
 
+    # For non-code findings (secrets), default reachability is 1.00 if active/unspecified
+    eff_reachability = reachability
+    if rule.category == FindingCategory.SECRET and reachability == "unknown":
+        eff_reachability = "reachable"
+
     priority = compute_priority(
         eff_severity,
         eff_confidence,
-        reachability=reachability,
+        reachability=eff_reachability,
         exposure=exposure,
         evidence_level=evidence_level,
+        cisa_kev=cisa_kev,
+        epss_score=epss_score,
     )
 
     return Finding(
@@ -898,11 +907,13 @@ def make_finding(
         asvs_chapter=rule.asvs_chapter,
         evidence_level=evidence_level,
         exposure=exposure,
-        reachability=reachability,
+        reachability=eff_reachability,
         priority_score=priority,
         fingerprint=fingerprint,
         partial_fingerprints=partial_fps,
         suppressed=suppressed,
         suppression_reason=suppression_reason,
         root_cause_cluster=root_cause_cluster,
+        cisa_kev=cisa_kev,
+        epss_score=epss_score,
     )

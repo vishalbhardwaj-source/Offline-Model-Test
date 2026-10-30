@@ -308,6 +308,8 @@ class OfflineAdvisoryMatcher:
                         exposure="internal",
                         check_tool="offline-advisory-matcher",
                         override_title=f"Vulnerable Dependency: {comp.name} < {adv['fixed_version']} ({adv['cve']})",
+                        cisa_kev=cisa_kev,
+                        epss_score=epss_score,
                     )
                     # Preserve advisory specific CWE if provided
                     if adv.get("cwe_id"):

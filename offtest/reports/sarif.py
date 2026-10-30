@@ -82,6 +82,9 @@ class SARIFReportGenerator:
                     "secondaryCwes": getattr(f, "cwe_secondary_ids", []),
                     "oracleSatisfied": getattr(f, "oracle_satisfied", False),
                     "oracleOrigin": getattr(f, "oracle_origin", None),
+                    "flakyTestObserved": getattr(f, "flaky_test_observed", False),
+                    "cisaKev": getattr(f, "cisa_kev", False),
+                    "epssScore": getattr(f, "epss_score", None),
                 },
             }
 

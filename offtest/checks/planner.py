@@ -124,19 +124,28 @@ class CheckPlanner:
         _static_elapsed = time.perf_counter() - _static_start
         findings.extend(static_findings)
 
-        # Gate evaluation based on Category, Severity, Confidence, and Priority (0-100 scale):
-        # 1. Blocking security defects: VULNERABILITY or SECRET with Priority >= 45.0
-        #    (or Critical/High with Confirmed/Likely confidence, excluding model-hypothesis).
+        # Gate evaluation based on Category, Severity, Confidence, Priority (0-100 scale), and Hard Overrides:
+        # 1. Blocking security defects:
+        #    - Score-based: VULNERABILITY or SECRET with Priority >= 45.0 (excluding model-hypothesis)
+        #    - Hard Overrides (independent of multiplicative factors):
+        #      * Confirmed Critical or High defect (Severity in CRITICAL/HIGH and Confidence == CONFIRMED)
+        #      * Known-Exploited Vulnerability (cisa_kev == True)
+        #      * Verified live exposed cloud/auth secret (OT-SCR-001..003 with Confidence != POSSIBLE)
         #    Suppressed findings never block the gate.
         blocking_security = [
             f for f in static_findings
-            if getattr(f, "category", FindingCategory.VULNERABILITY) in (FindingCategory.VULNERABILITY, FindingCategory.SECRET)
+            if getattr(f, "category", FindingCategory.VULNERABILITY) in (FindingCategory.VULNERABILITY, FindingCategory.SECRET, FindingCategory.SUPPLY_CHAIN)
             and not getattr(f, "suppressed", False)
             and getattr(f, "evidence_level", "") != "model-hypothesis"
             and (
                 (getattr(f, "priority_score", 0.0) >= 45.0)
                 or (
                     f.severity in (Severity.CRITICAL, Severity.HIGH)
+                    and f.confidence in (Confidence.CONFIRMED, Confidence.LIKELY)
+                )
+                or getattr(f, "cisa_kev", False)
+                or (
+                    f.rule_id in ("OT-SCR-001", "OT-SCR-002", "OT-SCR-003")
                     and f.confidence in (Confidence.CONFIRMED, Confidence.LIKELY)
                 )
             )
@@ -297,9 +306,16 @@ def calibrate_findings_with_test_results(
                 f.confidence = Confidence.POSSIBLE
 
         # 2. Check if related to flaky test
+        # Flaky test handling: non-demoting!
+        # Do NOT demote finding below static-only baseline priority. Revert evidence_level to static-only
+        # and annotate with flaky_test_observed flag.
         if any(f.file_path in qid or fname in qid for qid in quarantined_ids):
-            f.evidence_level = "flaky-test"
-            f.confidence = Confidence.POSSIBLE
+            f.flaky_test_observed = True
+            f.evidence_level = "static-only"
+            if f.context is None:
+                f.context = {}
+            f.context["flaky_test_observed"] = True
+            f.context["flaky_test_note"] = "Associated test exhibited non-deterministic execution in quarantine"
 
         # Recompute priority with updated certainty on 0-100 normalized scale
         f.priority_score = compute_priority(
@@ -308,6 +324,8 @@ def calibrate_findings_with_test_results(
             evidence_level=f.evidence_level,
             reachability=f.reachability,
             exposure=f.exposure,
+            cisa_kev=getattr(f, "cisa_kev", False),
+            epss_score=getattr(f, "epss_score", None),
         )
 
     return findings

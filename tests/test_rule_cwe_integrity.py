@@ -51,25 +51,33 @@ def test_access_control_cwe_specificity():
 
 def test_normalized_priority_scale():
     """Verify normalized 0-100 priority score calculations and bounds."""
-    # High severity, Confirmed, Static-only, Reachable, Public: 70 * 1.0 * 0.8 * 1.0 * 1.0 = 56.0
+    # High severity, Confirmed, Static-only, Reachable, Public: 70 * 1.0 * 1.0 * 1.0 * 1.0 = 70.0
     p1 = compute_priority(Severity.HIGH, Confidence.CONFIRMED, evidence_level="static-only", reachability="reachable", exposure="public_unauth")
-    assert p1 == 56.0
+    assert p1 == 70.0
 
-    # High severity, Likely, Static-only, Reachable, Public: 70 * 0.85 * 0.8 * 1.0 * 1.0 = 47.6
+    # High severity, Likely, Static-only, Reachable, Public: 70 * 0.85 * 1.0 * 1.0 * 1.0 = 59.5
     p2 = compute_priority(Severity.HIGH, Confidence.LIKELY, evidence_level="static-only", reachability="reachable", exposure="public_unauth")
-    assert p2 == 47.6
+    assert p2 == 59.5
 
-    # Medium severity, Confirmed, Static-only, Reachable, Public: 40 * 1.0 * 0.8 * 1.0 * 1.0 = 32.0
+    # Medium severity, Confirmed, Static-only, Reachable, Public: 40 * 1.0 * 1.0 * 1.0 * 1.0 = 40.0
     p3 = compute_priority(Severity.MEDIUM, Confidence.CONFIRMED, evidence_level="static-only", reachability="reachable", exposure="public_unauth")
-    assert p3 == 32.0
+    assert p3 == 40.0
 
-    # Unreachable Critical internal: 100 * 1.0 * 0.8 * 0.2 * 0.5 = 8.0
+    # Unreachable Critical internal: 100 * 1.0 * 1.0 * 0.2 * 0.5 = 10.0
     p4 = compute_priority(Severity.CRITICAL, Confidence.CONFIRMED, evidence_level="static-only", reachability="unreachable", exposure="internal")
-    assert p4 == 8.0
+    assert p4 == 10.0
 
     # Model hypothesis is strictly capped at 25.0
     p5 = compute_priority(Severity.CRITICAL, Confidence.CONFIRMED, evidence_level="model-hypothesis", reachability="reachable", exposure="public_unauth")
     assert p5 <= 25.0
+
+    # CISA KEV floor override sets priority to at least 80.0
+    p_kev = compute_priority(Severity.MEDIUM, Confidence.LOW, evidence_level="static-only", reachability="unreachable", exposure="internal", cisa_kev=True)
+    assert p_kev >= 80.0
+
+    # Flaky test does not demote below static-only (1.00)
+    p_flaky = compute_priority(Severity.HIGH, Confidence.CONFIRMED, evidence_level="flaky-test", reachability="reachable", exposure="public_unauth")
+    assert p_flaky == 70.0
 
 
 def test_line_independent_fingerprint():
@@ -81,12 +89,45 @@ def test_line_independent_fingerprint():
     assert f1.partial_fingerprints["logicalLocationKey"] == f2.partial_fingerprints["logicalLocationKey"]
 
 
+def test_gate_hard_overrides():
+    """Verify that Gate Hard Overrides catch Critical/High/KEV/Secrets regardless of score."""
+    from offtest.checks.planner import CheckPlanner
+    from offtest.core.models import FileDisposition, FileRecord
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        # Create unreferenced internal script with a dynamic eval issue
+        p = tmp_path / "helper.py"
+        p.write_text("x = input()\neval(x)", encoding="utf-8")
+        files = [
+            FileRecord(
+                path="helper.py",
+                size_bytes=len(p.read_bytes()),
+                sha256="h1",
+                language="Python",
+                category="source",
+                disposition=FileDisposition.ANALYZED,
+                disposition_reason="Source",
+            )
+        ]
+        planner = CheckPlanner(tmp_path, files)
+        results, findings = planner.execute_all()
+
+        # Helper dynamic eval finding has Severity=HIGH, Confidence=LIKELY -> must block gate
+        eval_f = next(f for f in findings if f.rule_id == "OT-SEC-001")
+        assert eval_f.severity == Severity.HIGH
+        stat_result = next(r for r in results if r.tool_name == "offtest-static-scanner")
+        assert stat_result.gate_outcome == "Fail"
+
+
 def test_deduplicate_and_cluster():
     """Verify dedup consolidates multiple occurrences and attaches secondary relatedLocations."""
     f_high = make_finding(RULES["OT-SEC-001"], file_path="api/helpers.py", line_number=10, evidence="eval(a)", severity=Severity.HIGH)
     f_low = make_finding(RULES["OT-SEC-001"], file_path="api/helpers.py", line_number=30, evidence="eval(b)", severity=Severity.MEDIUM)
 
-    # Set same cluster
+    # Set same cluster notation {file}:{rule}:{parent}
     f_high.root_cause_cluster = "api/helpers.py:OT-SEC-001:helper_func"
     f_low.root_cause_cluster = "api/helpers.py:OT-SEC-001:helper_func"
 

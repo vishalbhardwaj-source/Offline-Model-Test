@@ -299,21 +299,21 @@ def test_4_axis_categorization_and_priority_calculation():
     assert eval_rule.asvs_chapter == "V5 Validation, Sanitization and Encoding"
 
     # Make finding and check dynamic priority score calculation on normalized 0-100 scale:
-    # High (70) * Likely (0.85) * static-only (0.80) * reachable (1.0) * public_unauth (1.0) = 47.6
+    # High (70) * Likely (0.85) * static-only (1.00) * reachable (1.0) * public_unauth (1.0) = 59.5
     p_high_reach = compute_priority(
         Severity.HIGH, Confidence.LIKELY, evidence_level="static-only", reachability="reachable", exposure="public_unauth"
     )
-    assert p_high_reach == 47.6
+    assert p_high_reach == 59.5
 
-    # High (70) * Likely (0.85) * static-only (0.80) * unreachable (0.2) * internal (0.5) = 4.8
+    # High (70) * Likely (0.85) * static-only (1.00) * unreachable (0.2) * internal (0.5) = 6.0
     p_unreach = compute_priority(
         Severity.HIGH, Confidence.LIKELY, evidence_level="static-only", reachability="unreachable", exposure="internal"
     )
-    assert p_unreach == 4.8
+    assert p_unreach == 6.0
     assert p_high_reach > p_unreach
 
     # Test finding creation with new fields
-    # OT-SEC-001 default_confidence is LIKELY (0.85): 70 * 0.85 * 0.8 * 1.0 * 1.0 = 47.6
+    # OT-SEC-001 default_confidence is LIKELY (0.85): 70 * 0.85 * 1.0 * 1.0 * 1.0 = 59.5
     finding = make_finding(
         eval_rule,
         path="src/calc.py",
@@ -324,7 +324,7 @@ def test_4_axis_categorization_and_priority_calculation():
     )
     assert finding.owasp_category == "A03:2021-Injection"
     assert finding.asvs_chapter == "V5 Validation, Sanitization and Encoding"
-    assert finding.priority_score == 47.6
+    assert finding.priority_score == 59.5
     assert finding.exposure == "public_unauth"
     assert finding.reachability == "reachable"
 

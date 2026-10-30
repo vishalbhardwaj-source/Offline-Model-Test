@@ -205,6 +205,9 @@ class Finding(BaseModel):
     related_locations: List[Dict[str, Any]] = Field(default_factory=list)
     partial_fingerprints: Dict[str, str] = Field(default_factory=dict)
     oracle_satisfied: bool = False
+    flaky_test_observed: bool = False
+    cisa_kev: bool = False
+    epss_score: Optional[float] = None
 
 
 def compute_priority(
@@ -213,6 +216,8 @@ def compute_priority(
     reachability: str = "unknown",
     exposure: str = "internal",
     evidence_level: str = "static-only",
+    cisa_kev: bool = False,
+    epss_score: Optional[float] = None,
 ) -> float:
     """
     Computes a benchmark-calibrated Priority Score normalized to 0.0 - 100.0:
@@ -221,9 +226,23 @@ def compute_priority(
     Calibrated Precision Scales:
     - Severity Weight: Critical (100.0), High (70.0), Medium (40.0), Low (20.0), Informational (5.0)
     - Confidence (Rule Precision): Confirmed (1.00), High/Likely (0.85), Medium (0.65), Low/Possible (0.40)
-    - Evidence Level Multiplier: test-confirmed (1.20), reachable (1.00), static-only (0.80), model-hypothesis (0.50 capped)
-    - Reachability Factor: reachable (1.00), unknown (0.70), unreachable (0.20)
-    - Exposure Factor: public_unauth (1.00), public_auth (0.75), internal (0.50), test_fixture (0.20)
+    - Evidence Level Multiplier (Orthogonal verification pedigree, no double-counting with Reachability):
+      * test-confirmed: 1.20 (exploit oracle satisfied in dynamic test execution)
+      * static-only: 1.00 (deterministic AST or pattern verification baseline)
+      * model-hypothesis: 0.50 (unverified neural synthesis, strictly capped at 25.0)
+      (Note: flaky-test no longer demotes; findings retain static-only 1.00 with a flaky annotation)
+    - Reachability Factor:
+      * reachable: 1.00 (called/imported from entry point)
+      * unknown / non-code default (secrets, configs): 0.70 (or 1.00 for active secrets)
+      * unreachable: 0.20 (dead code or unreferenced package)
+    - Exposure Factor:
+      * public_unauth: 1.00 (unauthenticated internet-facing route/CLI)
+      * public_auth: 0.75 (authenticated user-facing route)
+      * internal: 0.50 (internal backend service or config)
+      * test_fixture: 0.20 (test mock or fixture)
+
+    Hard Floor Overrides:
+    - Known Exploited Vulnerability (CISA KEV): sets floor priority at 80.0 (instant gate failure).
     """
     sev_map = {
         Severity.CRITICAL: 100.0,
@@ -240,11 +259,13 @@ def compute_priority(
         Confidence.LOW: 0.40,
         Confidence.POSSIBLE: 0.40,
     }
+    # Orthogonal evidence pedigree: reachability is NOT double-counted here.
+    # Flaky tests do NOT demote below static-only (1.00).
     ev_map = {
         "test-confirmed": 1.20,
-        "reachable": 1.00,
-        "static-only": 0.80,
-        "flaky-test": 0.60,
+        "static-only": 1.00,
+        "reachable": 1.00,  # Legacy alias fallback
+        "flaky-test": 1.00,   # Non-demoting: retains baseline with annotation
         "model-hypothesis": 0.50,
     }
     reach_map = {
@@ -260,10 +281,14 @@ def compute_priority(
     }
     s = sev_map.get(severity, 40.0)
     c = conf_map.get(confidence, 0.65)
-    ev = ev_map.get(evidence_level, 0.80)
+    ev = ev_map.get(evidence_level, 1.00)
     r = reach_map.get(reachability, 0.70)
     e = expo_map.get(exposure, 0.50)
     raw = s * c * ev * r * e
+
+    if cisa_kev:
+        raw = max(raw, 80.0)
+
     if evidence_level == "model-hypothesis":
         return min(25.0, round(raw, 1))
     return min(100.0, round(raw, 1))
@@ -272,31 +297,61 @@ def compute_priority(
 def deduplicate_and_cluster_findings(findings: List[Finding]) -> List[Finding]:
     """
     Deduplicates findings using the hierarchical cluster key:
-    `{file}:{rule_id}:{parent_symbol}`
-    - Consolidates multiple occurrences within the same enclosing AST function/class
-      into a single primary representative (the one with highest priority score).
+    `{file}:{rule}:{parent}` (uniform notation across all reports, cards, and diagrams).
+    - If a shared utility helper causes the same flaw across call sites, clusters by
+      `{origin_file}:{rule}:{helper_func}`.
+    - Consolidates multiple occurrences into a single primary representative
+      (the one with highest priority score; ties broken by severity then exposure).
     - Attaches secondary occurrences to the primary finding as `related_locations`
       (formatted for SARIF relatedLocations).
     - Preserves logicalLocationKey partial fingerprints independent of line numbers.
     """
+    sev_rank = {
+        Severity.CRITICAL: 5,
+        Severity.HIGH: 4,
+        Severity.MEDIUM: 3,
+        Severity.LOW: 2,
+        Severity.INFORMATIONAL: 1,
+    }
+    expo_rank = {
+        "public_unauth": 4,
+        "public_auth": 3,
+        "internal": 2,
+        "test_fixture": 1,
+    }
+
     clusters: Dict[str, List[Finding]] = {}
     for f in findings:
         # Determine parent scope from context or fallback
         parent = "global"
+        origin_file = str(f.file_path or "UNKNOWN").replace("\\", "/")
         if f.context and f.context.get("parent_scope"):
             parent = f.context["parent_scope"]
+        elif f.context and f.context.get("helper_func"):
+            parent = f.context["helper_func"]
+            if f.context.get("origin_file"):
+                origin_file = str(f.context["origin_file"]).replace("\\", "/")
         elif f.root_cause_cluster and "::" in f.root_cause_cluster:
             parent = f.root_cause_cluster.split("::")[-1]
 
-        file_key = str(f.file_path or "UNKNOWN").replace("\\", "/")
         rule_key = f.rule_id or "GENERAL"
-        key = f"{file_key}:{rule_key}:{parent}"
+        key = f"{origin_file}:{rule_key}:{parent}"
         clusters.setdefault(key, []).append(f)
 
     deduplicated: List[Finding] = []
     for key, group in clusters.items():
-        # Sort group by priority_score descending
-        group.sort(key=lambda item: getattr(item, "priority_score", 0.0), reverse=True)
+        # Sort group with explicit tie-breakers:
+        # 1. priority_score descending
+        # 2. severity rank descending
+        # 3. exposure rank descending
+        group.sort(
+            key=lambda item: (
+                getattr(item, "priority_score", 0.0),
+                sev_rank.get(item.severity, 0),
+                expo_rank.get(getattr(item, "exposure", "internal"), 0),
+            ),
+            reverse=True,
+        )
         primary = group[0]
 
         # Attach other occurrences as related_locations

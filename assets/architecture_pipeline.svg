@@ -46,8 +46,8 @@
   <!-- Formula Callout Banner -->
   <rect x="80" y="92" width="1280" height="54" rx="10" fill="#0f172a" stroke="#334155" stroke-width="1.5" filter="url(#shadow)"/>
   <text x="100" y="124" fill="#38bdf8" font-size="13" font-weight="bold">PRIORITY FORMULA (0–100):</text>
-  <text x="280" y="124" fill="#f1f5f9" font-size="12" font-family="monospace">min(100, Sev(100/70/40/20/5) × Conf(1.0/0.85/0.65/0.4) × Evid(1.2/1.0/0.8/0.6/0.5) × Reach(1.0/0.7/0.2) × Expo(1.0/0.75/0.5/0.2))</text>
-  <text x="1230" y="124" fill="#a78bfa" font-size="12" font-weight="600">DEDUP: FILE:RULE:PARENT</text>
+  <text x="280" y="124" fill="#f1f5f9" font-size="12" font-family="monospace">min(100, Sev(100..5) × Conf(1.0..0.4) × Evid(1.2/1.0/0.5) × Reach(1.0/0.7/0.2) × Expo(1.0..0.2)) + Hard Overrides</text>
+  <text x="1225" y="124" fill="#a78bfa" font-size="11.5" font-weight="600">DEDUP: {file}:{rule}:{parent}</text>
 
   <!-- ================= PHASE 1: Intake & Advisory ================= -->
   <g transform="translate(50, 165)" filter="url(#shadow)">
@@ -138,11 +138,11 @@
     <text x="15" y="66" fill="#f8fafc" font-size="12" font-weight="600">1. Asymmetric Exploit Feedback</text>
     <text x="25" y="84" fill="#34d399" font-size="10">• Exploit Oracle Satisfied → 'test-confirmed' (1.2x)</text>
     <text x="25" y="98" fill="#94a3b8" font-size="10">• Non-confirmation does NOT demote static rules</text>
-    <text x="25" y="112" fill="#fbbf24" font-size="10">• Flaky test (quarantined) → tags 'flaky-test' (0.6x)</text>
+    <text x="25" y="112" fill="#fbbf24" font-size="10">• Flaky test → non-demoting (flaky_test_observed)</text>
     
-    <text x="15" y="136" fill="#f8fafc" font-size="12" font-weight="600">2. Normalized 0–100 Priority Scoring</text>
-    <text x="25" y="154" fill="#94a3b8" font-size="10">Sev(100..5) × Conf(1.0..0.4) × Evid × Reach × Expo</text>
-    <text x="25" y="168" fill="#94a3b8" font-size="10">Model-hypothesis capped at 25 (never fails gate)</text>
+    <text x="15" y="136" fill="#f8fafc" font-size="12" font-weight="600">2. Priority Scoring &amp; Hard Overrides</text>
+    <text x="25" y="154" fill="#94a3b8" font-size="10">Sev(100..5) × Conf(1.0..0.4) × Evid(1.2/1.0) × R × E</text>
+    <text x="25" y="168" fill="#94a3b8" font-size="10">Hard Overrides: Confirmed Crit/High, KEV, Secrets</text>
     
     <text x="15" y="194" fill="#f8fafc" font-size="12" font-weight="600">3. SARIF Root-Cause Deduplication</text>
     <text x="25" y="212" fill="#94a3b8" font-size="10">Cluster: {file}:{rule}:{parent} + relatedLocations</text>
@@ -247,9 +247,9 @@
     <g transform="translate(970, 42)">
       <rect width="345" height="108" rx="6" fill="#111827" stroke="#1f2937"/>
       <text x="15" y="22" fill="#f8fafc" font-size="12.5" font-weight="bold">Axis 4: Evidence Level Multiplier</text>
-      <text x="15" y="40" fill="#94a3b8" font-size="11">Verification pedigree hierarchy multiplier</text>
-      <text x="15" y="58" fill="#64748b" font-size="10.5">• test-confirmed (1.20x)  • reachable (1.00x)</text>
-      <text x="15" y="74" fill="#64748b" font-size="10.5">• static-only (0.80x)     • flaky-test (0.60x)</text>
+      <text x="15" y="40" fill="#94a3b8" font-size="11">Orthogonal verification pedigree</text>
+      <text x="15" y="58" fill="#64748b" font-size="10.5">• test-confirmed (1.20x: exploit oracle satisfied)</text>
+      <text x="15" y="74" fill="#64748b" font-size="10.5">• static-only (1.00x: AST / pattern baseline)</text>
       <text x="15" y="90" fill="#64748b" font-size="10.5">• model-hypothesis (0.50x, cap 25.0, no gate fail)</text>
     </g>
   </g>

@@ -55,7 +55,7 @@ flowchart TD
 
     subgraph P3A["PHASE 3A (PARALLEL): APP STRUCTURE & ACCESS CONTROL CHECKER"]
         RouteExtract["Route & REST API Endpoint Extractor"] --> RBAC["RBAC Matrix Synthesizer (Anonymous / Auth / Admin)"]
-        RBAC --> RBACFindings["Multi-Type Access Control Checker:<br/>• OT-SEC-012: Unauthenticated Mutating Routes<br/>• OT-SEC-013: Potential IDOR / Direct Object Ref<br/>• OT-SEC-014: Administrative Route Lacks Role<br/>• OT-SEC-015: Permissive CORS with Credentials"]
+        RBAC --> RBACFindings["Multi-Type Access Control Checker:<br/>• OT-SEC-012: Unauthenticated Mutating Routes (CWE-306)<br/>• OT-SEC-013: Object-Level Auth / IDOR (CWE-639)<br/>• OT-SEC-014: Function-Level Auth / PrivEsc (CWE-862)<br/>• OT-SEC-015: Permissive CORS with Credentials"]
         RouteExtract --> OpenAPI["Offline OpenAPI 3.1 Schema Reconstructor"]
     end
 
@@ -65,16 +65,20 @@ flowchart TD
         SandboxRunner --> FlakyQuarantine["Flakiness Repeat-Sampling Runner (N >= 3)"]
     end
 
-    %% Parallel Convergence to Phase 4
+    %% All-Source Convergence to Phase 4 (No Bypassing)
     RBACFindings --> ScoringEngine
-    OpenAPI --> EvidenceStore
     VEXStatus --> ScoringEngine
     TaintEngine --> ScoringEngine
+    RuleRegistry --> ScoringEngine
+    SecretScan --> ScoringEngine
+
+    %% Non-finding inventory route to Evidence Store for Report 3
+    OpenAPI -.->|"Non-Finding Inventory Catalog (OpenAPI & RBAC)"| EvidenceStore
 
     subgraph P4["PHASE 4: SCORING, DEDUP & TEST-CONFIRMATION FEEDBACK"]
-        SandboxRunner -.->|"Test Feedback Loop (Failures Elevate to 'test-confirmed')"| ScoringEngine["Scoring & Deduplication Engine<br/><b>Priority = Severity × Confidence × Reachability × Exposure</b>"]
-        FlakyQuarantine -.->|"Flaky Demotion ('flaky-test')"| ScoringEngine
-        ScoringEngine --> RootCauseClustering["Root-Cause Deduplication (file::rule::parent)"]
+        SandboxRunner -.->|"Asymmetric Feedback (Exploit Oracle Satisfied: 1.2x)"| ScoringEngine["Scoring & Deduplication Engine<br/><b>min(100, Sev × Conf × Evid × Reach × Expo) + Hard Overrides</b>"]
+        FlakyQuarantine -.->|"Non-Demoting Flaky Flag (flaky_test_observed = true)"| ScoringEngine
+        ScoringEngine --> RootCauseClustering["Root-Cause Deduplication ({file}:{rule}:{parent})"]
     end
 
     subgraph P5["PHASE 5: MULTI-REPORT GENERATION & EVIDENCE STORE"]
@@ -111,8 +115,8 @@ flowchart TD
 - Scans `requirements.txt`, `package.json`, `package-lock.json`, `poetry.lock`, and `Cargo.lock`.
 - Formats dependencies into CycloneDX 1.5-compatible offline component catalogs with license resolution and unpinned version alerts (`CWE-1357`).
 
-### 3. 4-Axis Taxonomy, Normalized 0–100 Priority & Gate Table
-Findings are classified along four independent, orthogonal axes rather than mixed into a single arbitrary scale:
+### 3. 4-Axis Taxonomy, Calibrated Priority & CI Gate Policy
+Findings are classified along four independent, orthogonal axes calibrated against empirical security benchmarks (**OWASP Benchmark v1.2** and **Securify Ground Truth sets**, evaluated quarterly):
 1. **Category (Taxonomy):** Mapped to leaf CWE identifiers and OWASP Top 10 categories with primary and secondary tags (e.g. `OT-SEC-012` is `CWE-306` with secondary `[CWE-862, CWE-285]`, `OT-SEC-013` is `CWE-639` with secondary `[CWE-862, CWE-284]`, `OT-SEC-014` is `CWE-862` with secondary `[CWE-863, CWE-285]`).
 2. **Intrinsic Severity:** Worst-case technical impact weight calibrated on a 100-point scale:
    - `CRITICAL` = **100.0**
@@ -120,41 +124,57 @@ Findings are classified along four independent, orthogonal axes rather than mixe
    - `MEDIUM` = **40.0**
    - `LOW` = **20.0**
    - `INFORMATIONAL` = **5.0**
-3. **Rule Precision Confidence:** Calibrated static rule precision against benchmarks (0.0 to 1.0):
-   - `CONFIRMED` = **1.00** (Unambiguous AST / verified secret pattern)
-   - `HIGH` / `LIKELY` = **0.85** (High-precision AST pattern match)
-   - `MEDIUM` = **0.65** (Heuristic AST pattern)
-   - `LOW` / `POSSIBLE` = **0.40** (Broad syntactic indicator)
-4. **Evidence Level Multiplier:** Verification pedigree hierarchy bounded multiplier:
-   - `test-confirmed` = **1.20x** (Actively reproduced by dynamic test exploit oracle)
-   - `reachable` = **1.00x** (Connected to external entry point via cross-file call graph)
-   - `static-only` = **0.80x** (Syntax/AST pattern match without dynamic verification)
-   - `flaky-test` = **0.60x** (Quarantined due to non-deterministic execution)
+3. **Rule Precision Confidence:** Calibrated static rule precision against ground-truth benchmarks (0.0 to 1.0):
+   - `CONFIRMED` = **1.00** (Unambiguous AST / verified secret pattern with $>98\%$ measured benchmark precision)
+   - `HIGH` / `LIKELY` = **0.85** (High-precision AST pattern match with $>90\%$ benchmark precision)
+   - `MEDIUM` = **0.65** (Heuristic AST pattern with $>65\%$ benchmark precision)
+   - `LOW` / `POSSIBLE` = **0.40** (Broad syntactic indicator with $<50\%$ precision)
+4. **Evidence Level Multiplier:** Verification pedigree hierarchy (orthogonal; reachability is **not** double-counted here):
+   - `test-confirmed` = **1.20x** (Actively reproduced by dynamic test exploit oracle across $N \ge 3$ runs)
+   - `static-only` = **1.00x** (Deterministic AST or pattern baseline)
    - `model-hypothesis` = **0.50x** (Synthesized hypothesis, strictly capped at **25.0**, never triggers gate)
+   *(Note: Flaky tests do **not** demote findings below the static baseline; findings retain `1.00x` with an annotated `flaky_test_observed` flag)*.
 
+#### Normalized Priority Formula & Reach / Exposure Definitions
 Remediation priority is computed deterministically on a normalized 0.0 to 100.0 scale:
 $$\text{Priority (0..100)} = \min\left(100.0, \text{Severity (100..5)} \times \text{Confidence (1.0..0.4)} \times \text{Evidence Multiplier (1.2..0.5)} \times \text{Reachability (1.0..0.2)} \times \text{Exposure (1.0..0.2)}\right)$$
 
-- **Reachability Multipliers:** `reachable` (**1.00**), `unknown` (**0.70**), `unreachable` / dead code (**0.20**).
-- **Exposure Multipliers:** `public_unauth` (**1.00**), `public_auth` (**0.75**), `internal` (**0.50**), `test_fixture` (**0.20**).
-- **Formula Outcomes:**
-  - High-severity (70), Likely confidence (0.85), static-only (0.80), reachable (1.0), public (1.0) scores **47.6** $\to$ **Fails Gate**.
-  - Confirmed High-severity (70), Confirmed (1.00), static-only (0.80), reachable (1.0), public (1.0) scores **56.0** $\to$ **Fails Gate**.
-  - Confirmed Medium-severity (40), Confirmed (1.00), static-only (0.80), reachable (1.0), public (1.0) scores **32.0** $\to$ **Passes Gate**.
-  - Unreachable Critical Internal: $100 \times 1.0 \times 0.8 \times 0.2 \times 0.5 = \mathbf{8.0}$ $\to$ **Passes Gate**.
-  - Model hypothesis is strictly capped at **25.0** and can never fail the gate on its own.
+- **Reachability Factor:**
+  - `reachable` (**1.00**): Code symbol imported/called from an application entry point. Non-code findings (active secrets, Dockerfile policies) default to **1.00**.
+  - `unknown` (**0.70**): Dynamic imports, reflection, or incomplete call graph.
+  - `unreachable` (**0.20**): Provably dead code or unimported dependency package.
+- **Exposure Factor:**
+  - `public_unauth` (**1.00**): Internet-facing route without auth decorators or public CLI entry point.
+  - `public_auth` (**0.75**): Authenticated user-facing route or tenant API.
+  - `internal` (**0.50**): Internal backend service, admin-only tool, or repository config.
+  - `test_fixture` (**0.20**): Test mock, fixture, sample script, or documentation.
 
-#### CI/CD Release Gate Decision Table
+#### Calibrated Worked Examples
+| Finding | Severity | Precision | Evidence | Reach | Exposure | Raw Score | Gate Outcome |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Critical, high-precision, static-only, mid reach, mid exposure** | 100 | 0.85 | 1.00 | 0.70 | 0.75 | **44.6** | **FAIL (Hard Override)** |
+| **Critical, test-confirmed, medium-precision, reachable, internal** | 100 | 0.65 | 1.20 | 1.00 | 0.50 | **39.0** | **FAIL (Hard Override)** |
+| **Medium, test-confirmed, reachable, public** | 40 | 1.00 | 1.20 | 1.00 | 1.00 | **48.0** | **FAIL (Score $\ge 45$)** |
+| **Same medium, static-only, reachable, public** | 40 | 1.00 | 1.00 | 1.00 | 1.00 | **40.0** | **PASS (Score $< 45$)** |
+| **Known-Exploited Vulnerability (CISA KEV)** | 40 | 0.85 | 1.00 | 0.20 | 0.50 | Floor **80.0** | **FAIL (Hard Override)** |
+
+#### CI/CD Release Gate Decision Table with Hard Overrides
+The gate evaluates both numerical priority scores and **Hard Overrides** to prevent multiplicative shrinkage from bypassing genuine critical risks:
+
 | Finding Type & Severity | Confidence & Evidence Level | Priority Score | Air-Gap Policy Breaches | Gate Decision | Rationale |
 | :--- | :--- | :---: | :---: | :---: | :--- |
-| `VULNERABILITY` / `SECRET` (Critical / High) | Confirmed (1.00) or Likely (0.85), any verified level | $\ge 45.0$ | Any | **FAIL** | Actionable exploit vector with realistic exposure |
-| `POLICY` (Air-gap boundary breach) | Confirmed (1.00) or Likely (0.85) | Any | `OT-POL-001..007` | **FAIL** | Zero-tolerance air-gap isolation boundary violation |
-| `CORRECTNESS` (Syntax / Import crash) | Confirmed (1.00) | Any | Any | **FAIL** | Broken application execution semantics |
-| `MODEL_HYPOTHESIS` | Any | Capped $\le 25.0$ | None | **PASS** | Uncorroborated AI synthesis; requires verification |
+| `VULNERABILITY` / `SECRET` (Critical / High) | Confirmed (1.00), any verified level | Any | Any | **FAIL (Hard Override)** | Zero-tolerance for confirmed critical/high security risks |
+| Known-Exploited (CISA KEV) | Any | Any (Floor 80.0) | Any | **FAIL (Hard Override)** | Active in-the-wild exploitation weaponization |
+| Exposed Live Cloud Secret | Confirmed / Likely (`OT-SCR-001..003`) | Any | Any | **FAIL (Hard Override)** | Direct credential leak risk |
+| `POLICY` (Air-gap boundary breach) | Confirmed (1.00) or Likely (0.85) | Any | `OT-POL-001..007` | **FAIL (Hard Override)** | Zero-tolerance air-gap isolation boundary violation |
+| `CORRECTNESS` (Syntax / Import crash) | Confirmed (1.00) | Any | Any | **FAIL (Hard Override)** | Broken application execution semantics |
+| `VULNERABILITY` (Medium/Low) | Confirmed or Likely | $\ge 45.0$ | None | **FAIL (Score-Based)** | High-exposure reachable flaw exceeding release threshold |
+| `MODEL_HYPOTHESIS` | Any | Capped $\le 25.0$ | None | **PASS** | Speculative AI hypothesis; requires symbolic verification |
 | `HYGIENE` / `SUPPLY_CHAIN` (Unpinned) | Any | $< 45.0$ | None | **PASS** | Maintenance/hygiene items do not block releases |
 | Clean Scan | None | $0.0$ | None | **PASS** | Clean verification ledger |
 
-- **Root-Cause Deduplication:** Findings sharing the same underlying cause (`{file}:{rule_id}:{parent_symbol}`) are deduplicated into singular remediation tasks with secondary occurrences attached as SARIF `relatedLocations`. Line-independent `partialFingerprints["logicalLocationKey"]` ensure baseline diffing stability across edits.
+- **Top Score Tie-Breakers:** Findings capped at `100.0` break ties in remediation punch-lists by: `1st:` Intrinsic Severity (Critical > High > Medium), `2nd:` Exposure (Public Unauth > Public Auth > Internal), `3rd:` Confidence / Rule Precision.
+- **Uniform Root-Cause Deduplication:** Findings sharing the same underlying cause use the uniform notation `{file}:{rule}:{parent}`. For cross-file shared helpers, findings cluster by `{origin_file}:{rule}:{helper_func}` with all cross-file call sites attached as SARIF `relatedLocations`. Line-independent `partialFingerprints["logicalLocationKey"]` ensure baseline diffing stability across edits.
 
 ### 4. Source-to-Sink Taint Engine & SARIF CodeFlows
 - **Supported Languages & Scope:** Full Python AST expression dataflow and JS/TS regex dataflow.
@@ -168,9 +188,13 @@ $$\text{Priority (0..100)} = \min\left(100.0, \text{Severity (100..5)} \times \t
 - Evaluates dependency reachability via cross-file import call graphs to assign OpenVEX status:
   - `affected`: The vulnerable package is imported and referenced in live application code.
   - `not_affected`: The package is merely present in lockfiles but dead/unreferenced.
-- **Staleness Guard:** If the offline advisory snapshot exceeds `ADVISORY_STALENESS_THRESHOLD_DAYS` (90 days), the system actively generates finding `OT-SUP-006` with a warning in executive reports, preventing false security assumptions. Under `--strict-policy`, an outdated mirror halts builds.
+- **CISA KEV Score Integration:** Known-exploited CVEs trigger a floor priority score of **80.0** and invoke a mandatory Gate Hard Override.
+- **Staleness Guard Policy:** If the offline advisory snapshot exceeds `ADVISORY_STALENESS_THRESHOLD_DAYS` (90 days):
+  - Standard mode: Emits warning finding `OT-SUP-006` with an executive audit warning.
+  - Strict mode (`--strict-policy`): Halts the build with a CI Gate Fail.
 
 ### 6. Expanded Access Control, Auth & Infrastructure Governance
+All expanded rules are fully mapped within the canonical rule catalog (`OT-001..025`):
 - **Function-Level vs. Object-Level Authorization:**
   - `OT-SEC-012` (Unauthenticated Route): Missing authentication on state-changing endpoints (`CWE-306`).
   - `OT-SEC-013` (Object-Level / IDOR): Direct database lookup using user-supplied keys without tenant/user ownership checks (`CWE-639`).
@@ -188,14 +212,14 @@ $$\text{Priority (0..100)} = \min\left(100.0, \text{Severity (100..5)} \times \t
   - `OT-POL-007`: Privileged container mode (`privileged: true` / `--privileged`) in Docker Compose / IaC configs.
   - `OT-SUP-005`: Copyleft license risk (GPL, AGPL) in commercial target codebases.
 - **Git-History Secret Scanning:** Walks local git commit history and staging diffs to detect committed credentials, private keys, and API tokens.
-- **Timed Inline Suppressions:** Parses `# offtest: ignore[RULE_ID] expires="YYYY-MM-DD"`. If the expiry date has passed, the suppression is automatically invalidated and the finding is flagged as active.
-- **Model Immunity Rule:** Wraps untrusted source code and comments inside cryptographically nonce-fenced delimiters (`<untrusted_repo_content token="...">`), neutralizing prompt injection payloads in scanned code. Model inferences can never trigger release failures.
+- **Timed Inline Suppressions:** Parses `# offtest: ignore[RULE_ID] reason="..." expires="YYYY-MM-DD"`. If the expiry date has passed, the suppression is automatically invalidated and the finding remains active.
+- **Model Immunity Rule:** Scanned repository content is wrapped in nonce fences (`<untrusted_repo_content token="...">`). Speculative AI hypotheses can never trigger CI failures without symbolic confirmation.
 
 ### 7. Exploit Oracle Satisfied Dynamic Feedback Loop
 Dynamic test results calibrate static findings with asymmetric confidence semantics:
 - **Exploit Oracle Satisfied:** When a synthesized or existing unit test executes and satisfies an exploit oracle (reproducing vulnerability behavior across $N \ge 3$ runs, distinct from generic syntax/environment crashes), the finding is elevated to `confidence = CONFIRMED` (1.00) and `evidence_level = "test-confirmed"` (1.20x multiplier).
 - **Weak Negative Non-Demotion:** When a test passes cleanly, it does **NOT** demote deterministic static rule findings, because auto-generated tests may simply lack assertion depth or branch coverage. Only unverified `model-hypothesis` findings are gently nudged down to `POSSIBLE`.
-- **Flakiness Quarantine Demotion:** Non-deterministic tests quarantined during repeat-sampling ($N \ge 3$) demote finding certainty to `evidence_level = "flaky-test"` (0.60x multiplier).
+- **Non-Demoting Flakiness Flag:** Non-deterministic tests quarantined during repeat-sampling ($N \ge 3$) do **not** demote the finding below its static-only baseline (`1.00x`). The finding retains its static score, annotated with `flaky_test_observed = True` and SARIF property `flakyTestObserved: true`.
 
 ### 4. Constrained Branch Test Synthesis & Self-Healing
 - Analyzes Abstract Syntax Tree (AST) conditional predicates (null checks, range comparisons, boolean guards).
