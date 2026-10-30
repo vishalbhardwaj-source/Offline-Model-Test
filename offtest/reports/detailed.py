@@ -28,6 +28,10 @@ class DetailedReportGenerator:
         lines.append(f"- **User / System Impact:** {f.impact}")
         lines.append(f"- **Evidence / Reproduction:**\n```\n{f.evidence}\n```")
         lines.append(f"- **Recommended Next Action:** {f.suggested_action}")
+        if getattr(f, "suppressed", False):
+            lines.append(f"> [!NOTE]\n> **Suppression Justification:** {getattr(f, 'suppression_reason', 'Inline comment directive')}")
+        elif getattr(f, "suppression_reason", None) and "expired" in str(f.suppression_reason).lower():
+            lines.append(f"> [!WARNING]\n> **EXPIRED SUPPRESSION:** {f.suppression_reason}. Finding is unsuppressed and evaluated for release gates.")
         return lines
 
     def _render_common_preamble(self, report_title: str, scope_subtitle: Optional[str] = None) -> List[str]:
@@ -274,6 +278,50 @@ class DetailedReportGenerator:
         lines.append("## 9. Explicit Limitations & Boundaries")
         for lim in self.ctx.limitations:
             lines.append(f"- {lim}")
+
+        lines.append("\n---\n")
+        # 11. Audit, Suppressions & Baseline Review
+        lines.append("## 10. Audit, Suppressions & Baseline Review")
+
+        suppressed_findings = [f for f in self.ctx.findings if getattr(f, "suppressed", False)]
+        expired_findings = [
+            f for f in self.ctx.findings
+            if not getattr(f, "suppressed", False)
+            and getattr(f, "suppression_reason", None)
+            and "expired" in str(f.suppression_reason).lower()
+        ]
+
+        if expired_findings:
+            lines.append("> [!WARNING]")
+            lines.append(f"> **{len(expired_findings)} Expired Inline Suppression(s) Detected!**")
+            lines.append("> Suppressions with past expiration dates have been automatically unsuppressed and returned to active release gate enforcement.\n")
+            lines.append("#### Expired Suppressions Requiring Periodic Review")
+            lines.append("| Rule ID | Finding Title | Location | Expiration / Reason | Gate Action |")
+            lines.append("| :--- | :--- | :--- | :--- | :--- |")
+            for ef in expired_findings:
+                loc = f"`{ef.file_path}:{ef.line_number}`" if ef.line_number else f"`{ef.file_path or 'N/A'}`"
+                lines.append(f"| `{ef.rule_id or ef.id}` | {ef.title} | {loc} | {ef.suppression_reason} | **Unsuppressed (Active)** |")
+            lines.append("")
+
+        if suppressed_findings:
+            lines.append("#### Active Suppressed Findings")
+            lines.append("| Rule ID | Finding Title | Location | Justification / Expiry | Status |")
+            lines.append("| :--- | :--- | :--- | :--- | :--- |")
+            for sf in suppressed_findings:
+                loc = f"`{sf.file_path}:{sf.line_number}`" if sf.line_number else f"`{sf.file_path or 'N/A'}`"
+                lines.append(f"| `{sf.rule_id or sf.id}` | {sf.title} | {loc} | {sf.suppression_reason or 'Inline directive'} | Suppressed |")
+            lines.append("")
+        elif not expired_findings:
+            lines.append("_No inline suppressions or expired suppression directives observed in repository source code._\n")
+
+        unchanged_findings = [f for f in self.ctx.findings if getattr(f, "baseline_state", "new") == "unchanged"]
+        new_findings = [f for f in self.ctx.findings if getattr(f, "baseline_state", "new") != "unchanged"]
+        lines.append("#### Baseline State Review")
+        if unchanged_findings:
+            lines.append(f"- **Baseline Comparison:** Active (`{len(unchanged_findings)}` unchanged / grandfathered finding(s), `{len(new_findings)}` new finding(s)).")
+            lines.append("- Unchanged baseline findings are recorded in SARIF `baselineState: unchanged` and grandfathered from breaking current CI run.")
+        else:
+            lines.append(f"- **Baseline Comparison:** No prior baseline loaded (all `{len(self.ctx.findings)}` findings classified as `baselineState: new`).")
 
         return lines
 

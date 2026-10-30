@@ -1,22 +1,42 @@
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from offtest.core.models import Finding, RunContext, Severity
 
 
 class SARIFReportGenerator:
-    """Generates an OASIS SARIF 2.1.0 report for CI/CD consumption."""
+    """Generates an OASIS SARIF 2.1.0 report for CI/CD consumption with baseline comparison."""
 
-    def __init__(self, context: RunContext, strip_snippets: bool = False):
+    def __init__(self, context: RunContext, strip_snippets: bool = False, baseline_path: Optional[Path] = None):
         self.ctx = context
         self.strip_snippets = strip_snippets
+        self.baseline_path = Path(baseline_path) if baseline_path else None
+        self._baseline_fingerprints = self._load_baseline_fingerprints()
+
+    def _load_baseline_fingerprints(self) -> set:
+        if not self.baseline_path or not self.baseline_path.is_file():
+            return set()
+        try:
+            data = json.loads(self.baseline_path.read_text(encoding="utf-8"))
+            keys = set()
+            for run in data.get("runs", []):
+                for res in run.get("results", []):
+                    pfp = res.get("partialFingerprints", {})
+                    if "logicalLocationKey" in pfp:
+                        keys.add(pfp["logicalLocationKey"])
+                    fp = res.get("properties", {}).get("fingerprint")
+                    if fp:
+                        keys.add(fp)
+            return keys
+        except Exception:
+            return set()
 
     def generate_sarif(self) -> Dict[str, Any]:
         rules: Dict[str, Dict[str, Any]] = {}
         results: List[Dict[str, Any]] = []
 
         for f in self.ctx.findings:
-            rule_id = f"OFFTEST-{(f.check_tool or 'scanner').upper()}-{f.id}"
+            rule_id = getattr(f, "rule_id", None) or f"OFFTEST-{(f.check_tool or 'scanner').upper()}-{f.id}"
             
             # Map severity to SARIF level
             if f.severity in [Severity.CRITICAL, Severity.HIGH]:
@@ -64,10 +84,14 @@ class SARIFReportGenerator:
 
             evidence_text = "[CODE SNIPPET STRIPPED FOR AIR-GAP EXPORT]" if self.strip_snippets else f.evidence
             
+            logical_key = (f.partial_fingerprints.get("logicalLocationKey") if getattr(f, "partial_fingerprints", None) else None) or getattr(f, "fingerprint", None)
+            baseline_state = "unchanged" if (logical_key and logical_key in self._baseline_fingerprints) else "new"
+            f.baseline_state = baseline_state
+
             res_item: Dict[str, Any] = {
                 "ruleId": rule_id,
                 "level": level,
-                "baselineState": "new",
+                "baselineState": baseline_state,
                 "message": {
                     "text": f"{f.title}: {f.impact}\n\nEvidence:\n{evidence_text}\n\nSuggested Action: {f.suggested_action}"
                 },

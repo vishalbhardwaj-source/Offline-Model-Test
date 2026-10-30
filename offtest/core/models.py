@@ -228,6 +228,7 @@ class Finding(BaseModel):
     flaky_test_observed: bool = False
     cisa_kev: bool = False
     epss_score: Optional[float] = None
+    baseline_state: str = "new"  # new, unchanged, updated
 
 
 def compute_priority(

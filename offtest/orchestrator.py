@@ -69,6 +69,7 @@ class AssessmentOrchestrator:
         accept_no_kernel_isolation: bool = False,
         strip_sarif_snippets: bool = False,
         app_tier: str = "unknown",
+        baseline_path: Optional[str] = None,
     ):
         self.input_target = repo_path_or_archive
         self.base_branch = base_branch
@@ -81,6 +82,7 @@ class AssessmentOrchestrator:
         self.accept_no_kernel_isolation = accept_no_kernel_isolation
         self.strip_sarif_snippets = strip_sarif_snippets
         self.app_tier = (app_tier or "unknown").lower()
+        self.baseline_path = Path(baseline_path) if baseline_path else None
 
     def run(self) -> Tuple[RunContext, Path, Path, Path]:
         target_path = Path(self.input_target) if isinstance(self.input_target, (str, Path)) and Path(self.input_target).exists() else None
@@ -312,7 +314,7 @@ class AssessmentOrchestrator:
         workflow_report_path = run_folder / "REPORT_3_WORKFLOWS.md"
         atomic_write_text(workflow_report_path, workflow_md, encoding="utf-8")
 
-        sarif_gen = SARIFReportGenerator(context, strip_snippets=self.strip_sarif_snippets)
+        sarif_gen = SARIFReportGenerator(context, strip_snippets=self.strip_sarif_snippets, baseline_path=self.baseline_path)
         sarif_path = run_folder / "results.sarif"
         sarif_gen.save_sarif(sarif_path)
 

@@ -70,6 +70,11 @@ def main():
     default="unknown",
     help="Deployment application tier: internal, public, or unknown (default: unknown, treated as public for gate evaluation).",
 )
+@click.option(
+    "--baseline",
+    default=None,
+    help="Path to prior SARIF file for baselineState comparison so existing findings do not block new work.",
+)
 def assess(
     repo_path,
     base,
@@ -85,6 +90,7 @@ def assess(
     strip_sarif_snippets,
     accept_no_kernel_isolation,
     app_tier="unknown",
+    baseline=None,
 ):
     """
     Run offline repository intake, inventory, app mapping, checks, and generate reports.
@@ -131,6 +137,7 @@ def assess(
         accept_no_kernel_isolation=accept_no_kernel_isolation,
         strip_sarif_snippets=strip_sarif_snippets,
         app_tier=app_tier,
+        baseline_path=baseline,
     )
 
     orchestrator_res = orchestrator.run()
@@ -185,12 +192,18 @@ def assess(
         click.echo("[!] Scanner Status: ANALYSIS_INCOMPLETE (analysis failure in test synthesis, not user code defect).")
         sys.exit(2)
 
+    if baseline:
+        unchanged_count = sum(1 for f in context.findings if getattr(f, "baseline_state", "new") == "unchanged")
+        if unchanged_count:
+            click.echo(f"[i] Baseline active ({baseline}): {unchanged_count} unchanged finding(s) grandfathered; excluded from blocking CI gate.")
+
     crit_or_high = [
         f for f in context.findings
         if f.severity in [Severity.CRITICAL, Severity.HIGH]
         and getattr(f, "category", "") not in ("hygiene",)
         and not getattr(f, "suppressed", False)
         and getattr(f, "evidence_level", "") != "model-hypothesis"
+        and (getattr(f, "baseline_state", "new") != "unchanged" if baseline else True)
     ]
     blocked_checks = [c for c in context.check_results if c.status == CheckStatus.BLOCKED]
 
