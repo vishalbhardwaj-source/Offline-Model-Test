@@ -160,3 +160,37 @@ def test_cli_baseline_suppresses_ci_gate_failure():
         assert res2.exit_code == 0
         assert "Baseline active" in res2.output
         assert "grandfathered; excluded from blocking CI gate" in res2.output
+
+
+def test_hard_floor_rejects_inline_suppressions():
+    """Verify that Hard Floor findings (proven reachable or provider secret) reject inline suppressions."""
+    from offtest.checks.planner import CheckPlanner
+    from offtest.core.models import FileDisposition, FileRecord
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        p = tmp_path / "helper.py"
+        p.write_text('aws_key = "AKIA1234567890ABCDEF"  # offtest: ignore[OT-SCR-001] reason="Attacker hiding secret"\n', encoding="utf-8")
+        files = [
+            FileRecord(
+                path="helper.py",
+                size_bytes=len(p.read_bytes()),
+                sha256="h1",
+                language="Python",
+                category="source",
+                disposition=FileDisposition.ANALYZED,
+                disposition_reason="Source",
+            )
+        ]
+        planner = CheckPlanner(tmp_path, files)
+        results, findings = planner.execute_all()
+
+        secret_f = next(f for f in findings if f.rule_id == "OT-SCR-001")
+        assert secret_f.severity == Severity.CRITICAL
+        assert secret_f.priority_score >= 90.0
+        # Inline suppression MUST be rejected because this is a Hard Floor finding!
+        assert secret_f.suppressed is False
+        assert "rejected" in secret_f.suppression_reason.lower()
+        stat_result = next(r for r in results if r.tool_name == "offtest-static-scanner")
+        assert stat_result.gate_outcome == "Fail"
+

@@ -502,13 +502,17 @@ class OfflineStaticChecker:
                                         break
                                 except Exception:
                                     pass
+                                reason = reason_target.strip() if reason_target else "Suppressed via inline comment directive"
+                            else:
+                                import datetime as _dt
+                                default_exp = _dt.date.today() + _dt.timedelta(days=90)
+                                reason = (
+                                    (reason_target.strip() if reason_target else "Suppressed via inline comment directive")
+                                    + f" (mandatory default 90-day expiry: {default_exp.isoformat()})"
+                                )
 
                             f.suppressed = True
-                            f.suppression_reason = (
-                                reason_target.strip()
-                                if reason_target
-                                else "Suppressed via inline comment directive"
-                            )
+                            f.suppression_reason = reason
                             break
 
             # Update priority score dynamically with final reachability and exposure

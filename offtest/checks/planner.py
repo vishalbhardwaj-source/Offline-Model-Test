@@ -151,47 +151,48 @@ class CheckPlanner:
         #    Suppressed findings never block the gate.
         blocking_security = []
         for f in static_findings:
-            if getattr(f, "suppressed", False):
-                continue
             if getattr(f, "evidence_level", "") == "model-hypothesis":
                 continue
 
-            is_blocking = False
-            # Score-based threshold:
-            if getattr(f, "priority_score", 0.0) >= 45.0:
-                is_blocking = True
-
+            # Evaluate whether finding meets any Hard Floor conditions:
+            is_hard_override = False
             # Hard Override 1: Test-confirmed Critical or High defect
-            elif f.evidence_level == "test-confirmed" and f.severity in (Severity.CRITICAL, Severity.HIGH):
-                is_blocking = True
-                f.priority_score = max(f.priority_score, 90.0)
-
-            # Hard Override 2: Proven Reachable Critical defect on internal/public route with precision >= 0.85
-            # Heuristic edges avoid the 0.20 unreachable discount, but only proven semantic edges trigger the floor.
+            if f.evidence_level == "test-confirmed" and f.severity in (Severity.CRITICAL, Severity.HIGH):
+                is_hard_override = True
+            # Hard Override 2: Proven Reachable Critical defect on entry point with precision >= 0.85
             elif (
                 f.severity == Severity.CRITICAL
                 and getattr(f, "reachability", "") in ("proven", "reachable")
                 and getattr(f, "proven_reachable", getattr(f, "reachability", "") == "proven")
                 and f.confidence in (Confidence.DETERMINISTIC, Confidence.CONFIRMED, Confidence.LIKELY, Confidence.HIGH)
             ):
-                is_blocking = True
-                f.priority_score = max(f.priority_score, 90.0)
-
+                is_hard_override = True
             # Hard Override 3: KEV-listed CVE restricted to affected or unknown reachability (not unreachable lockfiles)
             elif getattr(f, "cisa_kev", False) and getattr(f, "reachability", "") != "unreachable":
-                is_blocking = True
-                f.priority_score = max(f.priority_score, 90.0)
-
+                is_hard_override = True
             # Hard Override 4: Provider-pattern secret match outside test or fixture paths
             elif (
                 f.rule_id in ("OT-SCR-001", "OT-SCR-002")
                 and f.confidence in (Confidence.DETERMINISTIC, Confidence.CONFIRMED, Confidence.LIKELY, Confidence.HIGH)
                 and getattr(f, "exposure", "internal") != "test_fixture"
             ):
-                is_blocking = True
-                f.priority_score = max(f.priority_score, 90.0)
+                is_hard_override = True
 
-            if is_blocking:
+            if is_hard_override:
+                f.priority_score = max(f.priority_score, 90.0)
+                # Hard Override findings CANNOT be suppressed via inline comments in untrusted repositories
+                if getattr(f, "suppressed", False):
+                    f.suppressed = False
+                    f.suppression_reason = "Inline suppression rejected: Hard-Floor Critical/Proven defect cannot be suppressed via repository code comments."
+                blocking_security.append(f)
+                continue
+
+            # Standard findings: honor valid, non-expired inline suppressions
+            if getattr(f, "suppressed", False):
+                continue
+
+            # Score-based threshold:
+            if getattr(f, "priority_score", 0.0) >= 45.0:
                 blocking_security.append(f)
 
         # 2. Air-gap policy violations: POLICY at Critical/High with Confirmed/Likely confidence

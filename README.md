@@ -228,31 +228,79 @@ The gate evaluates both numerical priority scores and **Hard Overrides** to prev
   - Strict mode (`--strict-policy`): Halts the build with a CI Gate Fail.
 
 ### 6. Canonical Rule Registry (64 Rules Across 6 Domains)
-The canonical rule catalog contains **64 rules** organized with distinct functional domain prefixes, eliminating rule ID collisions:
+The canonical rule catalog contains **64 rules** organized with distinct functional domain prefixes, ensuring permanent ID stability and zero collisions:
 - **Security Vulnerability Rules (`OT-SEC-001..035` - 35 rules):**
-  * `OT-SEC-001..011`: Core injection and execution vulnerabilities (Command injection, SQLi, SSRF, XSS, Path traversal, Insecure deserialization).
-  * `OT-SEC-012`: Unauthenticated mutating route (`CWE-306`).
-  * `OT-SEC-013`: Object-Level Auth / IDOR (`CWE-639`).
-  * `OT-SEC-014`: Function-Level Auth / PrivEsc (`CWE-862`).
-  * `OT-SEC-015`: Permissive CORS with credentials.
-  * `OT-SEC-016..020`: Mass assignment (`CWE-915`), Insecure JWT (`CWE-345`), Missing CSRF (`CWE-352`), Rate limiting (`CWE-307`), Cryptographic misuse (`CWE-327`).
-  * `OT-SEC-021..026`: JavaScript prototype pollution (`CWE-1321`), Axios SSRF (`CWE-918`), React XSS (`CWE-79`), Browser-facing secret leak (`CWE-526`), PostMessage origin (`CWE-346`), Node fs path traversal (`CWE-22`).
-  * `OT-SEC-027..028`: Java SQLi (`CWE-89`), Java XXE (`CWE-611`).
-  * `OT-SEC-029`: Missing method-level security on Spring controller (`CWE-862`), verified with SecurityFilterChain config-level check.
-  * `OT-SEC-030`: CSRF protection disabled in Spring Security (`CWE-352`, Warn).
-  * `OT-SEC-031`: Hardcoded credentials in Spring configuration (`CWE-798`), ignoring placeholders (`${...}`) and changeme.
-  * `OT-SEC-032..034`: Node NoSQL injection (`CWE-943`), Node child_process (`CWE-78`), Missing Helmet security headers (`CWE-693`, Warn).
-  * `OT-SEC-035`: Permissive Spring CORS with credentials (`CWE-942`, Warn).
-- **Air-Gap Policy Rules (`OT-POL-001..007` - 7 rules):**
-  * Network socket calls (`OT-POL-002`), External URL references (`OT-POL-001`), Unpinned base images (`OT-POL-003`), Telemetry (`OT-POL-004`), Root user (`OT-POL-005`), Mutable GitHub Action refs (`OT-POL-006`), Privileged containers (`OT-POL-007`).
+  * `OT-SEC-001`: Dynamic Code Evaluation (`eval` / `exec`) (CWE-95, High, Block)
+  * `OT-SEC-002`: OS Command Injection via Shell (`os.system` / `subprocess`) (CWE-78, High, Block)
+  * `OT-SEC-003`: Subprocess Executed with shell=True (CWE-78, High, Block)
+  * `OT-SEC-004`: Unsafe YAML Deserialization without SafeLoader (CWE-502, High, Block)
+  * `OT-SEC-005`: Insecure Python Object Deserialization via pickle (CWE-502, High, Block)
+  * `OT-SEC-006`: Disabled SSL/TLS Certificate Verification (CWE-295, High, Block)
+  * `OT-SEC-007`: Arbitrary File Extraction via Archive / Zip Slip (CWE-22, High, Block)
+  * `OT-SEC-008`: SQL Query Constructed via Dynamic String Formatting (CWE-89, High, Block)
+  * `OT-SEC-009`: Insecure Temporary File Creation (`tempfile.mktemp`) (CWE-377, Medium, Warn)
+  * `OT-SEC-010`: Broken or Weak Cryptographic Hash (`md5` / `sha1`) (CWE-327, Medium, Warn)
+  * `OT-SEC-011`: Sensitive Authentication Parameters in HTTP GET Route (CWE-598, High, Block)
+  * `OT-SEC-012`: Unauthenticated State-Changing Route (CWE-306, High, Block)
+  * `OT-SEC-013`: Object-Level Authorization Bypass / IDOR (CWE-639, High, Block)
+  * `OT-SEC-014`: Function-Level Privilege Escalation Risk (CWE-862, High, Block)
+  * `OT-SEC-015`: Permissive CORS Policy with Credentials Enabled (CWE-942, Medium, Warn)
+  * `OT-SEC-016`: Mass Assignment via Unbounded Request Body Binding (CWE-915, High, Block)
+  * `OT-SEC-017`: Insecure JWT Configuration (none algorithm / verify=False) (CWE-345, High, Block)
+  * `OT-SEC-018`: Missing CSRF Protection on Cookie-Authenticated Route (CWE-352, Medium, Warn)
+  * `OT-SEC-019`: Missing Rate Limiting on Authentication Endpoint (CWE-307, Medium, Warn)
+  * `OT-SEC-020`: Cryptographic Misuse / Insecure Cipher Mode (CWE-327, High, Block)
+  * `OT-SEC-021`: React `dangerouslySetInnerHTML` with Dynamic Content (CWE-79, High, Block)
+  * `OT-SEC-022`: Client-Side `javascript:` Pseudo-Protocol in href/src (CWE-79, High, Block)
+  * `OT-SEC-023`: Sensitive Authentication Token Stored in localStorage (CWE-922, Medium, Warn)
+  * `OT-SEC-024`: Sensitive Secret Leaked in Browser-Facing Environment Variable (CWE-526, High, Block)
+  * `OT-SEC-025`: Client-Side Dynamic Code Evaluation (`eval` / `new Function`) (CWE-95, High, Block)
+  * `OT-SEC-026`: Java SQL Injection via String Concatenation (CWE-89, High, Block)
+  * `OT-SEC-027`: Unsafe Java Object Deserialization via `ObjectInputStream` (CWE-502, Critical, Block)
+  * `OT-SEC-028`: XML External Entity (XXE) Injection in Java XML Parser (CWE-611, High, Block)
+  * `OT-SEC-029`: Missing Method-Level Security on Spring Controller (CWE-862, High, Warn)
+  * `OT-SEC-030`: CSRF Protection Disabled in Spring Security (CWE-352, Medium, Warn)
+  * `OT-SEC-031`: Hardcoded Credentials in Spring Configuration (CWE-798, High, Block)
+  * `OT-SEC-032`: NoSQL Injection Risk / `$where` Clause in Node/Express (CWE-943, High, Block)
+  * `OT-SEC-033`: Node.js `child_process` Invocation with User Input (CWE-78, High, Block)
+  * `OT-SEC-034`: Missing Helmet or Security Headers in Express (CWE-693, Medium, Warn)
+  * `OT-SEC-035`: Permissive CORS Wildcard Origin with Credentials in Spring (CWE-942, Medium, Warn)
 - **Secret Exposure Rules (`OT-SCR-001..004` - 4 rules):**
-  * AWS keys (`OT-SCR-001`), Generic API keys (`OT-SCR-002`), Private keys (`OT-SCR-003`), High-entropy tokens (`OT-SCR-004`).
+  * `OT-SCR-001`: Hardcoded Cloud Access Key (AWS) (CWE-798, Critical, Block)
+  * `OT-SCR-002`: Hardcoded Secret Key or Token / Private Key (CWE-798, Critical, Block)
+  * `OT-SCR-003`: High-Entropy Secret Candidate (CWE-798, Low, Warn, Capped <= 35.0)
+  * `OT-SCR-004`: Documented Example Secret in Docs/Tests (CWE-798, Informational, Warn)
 - **Software Supply Chain Rules (`OT-SUP-001..006` - 6 rules):**
-  * Unpinned dependencies (`OT-SUP-001`), Typosquatting (`OT-SUP-002`), Known vulnerabilities (`OT-SUP-003`), VEX reachability (`OT-SUP-004`), Copyleft licenses (`OT-SUP-005`), Stale advisories (`OT-SUP-006`).
-- **Hygiene Rules (`OT-HYG-001..008` - 8 rules):**
-  * Debug flags (`OT-HYG-001`), Production assert (`OT-HYG-002`), Broad exceptions (`OT-HYG-003`), Print debugging (`OT-HYG-004`), Unused imports (`OT-HYG-005`), Dead code (`OT-HYG-006`), Sensitive logging (`OT-HYG-007`), Insecure tempfiles (`OT-HYG-008`).
+  * `OT-SUP-001`: Unpinned Python Dependencies in Manifest (CWE-1357, Low, Warn)
+  * `OT-SUP-002`: Floating Node.js Dependencies without Lockfile (CWE-1357, Low, Warn)
+  * `OT-SUP-003`: Excessive Recursion Depth in Requirements (-r) (CWE-674, High, Warn)
+  * `OT-SUP-004`: Known Vulnerable Package Dependency (Advisory Match) (CWE-1395, High, Block on VEX Affected/KEV)
+  * `OT-SUP-005`: Restrictive Copyleft License in Dependency (CWE-1357, Low, Warn)
+  * `OT-SUP-006`: Stale Offline Advisory Snapshot Database (CWE-1104, Medium, Warn)
+- **Air-Gap Policy Rules (`OT-POL-001..007` - 7 rules):**
+  * `OT-POL-001`: Remote Package Index Configured in Manifest (High, Block)
+  * `OT-POL-002`: Remote VCS or Network Dependency in Manifest (High, Block)
+  * `OT-POL-003`: External Package Registry Configured (High, Block)
+  * `OT-POL-004`: Remote Git Submodule URL (High, Block)
+  * `OT-POL-005`: Container Image Runs as Default Root User (CWE-250, Low, Warn)
+  * `OT-POL-006`: Unpinned External Action in CI Workflow (CWE-1357, Low, Warn)
+  * `OT-POL-007`: Privileged Container Mode Requested in IaC (CWE-250, High, Block)
 - **Code Correctness Rules (`OT-COR-001..004` - 4 rules):**
-  * Syntax errors (`OT-COR-001`), Undefined variables (`OT-COR-002`), Zero division (`OT-COR-003`), Incompatible types (`OT-COR-004`).
+  * `OT-COR-001`: Syntax Error in Source File (CWE-1173, High, Block for Python AST)
+  * `OT-COR-002`: Undefined Name Reference (CWE-457, Low, Warn)
+  * `OT-COR-003`: Division by Zero Detected (CWE-369, High, Block)
+  * `OT-COR-004`: Constant False Condition (`if False:`) (CWE-570, Low, Warn)
+- **Hygiene Rules (`OT-HYG-001..008` - 8 rules):**
+  * `OT-HYG-001`: Unused Imports Detected in Module (CWE-561, Low, Warn)
+  * `OT-HYG-002`: No-Op Function Definition (CWE-561, Low, Warn)
+  * `OT-HYG-003`: Uncalled Dead Code (Symbol Unreachable) (CWE-561, Low, Warn)
+  * `OT-HYG-004`: UTF-8 Byte Order Mark (BOM) Present (Hygiene, Low, Warn)
+  * `OT-HYG-005`: Debug Mode Left Active in Code (`DEBUG = True`) (CWE-489, Medium, Warn)
+  * `OT-HYG-006`: Direct Shell Execution with Constant String Argument (Informational, Warn)
+  * `OT-HYG-007`: Static Constant Evaluated via `eval()` (Informational, Warn)
+  * `OT-HYG-008`: HTTP GET Route Used for Authentication View (Informational, Warn)
+
+*(Total: 35 + 4 + 6 + 7 + 4 + 8 = exactly 64 canonical rules. Zero ID collisions).*
 
 ### 7. Implementation Status of External Review Changes (Changes 1 to 6)
 
@@ -340,7 +388,12 @@ By default, untrusted scripts and test suites are blocked from running on bare m
 python -m offtest assess "C:\path\to\your\project" --allow-scripts --accept-no-kernel-isolation
 ```
 > [!CAUTION]
-> **Host Isolation Boundary Warning:** Passing `--allow-scripts --accept-no-kernel-isolation` permits target repository test code to execute directly on the host machine. While environment variables and profiles are scrubbed, bare-metal OS execution does not provide kernel network namespace or chroot filesystem isolation. This mode is restricted to interactive local developer diagnosis in throwaway VMs and is strictly refused in automated CI environments. In CI, run inside a verified container (`docker run --network none ...`).
+> **Host Isolation Boundary Warning:** Passing `--allow-scripts --accept-no-kernel-isolation` permits target repository test code to execute directly on the host machine. While environment variables and profiles are scrubbed, bare-metal Windows execution does not provide Linux kernel network namespaces or OverlayFS read-only isolation. On Windows hosts, dynamic test execution is refused/capped at static-only evidence. This mode is restricted to interactive local developer diagnosis in throwaway VMs and is strictly refused in automated CI environments.
+>
+> In automated CI/CD runners, execute inside a hardened, unprivileged container:
+> ```bash
+> docker run --network none --read-only --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges:true --memory 2g --pids-limit 100 -v /path/to/repo:/workspace:ro offtest:latest
+> ```
 
 #### Save Reports to a Dedicated Folder
 Specify custom output directories matching your project:
