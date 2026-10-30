@@ -124,18 +124,27 @@ class CheckPlanner:
         _static_elapsed = time.perf_counter() - _static_start
         findings.extend(static_findings)
 
-        # Gate evaluation based on Category, Severity, and Certainty:
-        # 1. Blocking security defects: VULNERABILITY or SECRET at Critical/High with Confirmed/Likely confidence.
-        # (Possible-confidence and suppressed findings do not block gate)
+        # Gate evaluation based on Category, Severity, Confidence, and Priority (0-100 scale):
+        # 1. Blocking security defects: VULNERABILITY or SECRET with Priority >= 45.0
+        #    (or Critical/High with Confirmed/Likely confidence, excluding model-hypothesis).
+        #    Suppressed findings never block the gate.
         blocking_security = [
             f for f in static_findings
             if getattr(f, "category", FindingCategory.VULNERABILITY) in (FindingCategory.VULNERABILITY, FindingCategory.SECRET)
-            and f.severity in (Severity.CRITICAL, Severity.HIGH)
-            and f.confidence in (Confidence.CONFIRMED, Confidence.LIKELY)
             and not getattr(f, "suppressed", False)
+            and getattr(f, "evidence_level", "") != "model-hypothesis"
+            and (
+                (getattr(f, "priority_score", 0.0) >= 45.0)
+                or (
+                    f.severity in (Severity.CRITICAL, Severity.HIGH)
+                    and f.confidence in (Confidence.CONFIRMED, Confidence.LIKELY)
+                )
+            )
         ]
 
         # 2. Air-gap policy violations: POLICY at Critical/High with Confirmed/Likely confidence
+        #    (e.g., OT-POL-001 external URLs, OT-POL-002 network sockets, OT-POL-003 unpinned base images,
+        #     OT-POL-004 unauthorized telemetry, OT-POL-007 container privileged mode).
         blocking_policy = [
             f for f in static_findings
             if getattr(f, "category", None) == FindingCategory.POLICY
@@ -210,21 +219,26 @@ def calibrate_findings_with_test_results(
     flakiness_report: Optional[Any] = None,
 ) -> List[Finding]:
     """
-    Test-confirmation feedback loop:
-    - If dynamic execution or test assertion reproduces a defect in the target file,
-      elevates evidence_level to 'test-confirmed' and confidence to CONFIRMED.
-    - If a test associated with a finding is determined to be flaky, marks evidence_level
-      as 'flaky-test' and demotes certainty.
-    - Recomputes exposure-weighted priority score dynamically based on updated certainty.
+    Test-confirmation feedback loop with Exploit Oracle Satisfied trigger:
+    - If dynamic execution or test assertion satisfies the exploit oracle in the target file
+      (distinguished from generic syntax/import crashes), elevates evidence_level to 'test-confirmed',
+      sets oracle_satisfied=True, records oracle_origin, and raises confidence to CONFIRMED.
+    - Asymmetric feedback: Non-confirmation (test passes) does NOT demote static-only findings,
+      because generated tests may have inadequate assertions.
+    - If a test associated with a finding is determined to be flaky across runs (quarantined),
+      marks evidence_level as 'flaky-test' and demotes certainty.
+    - If finding was a 'model-hypothesis' and test cleanly passes without vulnerability,
+      confidence is downgraded to POSSIBLE.
+    - Recomputes exposure-weighted priority score dynamically (0-100 scale).
     """
     from offtest.core.models import Confidence, compute_priority
 
-    failed_outputs = []
+    failed_runs = []
     passed_outputs = []
     for c in check_results:
         text = f"{c.stdout}\n{c.stderr}"
         if c.status == CheckStatus.FAILED:
-            failed_outputs.append(text)
+            failed_runs.append((c.check_name or c.tool_name, text))
         elif c.status == CheckStatus.PASSED:
             passed_outputs.append(text)
 
@@ -233,15 +247,25 @@ def calibrate_findings_with_test_results(
         for q in flakiness_report.quarantined_tests:
             quarantined_ids.add(getattr(q, "test_identifier", ""))
 
+    # Errors that represent setup/environment failures rather than true exploit reproduction
+    setup_error_markers = ("modulenotfounderror", "importerror", "syntaxerror", "environmenterror", "nosuchfileexception")
+
     for f in findings:
         if not f.file_path:
             continue
         fname = Path(f.file_path).name
 
-        # 1. Check if an executed test failure confirms this defect
-        is_confirmed_by_test = False
-        for out in failed_outputs:
+        # 1. Exploit Oracle Satisfied Check:
+        # A test failure confirms a defect only when an exploit assertion/oracle fires,
+        # not when the test runner crashes on imports or missing modules.
+        oracle_fired_name: Optional[str] = None
+        for test_name, out in failed_runs:
             out_lower = out.lower()
+
+            # Skip generic runner/import crashes
+            if any(err in out_lower for err in setup_error_markers) and "assertionerror" not in out_lower:
+                continue
+
             file_match = (f.file_path and f.file_path.lower() in out_lower) or (fname and fname.lower() in out_lower)
             if file_match:
                 specific_match = (
@@ -252,18 +276,23 @@ def calibrate_findings_with_test_results(
                     or (getattr(f, "cwe_name", "") and any(w.lower() in out_lower for w in f.cwe_name.lower().split() if len(w) >= 3))
                 )
                 if specific_match:
-                    is_confirmed_by_test = True
+                    oracle_fired_name = test_name
                     break
 
-        if is_confirmed_by_test:
+        if oracle_fired_name:
             f.evidence_level = "test-confirmed"
             f.confidence = Confidence.CONFIRMED
             f.reproduced = True
             f.reachability = "reachable"
+            f.oracle_satisfied = True
+            f.oracle_origin = oracle_fired_name
             if f.context is None:
                 f.context = {}
-            f.context["test_feedback"] = "Dynamic Test Failure Corroboration"
+            f.context["oracle_satisfied"] = True
+            f.context["oracle_origin"] = oracle_fired_name
+            f.context["test_feedback"] = f"Exploit Oracle Satisfied ({oracle_fired_name})"
         elif f.evidence_level == "model-hypothesis":
+            # Demote hypothesis findings only if clean execution contradicts hypothesis
             if any(f.file_path in out or fname in out for out in passed_outputs):
                 f.confidence = Confidence.POSSIBLE
 
@@ -272,10 +301,11 @@ def calibrate_findings_with_test_results(
             f.evidence_level = "flaky-test"
             f.confidence = Confidence.POSSIBLE
 
-        # Recompute priority with updated certainty
+        # Recompute priority with updated certainty on 0-100 normalized scale
         f.priority_score = compute_priority(
             f.severity,
             f.confidence,
+            evidence_level=f.evidence_level,
             reachability=f.reachability,
             exposure=f.exposure,
         )

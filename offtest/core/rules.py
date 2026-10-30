@@ -7,8 +7,9 @@ gate blocking policies, and deterministic finding generation.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from offtest.core.models import (
     Confidence,
@@ -29,6 +30,7 @@ class Rule:
     default_confidence: Confidence = Confidence.LIKELY
     cwe_id: Optional[str] = None
     cwe_name: Optional[str] = None
+    cwe_secondary_ids: Tuple[str, ...] = ()
     owasp_category: Optional[str] = None
     asvs_chapter: Optional[str] = None
     cvss_score: Optional[float] = None       # Only for VULNERABILITY / SECRET
@@ -226,6 +228,7 @@ RULES: Dict[str, Rule] = {
         default_confidence=Confidence.LIKELY,
         cwe_id="CWE-306",
         cwe_name="Missing Authentication for Critical Function",
+        cwe_secondary_ids=("CWE-862", "CWE-285"),
         owasp_category="A01:2021-Broken Access Control",
         asvs_chapter="V4 Access Control",
         cvss_score=7.5,
@@ -242,7 +245,8 @@ RULES: Dict[str, Rule] = {
         base_severity=Severity.HIGH,
         default_confidence=Confidence.LIKELY,
         cwe_id="CWE-639",
-        cwe_name="Authorization Bypass Through User-Controlled Key",
+        cwe_name="Authorization Bypass Through User-Controlled Key ('IDOR')",
+        cwe_secondary_ids=("CWE-862", "CWE-284"),
         owasp_category="A01:2021-Broken Access Control",
         asvs_chapter="V4 Access Control",
         cvss_score=7.5,
@@ -258,8 +262,9 @@ RULES: Dict[str, Rule] = {
         title="Privilege Escalation Risk: Administrative Route Lacks Role Verification",
         base_severity=Severity.HIGH,
         default_confidence=Confidence.LIKELY,
-        cwe_id="CWE-285",
-        cwe_name="Improper Authorization",
+        cwe_id="CWE-862",
+        cwe_name="Missing Authorization (Function-Level Privilege Escalation)",
+        cwe_secondary_ids=("CWE-863", "CWE-285"),
         owasp_category="A01:2021-Broken Access Control",
         asvs_chapter="V4 Access Control",
         cvss_score=8.1,
@@ -832,6 +837,12 @@ def make_finding(
     fingerprint = hashlib.sha1(loc_key.encode("utf-8")).hexdigest()[:8].upper()
     finding_id = f"FIND-{rule.id}-{fingerprint}"
 
+    # Line-independent logical partial fingerprint for SARIF & baseline diffing (excludes line numbers)
+    clean_ev = re.sub(r"\s+", " ", evidence.strip())[:80]
+    logical_loc_key = f"{rule.id}:{norm_path}:{clean_ev}"
+    logical_fingerprint = hashlib.sha256(logical_loc_key.encode("utf-8")).hexdigest()[:16]
+    partial_fps = {"logicalLocationKey": logical_fingerprint}
+
     eff_severity = severity or rule.base_severity
     eff_confidence = confidence or rule.default_confidence
     eff_impact = impact or rule.impact_template
@@ -853,6 +864,7 @@ def make_finding(
         eff_confidence,
         reachability=reachability,
         exposure=exposure,
+        evidence_level=evidence_level,
     )
 
     return Finding(
@@ -874,6 +886,7 @@ def make_finding(
         check_tool=eff_tool,
         cwe_id=rule.cwe_id,
         cwe_name=rule.cwe_name,
+        cwe_secondary_ids=list(getattr(rule, "cwe_secondary_ids", ())),
         cvss_score_estimate=cvss_score,
         cvss_vector_estimate=cvss_vector,
         cvss_is_estimate=True,
@@ -888,6 +901,7 @@ def make_finding(
         reachability=reachability,
         priority_score=priority,
         fingerprint=fingerprint,
+        partial_fingerprints=partial_fps,
         suppressed=suppressed,
         suppression_reason=suppression_reason,
         root_cause_cluster=root_cause_cluster,

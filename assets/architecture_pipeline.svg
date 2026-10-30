@@ -44,10 +44,10 @@
   <text x="720" y="72" fill="#94a3b8" font-size="14" text-anchor="middle">Air-Gapped Deterministic Pipeline: 4-Axis Taxonomy, Parallel Synthesis, and All-Source Convergence to Phase 4</text>
 
   <!-- Formula Callout Banner -->
-  <rect x="120" y="92" width="1200" height="54" rx="10" fill="#0f172a" stroke="#334155" stroke-width="1.5" filter="url(#shadow)"/>
-  <text x="140" y="124" fill="#38bdf8" font-size="13" font-weight="bold">PRIORITY FORMULA:</text>
-  <text x="285" y="124" fill="#f1f5f9" font-size="13" font-family="monospace">Priority = Severity Weight (10/7/4/2/0.5) × Confidence (0.4..1.0) × Reachability (1.0/0.7/0.2) × Exposure (1.5/1.0/0.6/0.2)</text>
-  <text x="1170" y="124" fill="#a78bfa" font-size="12" font-weight="600">DEDUP BY ROOT CAUSE</text>
+  <rect x="80" y="92" width="1280" height="54" rx="10" fill="#0f172a" stroke="#334155" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="100" y="124" fill="#38bdf8" font-size="13" font-weight="bold">PRIORITY FORMULA (0–100):</text>
+  <text x="280" y="124" fill="#f1f5f9" font-size="12" font-family="monospace">min(100, Sev(100/70/40/20/5) × Conf(1.0/0.85/0.65/0.4) × Evid(1.2/1.0/0.8/0.6/0.5) × Reach(1.0/0.7/0.2) × Expo(1.0/0.75/0.5/0.2))</text>
+  <text x="1230" y="124" fill="#a78bfa" font-size="12" font-weight="600">DEDUP: FILE:RULE:PARENT</text>
 
   <!-- ================= PHASE 1: Intake & Advisory ================= -->
   <g transform="translate(50, 165)" filter="url(#shadow)">
@@ -100,8 +100,8 @@
     <rect width="320" height="30" rx="10" fill="url(#grad-blue)"/>
     <text x="160" y="20" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="middle">PHASE 3A (PARALLEL): APP STRUCTURE &amp; RBAC</text>
     <text x="15" y="52" fill="#f8fafc" font-size="12" font-weight="600">• Route &amp; Middleware Extractor (OpenAPI 3.1)</text>
-    <text x="15" y="74" fill="#f8fafc" font-size="12" font-weight="600">• Function vs. Object Auth Rules:</text>
-    <text x="25" y="93" fill="#94a3b8" font-size="10.5">OT-SEC-012 (Unauth), OT-SEC-013 (IDOR), OT-SEC-014 (PrivEsc), OT-SEC-015 (CORS)</text>
+    <text x="15" y="74" fill="#f8fafc" font-size="12" font-weight="600">• Leaf CWE Authorization Rules:</text>
+    <text x="25" y="93" fill="#94a3b8" font-size="10.5">OT-SEC-012 (CWE-306 Unauth), OT-SEC-013 (CWE-639 IDOR), OT-SEC-014 (CWE-862 PrivEsc)</text>
   </g>
 
   <!-- ================= PHASE 3B (Parallel): Test Synthesis & Sandbox Execution ================= -->
@@ -111,17 +111,21 @@
     <text x="160" y="20" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="middle">PHASE 3B (PARALLEL): TEST RUNNER &amp; SANDBOX</text>
     <text x="15" y="52" fill="#f8fafc" font-size="12" font-weight="600">• Constrained Branch Test Synthesis (CFG Predicates)</text>
     <text x="15" y="74" fill="#f8fafc" font-size="12" font-weight="600">• Isolated Sandbox Execution (Job Objects / Socket Guards)</text>
-    <text x="15" y="95" fill="#f8fafc" font-size="12" font-weight="600">• Captures Pass / Fail Execution Oracles</text>
+    <text x="15" y="95" fill="#f8fafc" font-size="12" font-weight="600">• Dynamic Exploit Oracle Satisfied (N ≥ 3 Runs)</text>
   </g>
 
   <!-- Convergence: Phase 3A findings converge into Phase 4 -->
   <path d="M 1040 215 L 1070 215 L 1070 255 L 1100 255" fill="none" stroke="#38bdf8" stroke-width="2.5" marker-end="url(#arrow)"/>
 
+  <!-- Non-Finding Inventory Route from Phase 3A directly to Evidence Store for Report 3 -->
+  <path d="M 880 275 L 880 445 L 750 445 L 750 460" fill="none" stroke="#64748b" stroke-width="1.5" stroke-dasharray="3"/>
+  <text x="910" y="440" fill="#94a3b8" font-size="9.5">Non-Finding Inventory (OpenAPI &amp; RBAC Catalog for Report 3)</text>
+
   <!-- Convergence: Phase 3B test results converge into Phase 4 with feedback -->
   <path d="M 1040 355 L 1070 355 L 1070 315 L 1100 315" fill="none" stroke="#34d399" stroke-width="2.5" marker-end="url(#arrow-green)"/>
   <text x="1070" y="290" fill="#34d399" font-size="10" font-weight="bold" text-anchor="middle">FEEDBACK</text>
 
-  <!-- Direct bypass prevention: Phase 2 static/taint/secret findings also converge directly into Phase 4 -->
+  <!-- Direct bypass prevention: Phase 2 static/taint/secret findings strictly converge into Phase 4 -->
   <path d="M 640 375 L 685 375 L 685 400 L 1070 400 L 1070 375 L 1100 375" fill="none" stroke="#059669" stroke-width="2" stroke-dasharray="4" marker-end="url(#arrow)"/>
   <text x="880" y="415" fill="#34d399" font-size="10" text-anchor="middle">All Findings (Secrets, Advisories, Taint, Static) Strictly Converge on Phase 4</text>
 
@@ -131,20 +135,21 @@
     <rect width="300" height="42" rx="12" fill="url(#grad-amber)"/>
     <text x="150" y="26" fill="#ffffff" font-size="13.5" font-weight="bold" text-anchor="middle">PHASE 4: SCORING &amp; FEEDBACK</text>
     
-    <text x="15" y="66" fill="#f8fafc" font-size="12" font-weight="600">1. Asymmetric Test Feedback</text>
-    <text x="25" y="84" fill="#34d399" font-size="10.5">• Test Failure → elevates to 'test-confirmed'</text>
-    <text x="25" y="98" fill="#94a3b8" font-size="10.5">• Non-confirmation does NOT demote static rules</text>
-    <text x="25" y="112" fill="#fbbf24" font-size="10.5">• Flaky test → tags 'flaky-test'</text>
+    <text x="15" y="66" fill="#f8fafc" font-size="12" font-weight="600">1. Asymmetric Exploit Feedback</text>
+    <text x="25" y="84" fill="#34d399" font-size="10">• Exploit Oracle Satisfied → 'test-confirmed' (1.2x)</text>
+    <text x="25" y="98" fill="#94a3b8" font-size="10">• Non-confirmation does NOT demote static rules</text>
+    <text x="25" y="112" fill="#fbbf24" font-size="10">• Flaky test (quarantined) → tags 'flaky-test' (0.6x)</text>
     
-    <text x="15" y="136" fill="#f8fafc" font-size="12" font-weight="600">2. Calibrated Priority Calculation</text>
-    <text x="25" y="154" fill="#94a3b8" font-size="10.5">Priority = Sev(10..0.5) × Conf × Reach × Expo</text>
-    <text x="25" y="168" fill="#94a3b8" font-size="10.5">Unreachable: 0.2x discount | Public: 1.5x</text>
+    <text x="15" y="136" fill="#f8fafc" font-size="12" font-weight="600">2. Normalized 0–100 Priority Scoring</text>
+    <text x="25" y="154" fill="#94a3b8" font-size="10">Sev(100..5) × Conf(1.0..0.4) × Evid × Reach × Expo</text>
+    <text x="25" y="168" fill="#94a3b8" font-size="10">Model-hypothesis capped at 25 (never fails gate)</text>
     
-    <text x="15" y="194" fill="#f8fafc" font-size="12" font-weight="600">3. Root-Cause Deduplication</text>
-    <text x="25" y="212" fill="#94a3b8" font-size="10.5">Cluster duplicate findings (file::rule::parent)</text>
+    <text x="15" y="194" fill="#f8fafc" font-size="12" font-weight="600">3. SARIF Root-Cause Deduplication</text>
+    <text x="25" y="212" fill="#94a3b8" font-size="10">Cluster: {file}:{rule}:{parent} + relatedLocations</text>
+    <text x="25" y="224" fill="#94a3b8" font-size="10">Line-independent logicalLocationKey fingerprints</text>
     
-    <rect x="15" y="226" width="270" height="32" rx="6" fill="#1e293b"/>
-    <text x="150" y="246" fill="#fbbf24" font-size="11" font-weight="bold" text-anchor="middle">Unified Evidence Store Ingestion</text>
+    <rect x="15" y="234" width="270" height="26" rx="5" fill="#1e293b"/>
+    <text x="150" y="251" fill="#fbbf24" font-size="10.5" font-weight="bold" text-anchor="middle">Unified Evidence Store Ingestion</text>
   </g>
 
   <!-- Connection: Phase 4 -> Phase 5 -->
@@ -163,10 +168,10 @@
       <rect width="300" height="142" rx="8" fill="#1e293b" stroke="#334155"/>
       <text x="15" y="22" fill="#38bdf8" font-size="13" font-weight="bold">1. Executive Summary &amp; Gate</text>
       <text x="15" y="38" fill="#94a3b8" font-size="11">offline_testing_model_report.md</text>
-      <text x="15" y="60" fill="#e2e8f0" font-size="11">• CI/CD Gate: Pass vs. Fail Decision</text>
-      <text x="15" y="78" fill="#f43f5e" font-size="10.5">  FAIL: Confirmed Crit/High, Policy, or Score &gt;= 7.0</text>
-      <text x="15" y="96" fill="#34d399" font-size="10.5">  PASS: Clean scan, no air-gap breach</text>
-      <text x="15" y="116" fill="#e2e8f0" font-size="11">• Advisory Snapshot Age &amp; Staleness Audit</text>
+      <text x="15" y="60" fill="#e2e8f0" font-size="11">• CI/CD Gate Decision Table (0–100 Scale):</text>
+      <text x="15" y="78" fill="#f43f5e" font-size="10">  FAIL: Priority ≥ 45.0, Policy Breach, Syntax Crash</text>
+      <text x="15" y="96" fill="#34d399" font-size="10">  PASS: Clean scan, hygiene/low defects (&lt; 45.0)</text>
+      <text x="15" y="116" fill="#e2e8f0" font-size="11">• Advisory Staleness: CISA KEV &amp; EPSS Risk Audit</text>
     </g>
 
     <!-- Report 2 -->
@@ -174,10 +179,10 @@
       <rect width="305" height="142" rx="8" fill="#1e293b" stroke="#334155"/>
       <text x="15" y="22" fill="#34d399" font-size="13" font-weight="bold">2. Remediation Punch-List</text>
       <text x="15" y="38" fill="#94a3b8" font-size="11">developer_remediation_plan.md</text>
-      <text x="15" y="60" fill="#e2e8f0" font-size="11">• Sorted descending by Priority Formula</text>
-      <text x="15" y="78" fill="#e2e8f0" font-size="11">• Clustered by Root Cause (file::rule::parent)</text>
+      <text x="15" y="60" fill="#e2e8f0" font-size="11">• Sorted descending by Normalized Priority</text>
+      <text x="15" y="78" fill="#e2e8f0" font-size="11">• Clustered by {file}:{rule}:{parent_symbol}</text>
       <text x="15" y="96" fill="#e2e8f0" font-size="11">• Concrete code fix snippets &amp; line diffs</text>
-      <text x="15" y="116" fill="#e2e8f0" font-size="11">• Deterministic IDs: FIND-RULE-HASH</text>
+      <text x="15" y="116" fill="#e2e8f0" font-size="11">• Model Immunity: Untrusted repo nonce fence</text>
     </g>
 
     <!-- Report 3 -->
@@ -197,9 +202,9 @@
       <text x="15" y="22" fill="#c084fc" font-size="13" font-weight="bold">4. Machine SARIF &amp; Attestation</text>
       <text x="15" y="38" fill="#94a3b8" font-size="11">results.sarif &amp; attestation.json</text>
       <text x="15" y="60" fill="#e2e8f0" font-size="11">• OASIS SARIF v2.1.0 with codeFlows</text>
-      <text x="15" y="78" fill="#e2e8f0" font-size="11">• CWE / OWASP tags &amp; baselineState</text>
-      <text x="15" y="96" fill="#e2e8f0" font-size="11">• Cryptographic SHA-256 / HMAC seal</text>
-      <text x="15" y="116" fill="#e2e8f0" font-size="11">• Ready for CI/CD dashboard ingestion</text>
+      <text x="15" y="78" fill="#e2e8f0" font-size="11">• Line-independent partialFingerprints</text>
+      <text x="15" y="96" fill="#e2e8f0" font-size="11">• Deduplication relatedLocations attached</text>
+      <text x="15" y="116" fill="#e2e8f0" font-size="11">• Cryptographic SHA-256 seal &amp; attestation</text>
     </g>
   </g>
 
@@ -212,10 +217,10 @@
     <g transform="translate(25, 42)">
       <rect width="295" height="108" rx="6" fill="#111827" stroke="#1f2937"/>
       <text x="15" y="22" fill="#f8fafc" font-size="12.5" font-weight="bold">Axis 1: Category</text>
-      <text x="15" y="40" fill="#94a3b8" font-size="11">Standard CWE &amp; OWASP Top 10</text>
-      <text x="15" y="58" fill="#64748b" font-size="10.5">• CWE-89 (SQLi)  • CWE-798 (Secrets)</text>
-      <text x="15" y="74" fill="#64748b" font-size="10.5">• CWE-639 (Object Auth / IDOR)</text>
-      <text x="15" y="90" fill="#64748b" font-size="10.5">• CWE-285 (Function Auth / PrivEsc)</text>
+      <text x="15" y="40" fill="#94a3b8" font-size="11">Leaf CWE &amp; OWASP Top 10</text>
+      <text x="15" y="58" fill="#64748b" font-size="10.5">• CWE-862 (Missing Authorization)</text>
+      <text x="15" y="74" fill="#64748b" font-size="10.5">• CWE-639 (User-Controlled Key / IDOR)</text>
+      <text x="15" y="90" fill="#64748b" font-size="10.5">• CWE-306 (Missing Authentication)</text>
     </g>
 
     <!-- Axis 2 -->
@@ -223,29 +228,29 @@
       <rect width="295" height="108" rx="6" fill="#111827" stroke="#1f2937"/>
       <text x="15" y="22" fill="#f8fafc" font-size="12.5" font-weight="bold">Axis 2: Intrinsic Severity</text>
       <text x="15" y="40" fill="#94a3b8" font-size="11">Worst-case technical impact weight</text>
-      <text x="15" y="58" fill="#64748b" font-size="10.5">• CRITICAL (10.0)  • HIGH (7.0)</text>
-      <text x="15" y="74" fill="#64748b" font-size="10.5">• MEDIUM (4.0)    • LOW (2.0)</text>
-      <text x="15" y="90" fill="#64748b" font-size="10.5">• INFORMATIONAL (0.5)</text>
+      <text x="15" y="58" fill="#64748b" font-size="10.5">• CRITICAL (100.0)  • HIGH (70.0)</text>
+      <text x="15" y="74" fill="#64748b" font-size="10.5">• MEDIUM (40.0)    • LOW (20.0)</text>
+      <text x="15" y="90" fill="#64748b" font-size="10.5">• INFORMATIONAL (5.0)</text>
     </g>
 
     <!-- Axis 3 -->
     <g transform="translate(655, 42)">
       <rect width="295" height="108" rx="6" fill="#111827" stroke="#1f2937"/>
-      <text x="15" y="22" fill="#f8fafc" font-size="12.5" font-weight="bold">Axis 3: Engine Confidence</text>
-      <text x="15" y="40" fill="#94a3b8" font-size="11">Single normalized certainty scale (0..1)</text>
-      <text x="15" y="58" fill="#64748b" font-size="10.5">• CONFIRMED (1.0) - High pattern/test match</text>
-      <text x="15" y="74" fill="#64748b" font-size="10.5">• LIKELY (0.8)     • MEDIUM (0.6)</text>
-      <text x="15" y="90" fill="#64748b" font-size="10.5">• POSSIBLE (0.4)</text>
+      <text x="15" y="22" fill="#f8fafc" font-size="12.5" font-weight="bold">Axis 3: Rule Precision Confidence</text>
+      <text x="15" y="40" fill="#94a3b8" font-size="11">Calibrated static rule precision (0..1)</text>
+      <text x="15" y="58" fill="#64748b" font-size="10.5">• CONFIRMED (1.00) - Unambiguous AST/secret</text>
+      <text x="15" y="74" fill="#64748b" font-size="10.5">• HIGH / LIKELY (0.85) - High AST pattern match</text>
+      <text x="15" y="90" fill="#64748b" font-size="10.5">• MEDIUM (0.65)  • LOW / POSSIBLE (0.40)</text>
     </g>
 
     <!-- Axis 4 -->
     <g transform="translate(970, 42)">
       <rect width="345" height="108" rx="6" fill="#111827" stroke="#1f2937"/>
-      <text x="15" y="22" fill="#f8fafc" font-size="12.5" font-weight="bold">Axis 4: Evidence Level</text>
-      <text x="15" y="40" fill="#94a3b8" font-size="11">Verification pedigree hierarchy</text>
-      <text x="15" y="58" fill="#64748b" font-size="10.5">• test-confirmed (dynamic test reproduction)</text>
-      <text x="15" y="74" fill="#64748b" font-size="10.5">• reachable (connected via call graph)</text>
-      <text x="15" y="90" fill="#64748b" font-size="10.5">• static-only | model-hypothesis (unverified)</text>
+      <text x="15" y="22" fill="#f8fafc" font-size="12.5" font-weight="bold">Axis 4: Evidence Level Multiplier</text>
+      <text x="15" y="40" fill="#94a3b8" font-size="11">Verification pedigree hierarchy multiplier</text>
+      <text x="15" y="58" fill="#64748b" font-size="10.5">• test-confirmed (1.20x)  • reachable (1.00x)</text>
+      <text x="15" y="74" fill="#64748b" font-size="10.5">• static-only (0.80x)     • flaky-test (0.60x)</text>
+      <text x="15" y="90" fill="#64748b" font-size="10.5">• model-hypothesis (0.50x, cap 25.0, no gate fail)</text>
     </g>
   </g>
 </svg>

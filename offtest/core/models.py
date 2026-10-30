@@ -201,6 +201,10 @@ class Finding(BaseModel):
     suppression_reason: Optional[str] = None
     root_cause_cluster: Optional[str] = None
     context: Optional[Dict[str, Any]] = None
+    cwe_secondary_ids: List[str] = Field(default_factory=list)
+    related_locations: List[Dict[str, Any]] = Field(default_factory=list)
+    partial_fingerprints: Dict[str, str] = Field(default_factory=dict)
+    oracle_satisfied: bool = False
 
 
 def compute_priority(
@@ -208,48 +212,114 @@ def compute_priority(
     confidence: Confidence,
     reachability: str = "unknown",
     exposure: str = "internal",
+    evidence_level: str = "static-only",
 ) -> float:
     """
-    Computes an exposure-weighted priority score for ranking actionable findings:
-    Priority = Severity Weight * Confidence * Reachability Factor * Exposure Factor
+    Computes a benchmark-calibrated Priority Score normalized to 0.0 - 100.0:
+    Priority = min(100.0, round(Severity_Weight * Confidence * Evidence_Multiplier * Reachability_Factor * Exposure_Factor, 1))
 
-    Calibrated Weights:
-    - Severity: Critical (10.0), High (7.0), Medium (4.0), Low (2.0), Informational (0.5)
-    - Confidence: Confirmed (1.0), High (0.9), Likely (0.8), Medium (0.6), Possible/Low (0.4)
-    - Reachability: Reachable (1.0), Unknown (0.7), Unreachable (0.2)
-    - Exposure: Public Unauthenticated (1.5), Authenticated (1.0), Internal (0.6), Test Fixture (0.2)
+    Calibrated Precision Scales:
+    - Severity Weight: Critical (100.0), High (70.0), Medium (40.0), Low (20.0), Informational (5.0)
+    - Confidence (Rule Precision): Confirmed (1.00), High/Likely (0.85), Medium (0.65), Low/Possible (0.40)
+    - Evidence Level Multiplier: test-confirmed (1.20), reachable (1.00), static-only (0.80), model-hypothesis (0.50 capped)
+    - Reachability Factor: reachable (1.00), unknown (0.70), unreachable (0.20)
+    - Exposure Factor: public_unauth (1.00), public_auth (0.75), internal (0.50), test_fixture (0.20)
     """
     sev_map = {
-        Severity.CRITICAL: 10.0,
-        Severity.HIGH: 7.0,
-        Severity.MEDIUM: 4.0,
-        Severity.LOW: 2.0,
-        Severity.INFORMATIONAL: 0.5,
+        Severity.CRITICAL: 100.0,
+        Severity.HIGH: 70.0,
+        Severity.MEDIUM: 40.0,
+        Severity.LOW: 20.0,
+        Severity.INFORMATIONAL: 5.0,
     }
     conf_map = {
-        Confidence.CONFIRMED: 1.0,
-        Confidence.HIGH: 0.9,
-        Confidence.LIKELY: 0.8,
-        Confidence.MEDIUM: 0.6,
-        Confidence.POSSIBLE: 0.4,
-        Confidence.LOW: 0.4,
+        Confidence.CONFIRMED: 1.00,
+        Confidence.HIGH: 0.85,
+        Confidence.LIKELY: 0.85,
+        Confidence.MEDIUM: 0.65,
+        Confidence.LOW: 0.40,
+        Confidence.POSSIBLE: 0.40,
+    }
+    ev_map = {
+        "test-confirmed": 1.20,
+        "reachable": 1.00,
+        "static-only": 0.80,
+        "flaky-test": 0.60,
+        "model-hypothesis": 0.50,
     }
     reach_map = {
-        "reachable": 1.0,
-        "unknown": 0.7,
-        "unreachable": 0.2,
+        "reachable": 1.00,
+        "unknown": 0.70,
+        "unreachable": 0.20,
     }
     expo_map = {
-        "public_unauth": 1.5,
-        "public_auth": 1.0,
-        "internal": 0.6,
-        "test_fixture": 0.2,
+        "public_unauth": 1.00,
+        "public_auth": 0.75,
+        "internal": 0.50,
+        "test_fixture": 0.20,
     }
-    s = sev_map.get(severity, 4.0)
-    c = conf_map.get(confidence, 0.7)
-    r = reach_map.get(reachability, 0.7)
-    e = expo_map.get(exposure, 0.6)
-    return round(s * c * r * e, 2)
+    s = sev_map.get(severity, 40.0)
+    c = conf_map.get(confidence, 0.65)
+    ev = ev_map.get(evidence_level, 0.80)
+    r = reach_map.get(reachability, 0.70)
+    e = expo_map.get(exposure, 0.50)
+    raw = s * c * ev * r * e
+    if evidence_level == "model-hypothesis":
+        return min(25.0, round(raw, 1))
+    return min(100.0, round(raw, 1))
+
+
+def deduplicate_and_cluster_findings(findings: List[Finding]) -> List[Finding]:
+    """
+    Deduplicates findings using the hierarchical cluster key:
+    `{file}:{rule_id}:{parent_symbol}`
+    - Consolidates multiple occurrences within the same enclosing AST function/class
+      into a single primary representative (the one with highest priority score).
+    - Attaches secondary occurrences to the primary finding as `related_locations`
+      (formatted for SARIF relatedLocations).
+    - Preserves logicalLocationKey partial fingerprints independent of line numbers.
+    """
+    clusters: Dict[str, List[Finding]] = {}
+    for f in findings:
+        # Determine parent scope from context or fallback
+        parent = "global"
+        if f.context and f.context.get("parent_scope"):
+            parent = f.context["parent_scope"]
+        elif f.root_cause_cluster and "::" in f.root_cause_cluster:
+            parent = f.root_cause_cluster.split("::")[-1]
+
+        file_key = str(f.file_path or "UNKNOWN").replace("\\", "/")
+        rule_key = f.rule_id or "GENERAL"
+        key = f"{file_key}:{rule_key}:{parent}"
+        clusters.setdefault(key, []).append(f)
+
+    deduplicated: List[Finding] = []
+    for key, group in clusters.items():
+        # Sort group by priority_score descending
+        group.sort(key=lambda item: getattr(item, "priority_score", 0.0), reverse=True)
+        primary = group[0]
+
+        # Attach other occurrences as related_locations
+        if len(group) > 1:
+            rel_locs = list(primary.related_locations or [])
+            for sec in group[1:]:
+                if sec.file_path:
+                    loc_entry = {
+                        "physicalLocation": {
+                            "artifactLocation": {"uri": sec.file_path.replace("\\", "/"), "uriBaseId": "%SRCROOT%"},
+                        },
+                        "message": {
+                            "text": f"Secondary occurrence in cluster '{key}' at line {sec.line_number or 1}",
+                        },
+                    }
+                    if sec.line_number:
+                        loc_entry["physicalLocation"]["region"] = {"startLine": sec.line_number, "startColumn": 1}
+                    rel_locs.append(loc_entry)
+            primary.related_locations = rel_locs
+
+        deduplicated.append(primary)
+
+    return deduplicated
 
 
 class CoverageDimension(BaseModel):

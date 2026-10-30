@@ -67,7 +67,7 @@ def _version_less_than(v1_str: str, v2_str: str) -> bool:
         return False
 
 
-# Offline curated advisory database snapshot (Air-gapped OSV/CVE entries)
+# Offline curated advisory database snapshot (Air-gapped OSV/CVE entries with CISA KEV & EPSS)
 OFFLINE_ADVISORIES: List[Dict[str, Any]] = [
     # --- PyPI Advisories ---
     {
@@ -80,6 +80,8 @@ OFFLINE_ADVISORIES: List[Dict[str, Any]] = [
         "cwe_id": "CWE-200",
         "cwe_name": "Exposure of Sensitive Information to an Unauthorized Actor",
         "base_severity": Severity.HIGH,
+        "cisa_kev": False,
+        "epss_score": 0.00145,
     },
     {
         "ecosystem": "pypi",
@@ -91,6 +93,8 @@ OFFLINE_ADVISORIES: List[Dict[str, Any]] = [
         "cwe_id": "CWE-200",
         "cwe_name": "Exposure of Sensitive Information to an Unauthorized Actor",
         "base_severity": Severity.MEDIUM,
+        "cisa_kev": False,
+        "epss_score": 0.00085,
     },
     {
         "ecosystem": "pypi",
@@ -102,6 +106,8 @@ OFFLINE_ADVISORIES: List[Dict[str, Any]] = [
         "cwe_id": "CWE-524",
         "cwe_name": "Information Exposure Through Caching",
         "base_severity": Severity.HIGH,
+        "cisa_kev": False,
+        "epss_score": 0.00092,
     },
     {
         "ecosystem": "pypi",
@@ -113,6 +119,8 @@ OFFLINE_ADVISORIES: List[Dict[str, Any]] = [
         "cwe_id": "CWE-79",
         "cwe_name": "Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')",
         "base_severity": Severity.HIGH,
+        "cisa_kev": False,
+        "epss_score": 0.00112,
     },
     {
         "ecosystem": "pypi",
@@ -124,6 +132,8 @@ OFFLINE_ADVISORIES: List[Dict[str, Any]] = [
         "cwe_id": "CWE-476",
         "cwe_name": "NULL Pointer Dereference",
         "base_severity": Severity.MEDIUM,
+        "cisa_kev": False,
+        "epss_score": 0.00045,
     },
     {
         "ecosystem": "pypi",
@@ -135,6 +145,8 @@ OFFLINE_ADVISORIES: List[Dict[str, Any]] = [
         "cwe_id": "CWE-502",
         "cwe_name": "Deserialization of Untrusted Data",
         "base_severity": Severity.CRITICAL,
+        "cisa_kev": True,
+        "epss_score": 0.94210,
     },
     # --- NPM Advisories ---
     {
@@ -147,6 +159,8 @@ OFFLINE_ADVISORIES: List[Dict[str, Any]] = [
         "cwe_id": "CWE-94",
         "cwe_name": "Improper Control of Generation of Code ('Code Injection')",
         "base_severity": Severity.HIGH,
+        "cisa_kev": False,
+        "epss_score": 0.00318,
     },
     {
         "ecosystem": "npm",
@@ -158,6 +172,8 @@ OFFLINE_ADVISORIES: List[Dict[str, Any]] = [
         "cwe_id": "CWE-1333",
         "cwe_name": "Inefficient Regular Expression Complexity",
         "base_severity": Severity.HIGH,
+        "cisa_kev": False,
+        "epss_score": 0.00067,
     },
     {
         "ecosystem": "npm",
@@ -169,6 +185,8 @@ OFFLINE_ADVISORIES: List[Dict[str, Any]] = [
         "cwe_id": "CWE-601",
         "cwe_name": "URL Redirection to Untrusted Site ('Open Redirect')",
         "base_severity": Severity.MEDIUM,
+        "cisa_kev": False,
+        "epss_score": 0.00088,
     },
     {
         "ecosystem": "npm",
@@ -180,6 +198,8 @@ OFFLINE_ADVISORIES: List[Dict[str, Any]] = [
         "cwe_id": "CWE-1321",
         "cwe_name": "Improperly Controlled Modification of Object Prototype Attributes ('Prototype Pollution')",
         "base_severity": Severity.HIGH,
+        "cisa_kev": False,
+        "epss_score": 0.00120,
     },
 ]
 
@@ -258,13 +278,17 @@ class OfflineAdvisoryMatcher:
                         confidence = Confidence.LIKELY
 
                     is_stale, age, staleness_msg = check_advisory_staleness()
+                    cisa_kev = adv.get("cisa_kev", False)
+                    epss_score = adv.get("epss_score", 0.0)
+                    kev_str = " | CISA KEV: YES (Known Exploited)" if cisa_kev else " | CISA KEV: No"
+                    epss_str = f" | EPSS: {epss_score:.4f}"
                     impact_desc = (
-                        f"{adv['title']} ({adv['cve']}). Fixed in version {adv['fixed_version']}. "
+                        f"{adv['title']} ({adv['cve']}){kev_str}{epss_str}. Fixed in version {adv['fixed_version']}. "
                         f"VEX Status: {vex_status}. Snapshot: {ADVISORY_SNAPSHOT_DATE} ({staleness_msg}). {adv['summary']}"
                     )
                     evidence_text = (
                         f"Component '{comp.name}' version '{comp.version}' ({comp.source_file}) "
-                        f"is lower than fixed version '{adv['fixed_version']}'. Reachability: {reachability}."
+                        f"is lower than fixed version '{adv['fixed_version']}'. Reachability: {reachability}.{kev_str}{epss_str}."
                     )
                     suggested_action = (
                         f"Upgrade {comp.name} to version {adv['fixed_version']} or later in {comp.source_file}."

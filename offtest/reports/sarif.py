@@ -79,8 +79,21 @@ class SARIFReportGenerator:
                     "evidenceLevel": getattr(f, "evidence_level", "static-only"),
                     "fingerprint": getattr(f, "fingerprint", None),
                     "rootCauseCluster": getattr(f, "root_cause_cluster", None),
+                    "secondaryCwes": getattr(f, "cwe_secondary_ids", []),
+                    "oracleSatisfied": getattr(f, "oracle_satisfied", False),
+                    "oracleOrigin": getattr(f, "oracle_origin", None),
                 },
             }
+
+            # SARIF line-independent partialFingerprints for baselineState diffing
+            if getattr(f, "partial_fingerprints", None):
+                res_item["partialFingerprints"] = f.partial_fingerprints
+            elif getattr(f, "fingerprint", None):
+                res_item["partialFingerprints"] = {"logicalLocationKey": f.fingerprint}
+
+            # Secondary related locations from deduplication clustering
+            if getattr(f, "related_locations", None):
+                res_item["relatedLocations"] = f.related_locations
 
             # Inline suppression handling
             if getattr(f, "suppressed", False):

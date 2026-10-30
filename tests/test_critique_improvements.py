@@ -298,21 +298,22 @@ def test_4_axis_categorization_and_priority_calculation():
     assert eval_rule.owasp_category == "A03:2021-Injection"
     assert eval_rule.asvs_chapter == "V5 Validation, Sanitization and Encoding"
 
-    # Make finding and check dynamic priority score calculation
-    # High (7.0) * Likely (0.8) * reachable (1.0) * public_unauth (1.5) = 8.4
+    # Make finding and check dynamic priority score calculation on normalized 0-100 scale:
+    # High (70) * Likely (0.85) * static-only (0.80) * reachable (1.0) * public_unauth (1.0) = 47.6
     p_high_reach = compute_priority(
-        Severity.HIGH, Confidence.LIKELY, reachability="reachable", exposure="public_unauth"
+        Severity.HIGH, Confidence.LIKELY, evidence_level="static-only", reachability="reachable", exposure="public_unauth"
     )
-    assert p_high_reach == 8.4
+    assert p_high_reach == 47.6
 
-    # High (7.0) * Likely (0.8) * unreachable (0.2) * internal (0.6) = 0.67
+    # High (70) * Likely (0.85) * static-only (0.80) * unreachable (0.2) * internal (0.5) = 4.8
     p_unreach = compute_priority(
-        Severity.HIGH, Confidence.LIKELY, reachability="unreachable", exposure="internal"
+        Severity.HIGH, Confidence.LIKELY, evidence_level="static-only", reachability="unreachable", exposure="internal"
     )
-    assert p_unreach == 0.67
+    assert p_unreach == 4.8
     assert p_high_reach > p_unreach
 
     # Test finding creation with new fields
+    # OT-SEC-001 default_confidence is LIKELY (0.85): 70 * 0.85 * 0.8 * 1.0 * 1.0 = 47.6
     finding = make_finding(
         eval_rule,
         path="src/calc.py",
@@ -323,7 +324,7 @@ def test_4_axis_categorization_and_priority_calculation():
     )
     assert finding.owasp_category == "A03:2021-Injection"
     assert finding.asvs_chapter == "V5 Validation, Sanitization and Encoding"
-    assert finding.priority_score == 8.4
+    assert finding.priority_score == 47.6
     assert finding.exposure == "public_unauth"
     assert finding.reachability == "reachable"
 
@@ -642,7 +643,8 @@ def test_test_confirmation_feedback_loop():
     # Finding should be elevated to CONFIRMED and evidence_level="test-confirmed"
     assert finding.confidence == Confidence.CONFIRMED
     assert finding.evidence_level == "test-confirmed"
-    assert "Dynamic Test Failure Corroboration" in finding.context["test_feedback"]
+    assert finding.oracle_satisfied is True
+    assert "Exploit Oracle Satisfied" in finding.context["test_feedback"]
 
     # Verify asymmetric feedback semantics:
     # A passing test does NOT demote a deterministic rule finding
