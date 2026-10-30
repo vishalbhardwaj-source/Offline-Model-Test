@@ -53,6 +53,7 @@ class CheckStatus(str, Enum):
     FAILED = "Failed"
     SKIPPED = "Skipped"
     BLOCKED = "Blocked"
+    ANALYSIS_INCOMPLETE = "AnalysisIncomplete"
 
 
 class FileRecord(BaseModel):
@@ -232,18 +233,22 @@ def compute_priority(
       * static-only: 1.00 (deterministic AST or pattern verification baseline)
       * model-hypothesis: 0.50 (unverified neural synthesis, strictly capped at 25.0)
       (Note: flaky-test no longer demotes; findings retain static-only 1.00 with a flaky annotation)
-    - Reachability Factor:
-      * reachable: 1.00 (called/imported from entry point)
-      * unknown / non-code default (secrets, configs): 0.70 (or 1.00 for active secrets)
-      * unreachable: 0.20 (dead code or unreferenced package)
-    - Exposure Factor:
+    - Three-State Reachability Factor (Context Factor):
+      * reachable: 1.00 (proven edge from an entry point; VEX: affected)
+      * unknown: 1.00 (no edge found, no proof of absence - default; VEX: affected or unknown, never not_affected)
+      * unreachable: 0.20 (positive evidence: private symbol with no reference anywhere in project; VEX: not_affected allowed)
+      (Non-code findings like secrets, dependency advisories, and configs have no call graph and explicitly default to Reach 1.00)
+    - Exposure Factor (Context Factor):
       * public_unauth: 1.00 (unauthenticated internet-facing route/CLI)
       * public_auth: 0.75 (authenticated user-facing route)
       * internal: 0.50 (internal backend service or config)
       * test_fixture: 0.20 (test mock or fixture)
 
     Hard Floor Overrides:
-    - Known Exploited Vulnerability (CISA KEV): sets floor priority at 80.0 (instant gate failure).
+    - Known Exploited Vulnerability (CISA KEV): sets floor priority at 90.0 (instant gate failure when VEX is affected or unknown).
+    - Reachable Critical with precision >= 0.85: fails the gate even on internal routes (floor priority 90.0).
+    - Test-confirmed Critical or High defect: floor priority 90.0.
+    - Provider-pattern secret outside tests/fixtures: floor priority 90.0.
     """
     sev_map = {
         Severity.CRITICAL: 100.0,
@@ -272,7 +277,7 @@ def compute_priority(
     }
     reach_map = {
         "reachable": 1.00,
-        "unknown": 0.70,
+        "unknown": 1.00,
         "unreachable": 0.20,
     }
     expo_map = {
@@ -543,6 +548,7 @@ class RunContext(BaseModel):
     allow_scripts: bool = False
     accept_no_kernel_isolation: bool = False
     kernel_isolation_active: bool = False
+    app_tier: str = "unknown"  # internal, public, or unknown (default: unknown, treated as public for gate)
     
     tools_manifest: List[ToolManifestItem] = Field(default_factory=list)
     inventory_summary: RepositoryInventorySummary = Field(default_factory=RepositoryInventorySummary)

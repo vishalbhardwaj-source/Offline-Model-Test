@@ -290,6 +290,14 @@ def scan_for_secrets(content: str, file_path: str) -> List[Tuple[int, str, str, 
     Scans content line-by-line for sensitive data using both regex patterns and charset-aware Shannon entropy.
     Returns a list of (line_number, match_type, redacted_preview, secret_fingerprint).
     """
+    norm_fp = file_path.replace("\\", "/").lower()
+
+    # Skip lockfiles and TypeScript declaration files (.d.ts) completely in secret scanner
+    if norm_fp.endswith((".d.ts", ".d.mts", ".d.cts", ".lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "cargo.lock", "composer.lock", "gemfile.lock")):
+        return []
+
+    is_bundle_or_map = norm_fp.endswith((".min.js", ".min.css", ".map", ".bundle.js", ".bundle.css"))
+
     findings = []
     lines = content.splitlines()
 
@@ -299,6 +307,9 @@ def scan_for_secrets(content: str, file_path: str) -> List[Tuple[int, str, str, 
         if len(line) > 10_000:
             line = line[:10_000]
 
+        stripped = line.strip()
+        is_comment = stripped.startswith(("#", "//", "/*", "*"))
+
         matched = False
 
         # 1. Known high-confidence regex patterns
@@ -306,20 +317,37 @@ def scan_for_secrets(content: str, file_path: str) -> List[Tuple[int, str, str, 
             match = pattern.search(line)
             if match:
                 raw_secret = match.group(match.lastindex) if (match.lastindex and match.lastindex >= 1) else match.group(0)
+                clean_raw = raw_secret.lower().strip("\"' ;:,")
+                if clean_raw in OfflineConfig.SECRET_PLACEHOLDERS:
+                    continue
+
                 fingerprint = compute_secret_fingerprint(raw_secret)
-                preview = redact_sensitive_data(line.strip())
+                preview = redact_sensitive_data(stripped)
                 if "AKIA" in raw_secret and ("EXAMPLE" in raw_secret or raw_secret == "AKIAIOSFODNN7EXAMPLE"):
                     det_label = "Documented AWS Example Key (AKIA...EXAMPLE)"
                 else:
                     det_label = f"Hardcoded Secret ({det_name})"
+                    if is_comment:
+                        det_label += " (in comment)"
                 findings.append((idx, det_label, preview, fingerprint))
                 matched = True
                 break
 
-        # 2. Charset-aware Shannon entropy check for non-standard / custom secrets (hex, alphanumeric, base64)
-        if not matched:
+        # 2. Charset-aware Shannon entropy check (skipped on minified bundles & source maps)
+        if not matched and not is_bundle_or_map:
             for token_m in candidate_token_pattern.finditer(line):
                 token = token_m.group(1)
+                clean_token = token.lower().strip("\"' ;:,")
+                if clean_token in OfflineConfig.SECRET_PLACEHOLDERS:
+                    continue
+
+                # Value-only entropy: never compute entropy on key or property names!
+                # In JSON / JS objects: "complianceHistoryBand": ... -> next non-whitespace char is ':'
+                # In assignments: variable_name = ... -> next non-whitespace char is '='
+                after_token = line[token_m.end():].lstrip()
+                if after_token.startswith(":") or after_token.startswith("="):
+                    continue
+
                 start_idx = token_m.start(1)
                 prefix_context = line[max(0, start_idx - 50) : start_idx].lower()
 
@@ -335,8 +363,11 @@ def scan_for_secrets(content: str, file_path: str) -> List[Tuple[int, str, str, 
                 is_secret, entropy, cset = is_high_entropy_secret(token)
                 if is_secret:
                     fingerprint = compute_secret_fingerprint(token)
-                    preview = line.strip().replace(token, "[REDACTED_SECRET]")
-                    findings.append((idx, f"High-Entropy Secret Token ({cset}, Shannon Entropy {entropy:.2f} bits)", preview, fingerprint))
+                    preview = stripped.replace(token, "[REDACTED_SECRET]")
+                    ent_label = f"High-Entropy Secret Token ({cset}, Shannon Entropy {entropy:.2f} bits)"
+                    if is_comment:
+                        ent_label += " (in comment)"
+                    findings.append((idx, ent_label, preview, fingerprint))
                     break
 
     return findings

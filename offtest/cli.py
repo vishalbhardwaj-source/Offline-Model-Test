@@ -64,7 +64,28 @@ def main():
     default=False,
     help="Explicitly acknowledge and accept running scripts on bare host with NO ISOLATION. Untrusted code will have direct host access.",
 )
-def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_policy, generate_tests, out, sarif_out, json_out, strict, strip_sarif_snippets, accept_no_kernel_isolation):
+@click.option(
+    "--app-tier",
+    type=click.Choice(["internal", "public", "unknown"], case_sensitive=False),
+    default="unknown",
+    help="Deployment application tier: internal, public, or unknown (default: unknown, treated as public for gate evaluation).",
+)
+def assess(
+    repo_path,
+    base,
+    branch,
+    allow_scripts,
+    detect_flaky,
+    quarantine_policy,
+    generate_tests,
+    out,
+    sarif_out,
+    json_out,
+    strict,
+    strip_sarif_snippets,
+    accept_no_kernel_isolation,
+    app_tier="unknown",
+):
     """
     Run offline repository intake, inventory, app mapping, checks, and generate reports.
     """
@@ -109,6 +130,7 @@ def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_poli
         generate_tests=generate_tests,
         accept_no_kernel_isolation=accept_no_kernel_isolation,
         strip_sarif_snippets=strip_sarif_snippets,
+        app_tier=app_tier,
     )
 
     orchestrator_res = orchestrator.run()
@@ -127,7 +149,13 @@ def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_poli
     click.echo(f"[+] Generated Branch Tests: {context.generated_test_suite.total_generated} (Status: synthesized, unverified)")
     click.echo(f"[+] Total findings: {len(context.findings)}")
     click.echo(f"[+] Report 1 (Detailed): {detailed_path}")
+    if getattr(orchestrator_res, "detailed_hardcoded_path", None):
+        click.echo(f"[+]   -> Branch 1A (Detailed Hardcoded): {orchestrator_res.detailed_hardcoded_path}")
+        click.echo(f"[+]   -> Branch 1B (Detailed Code Defects): {orchestrator_res.detailed_code_path}")
     click.echo(f"[+] Report 2 (Issue-focused): {issue_path}")
+    if getattr(orchestrator_res, "issue_hardcoded_path", None):
+        click.echo(f"[+]   -> Branch 2A (Issues Hardcoded): {orchestrator_res.issue_hardcoded_path}")
+        click.echo(f"[+]   -> Branch 2B (Issues Code Defects): {orchestrator_res.issue_code_path}")
     click.echo(f"[+] Report 3 (Workflows): {workflow_path}")
     click.echo(f"[+] SARIF Report: {sarif_path}")
 
@@ -149,7 +177,18 @@ def assess(repo_path, base, branch, allow_scripts, detect_flaky, quarantine_poli
         click.echo(json.dumps(summary, indent=2))
 
     # Standard CI Exit Codes
-    crit_or_high = [f for f in context.findings if f.severity in [Severity.CRITICAL, Severity.HIGH]]
+    analysis_incomplete = any(c.status == CheckStatus.ANALYSIS_INCOMPLETE for c in context.check_results)
+    if analysis_incomplete:
+        click.echo("[!] Scanner Status: ANALYSIS_INCOMPLETE (analysis failure in test synthesis, not user code defect).")
+        sys.exit(2)
+
+    crit_or_high = [
+        f for f in context.findings
+        if f.severity in [Severity.CRITICAL, Severity.HIGH]
+        and getattr(f, "category", "") not in ("hygiene",)
+        and not getattr(f, "suppressed", False)
+        and getattr(f, "evidence_level", "") != "model-hypothesis"
+    ]
     blocked_checks = [c for c in context.check_results if c.status == CheckStatus.BLOCKED]
 
     if crit_or_high:
@@ -180,16 +219,28 @@ def report(run_id_or_file, out):
     target_dir.mkdir(parents=True, exist_ok=True)
 
     det_path = target_dir / "REPORT_1_DETAILED.md"
+    det_hard_path = target_dir / "REPORT_1A_DETAILED_HARDCODED.md"
+    det_code_path = target_dir / "REPORT_1B_DETAILED_CODE_DEFECTS.md"
     iss_path = target_dir / "REPORT_2_ISSUES.md"
+    iss_hard_path = target_dir / "REPORT_2A_ISSUES_HARDCODED.md"
+    iss_code_path = target_dir / "REPORT_2B_ISSUES_CODE_DEFECTS.md"
     wf_path = target_dir / "REPORT_3_WORKFLOWS.md"
 
     det_path.write_text(detailed_gen.generate_markdown(), encoding="utf-8")
+    det_hard_path.write_text(detailed_gen.generate_hardcoded_markdown(), encoding="utf-8")
+    det_code_path.write_text(detailed_gen.generate_code_defects_markdown(), encoding="utf-8")
     iss_path.write_text(issue_gen.generate_markdown(), encoding="utf-8")
+    iss_hard_path.write_text(issue_gen.generate_hardcoded_markdown(), encoding="utf-8")
+    iss_code_path.write_text(issue_gen.generate_code_defects_markdown(), encoding="utf-8")
     wf_path.write_text(workflow_gen.generate_markdown(), encoding="utf-8")
 
     click.echo(f"[+] Successfully reproduced reports from run '{context.run_id}'!")
     click.echo(f"[+] Detailed report: {det_path}")
+    click.echo(f"[+]   -> Branch 1A (Detailed Hardcoded): {det_hard_path}")
+    click.echo(f"[+]   -> Branch 1B (Detailed Code Defects): {det_code_path}")
     click.echo(f"[+] Issue-focused report: {iss_path}")
+    click.echo(f"[+]   -> Branch 2A (Issues Hardcoded): {iss_hard_path}")
+    click.echo(f"[+]   -> Branch 2B (Issues Code Defects): {iss_code_path}")
     click.echo(f"[+] Workflow report: {wf_path}")
 
 

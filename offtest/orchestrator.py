@@ -35,18 +35,22 @@ from offtest.intake.safety import redact_sensitive_data
 class OrchestratorResult(tuple):
     """
     4-element tuple (context, detailed_report_path, issue_report_path, sarif_path)
-    for seamless backward compatibility with unpacking, plus .workflow_report_path attribute.
+    for seamless backward compatibility with unpacking, plus .workflow_report_path and branch attributes.
     """
-    def __new__(cls, context, detailed_path, issue_path, sarif_path, workflow_path=None):
+    def __new__(cls, context, detailed_path, issue_path, sarif_path, workflow_path=None, **kwargs):
         return super().__new__(cls, (context, detailed_path, issue_path, sarif_path))
 
-    def __init__(self, context, detailed_path, issue_path, sarif_path, workflow_path=None):
+    def __init__(self, context, detailed_path, issue_path, sarif_path, workflow_path=None, **kwargs):
         self.context = context
         self.detailed_report_path = detailed_path
         self.issue_report_path = issue_path
         self.sarif_path = sarif_path
         self.workflow_report_path = workflow_path
         self.workflow_path = workflow_path
+        self.detailed_hardcoded_path = kwargs.get("detailed_hardcoded_path")
+        self.detailed_code_path = kwargs.get("detailed_code_path")
+        self.issue_hardcoded_path = kwargs.get("issue_hardcoded_path")
+        self.issue_code_path = kwargs.get("issue_code_path")
 
 
 class AssessmentOrchestrator:
@@ -62,6 +66,7 @@ class AssessmentOrchestrator:
         generate_tests: bool = True,
         accept_no_kernel_isolation: bool = False,
         strip_sarif_snippets: bool = False,
+        app_tier: str = "unknown",
     ):
         self.input_target = repo_path_or_archive
         self.base_branch = base_branch
@@ -73,6 +78,7 @@ class AssessmentOrchestrator:
         self.generate_tests = generate_tests
         self.accept_no_kernel_isolation = accept_no_kernel_isolation
         self.strip_sarif_snippets = strip_sarif_snippets
+        self.app_tier = (app_tier or "unknown").lower()
 
     def run(self) -> Tuple[RunContext, Path, Path, Path]:
         target_path = Path(self.input_target) if isinstance(self.input_target, (str, Path)) and Path(self.input_target).exists() else None
@@ -143,7 +149,13 @@ class AssessmentOrchestrator:
         openapi_spec = rbac_schema_extractor.synthesize_openapi(title=f"{repo_name} API")
 
         # 5. Check Planning & Execution (inside scrubbed isolated runner)
-        check_planner = CheckPlanner(target_dir, files, allow_scripts=self.allow_scripts, project_index=project_index)
+        check_planner = CheckPlanner(
+            target_dir,
+            files,
+            allow_scripts=self.allow_scripts,
+            project_index=project_index,
+            app_tier=self.app_tier,
+        )
         active_b_name = git_state.get("active_branch") or "HEAD"
         check_results, findings = check_planner.execute_all(branch=active_b_name)
 
@@ -157,8 +169,26 @@ class AssessmentOrchestrator:
 
         # 5d. AST Branch Predicates & Constrained Test Generation
         if self.generate_tests:
-            generator = ConstrainedTestGenerator(target_dir, files, project_index=project_index)
-            generated_test_suite = generator.generate_suite(output_dir=run_folder)
+            try:
+                generator = ConstrainedTestGenerator(target_dir, files, project_index=project_index)
+                generated_test_suite = generator.generate_suite(output_dir=run_folder)
+            except Exception as e:
+                # A crash in the tool's own generated tests is an analysis failure, not a defect in user code.
+                check_results.append(
+                    CheckResult(
+                        tool_name="test-synthesizer",
+                        tool_version="0.1.0",
+                        check_name="Automated Test Synthesis",
+                        check_type="synthesis",
+                        command="synthesize_tests",
+                        exit_code=2,
+                        duration_sec=0.0,
+                        status=CheckStatus.ANALYSIS_INCOMPLETE,
+                        skip_or_blocked_reason=f"Analysis incomplete: test synthesis harness error ({e})",
+                    )
+                )
+                from offtest.core.models import GeneratedTestSuite
+                generated_test_suite = GeneratedTestSuite()
         else:
             from offtest.core.models import GeneratedTestSuite
             generated_test_suite = GeneratedTestSuite()
@@ -190,6 +220,7 @@ class AssessmentOrchestrator:
             f"Execution running on platform '{platform.platform()}' with Python '{sys.version.split()[0]}'.",
             "IsolatedRunner enforced environment scrubbing (host secrets stripped) and proxy nullification.",
             "No remote network calls or remote git fetches performed during assessment.",
+            f"Application Tier: {self.app_tier} (treated as {'internal' if self.app_tier == 'internal' else 'public'} for security gate evaluation).",
         ]
 
         # 8. Assemble Context
@@ -212,6 +243,7 @@ class AssessmentOrchestrator:
             allow_scripts=self.allow_scripts,
             accept_no_kernel_isolation=self.accept_no_kernel_isolation,
             kernel_isolation_active=has_kernel_isolation,
+            app_tier=self.app_tier,
             tools_manifest=get_tool_manifest(),
             inventory_summary=inv_summary,
             files=files,
@@ -247,10 +279,28 @@ class AssessmentOrchestrator:
         detailed_report_path = run_folder / "REPORT_1_DETAILED.md"
         atomic_write_text(detailed_report_path, detailed_md, encoding="utf-8")
 
+        # Detailed Report Split Branches (1A Hardcoded, 1B Code Defects)
+        detailed_hardcoded_md = redact_sensitive_data(detailed_gen.generate_hardcoded_markdown())
+        detailed_hardcoded_path = run_folder / "REPORT_1A_DETAILED_HARDCODED.md"
+        atomic_write_text(detailed_hardcoded_path, detailed_hardcoded_md, encoding="utf-8")
+
+        detailed_code_md = redact_sensitive_data(detailed_gen.generate_code_defects_markdown())
+        detailed_code_path = run_folder / "REPORT_1B_DETAILED_CODE_DEFECTS.md"
+        atomic_write_text(detailed_code_path, detailed_code_md, encoding="utf-8")
+
+        # Issue Report Unified & Split Branches (2A Hardcoded, 2B Code Defects)
         issue_gen = IssueFocusedReportGenerator(context)
         issue_md = redact_sensitive_data(issue_gen.generate_markdown())
         issue_report_path = run_folder / "REPORT_2_ISSUES.md"
         atomic_write_text(issue_report_path, issue_md, encoding="utf-8")
+
+        issue_hardcoded_md = redact_sensitive_data(issue_gen.generate_hardcoded_markdown())
+        issue_hardcoded_path = run_folder / "REPORT_2A_ISSUES_HARDCODED.md"
+        atomic_write_text(issue_hardcoded_path, issue_hardcoded_md, encoding="utf-8")
+
+        issue_code_md = redact_sensitive_data(issue_gen.generate_code_defects_markdown())
+        issue_code_path = run_folder / "REPORT_2B_ISSUES_CODE_DEFECTS.md"
+        atomic_write_text(issue_code_path, issue_code_md, encoding="utf-8")
 
         workflow_gen = WorkflowReportGenerator(context)
         workflow_md = redact_sensitive_data(workflow_gen.generate_markdown())
@@ -261,4 +311,14 @@ class AssessmentOrchestrator:
         sarif_path = run_folder / "results.sarif"
         sarif_gen.save_sarif(sarif_path)
 
-        return OrchestratorResult(context, detailed_report_path, issue_report_path, sarif_path, workflow_report_path)
+        return OrchestratorResult(
+            context,
+            detailed_report_path,
+            issue_report_path,
+            sarif_path,
+            workflow_path=workflow_report_path,
+            detailed_hardcoded_path=detailed_hardcoded_path,
+            detailed_code_path=detailed_code_path,
+            issue_hardcoded_path=issue_hardcoded_path,
+            issue_code_path=issue_code_path,
+        )

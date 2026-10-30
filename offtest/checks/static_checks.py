@@ -94,9 +94,10 @@ def resolve_cwe_cvss(title: str) -> Tuple[Optional[str], Optional[str], Optional
 
 
 class OfflineStaticChecker:
-    def __init__(self, repo_dir: Path, files: List[FileRecord], project_index: Optional[Any] = None):
+    def __init__(self, repo_dir: Path, files: List[FileRecord], project_index: Optional[Any] = None, app_tier: str = "unknown"):
         self.repo_dir = repo_dir
         self.files = files
+        self.app_tier = (app_tier or "unknown").lower()
         self.file_hashes: Dict[str, str] = {f.path: f.sha256 for f in files if getattr(f, "sha256", None)}
         if project_index is None:
             from offtest.core.project_index import ProjectIndex
@@ -171,7 +172,7 @@ class OfflineStaticChecker:
                 elif "Entropy" in label:
                     rule = RULES["OT-SCR-003"]
                     title = f"{label} Detected"
-                    sev = Severity.MEDIUM
+                    sev = Severity.LOW
                     conf = Confidence.POSSIBLE
                 elif "AWS" in label:
                     rule = RULES["OT-SCR-001"]
@@ -183,6 +184,11 @@ class OfflineStaticChecker:
                     title = f"{label} Detected"
                     sev = Severity.CRITICAL
                     conf = Confidence.CONFIRMED if not is_sandbox else Confidence.POSSIBLE
+
+                # Down-weight hits in comments and docstrings instead of stripping them
+                if "(in comment)" in label:
+                    conf = Confidence.POSSIBLE
+                    sev = Severity.LOW
 
                 findings.append(
                     make_finding(
@@ -283,6 +289,7 @@ class OfflineStaticChecker:
                     p_lower = route.path.lower()
                     if not any(k in p_lower for k in ("login", "signin", "register", "signup", "auth/token", "token")):
                         f_sha = self.file_hashes.get(route.file_path)
+                        route_expo = "internal" if self.app_tier == "internal" else "public_unauth"
                         findings.append(
                             make_finding(
                                 RULES["OT-SEC-012"],
@@ -290,9 +297,9 @@ class OfflineStaticChecker:
                                 line=route.line_number,
                                 file_sha256=f_sha,
                                 branch=branch,
-                                evidence=f"{meth} {route.path} (handler '{route.handler_name}') has no auth decorators or guards.",
+                                evidence=f"{meth} {route.path} (handler '{route.handler_name}'): no auth visible in code (missing Depends/auth decorators).",
                                 override_title=f"Unauthenticated State-Changing Route ({meth} {route.path})",
-                                exposure="public_unauth",
+                                exposure=route_expo,
                                 reachability="reachable",
                                 evidence_level="reachable",
                             )
@@ -391,12 +398,16 @@ class OfflineStaticChecker:
             if not f.root_cause_cluster:
                 f.root_cause_cluster = f"{f.rule_id or 'GENERAL'}::{f.file_path or 'ROOT'}"
 
-            # Downgrade reachability if defect is in an unreachable symbol
+            # Three-state reachability: only downgrade to unreachable with positive proof (private & unreferenced)
             if f.file_path and f.line_number and unreachable_symbols_set and self.project_index:
                 for sym in getattr(self.project_index, "unreachable_symbols", []):
                     if sym.file_path == f.file_path and sym.line_number <= f.line_number <= sym.end_line_number:
-                        f.reachability = "unreachable"
-                        f.evidence_level = "static-only"
+                        all_referenced = getattr(self.project_index, "all_loaded_names", set()) | getattr(self.project_index, "dynamic_names", set())
+                        if sym.is_private and sym.name not in all_referenced and not sym.decorators:
+                            f.reachability = "unreachable"
+                            f.evidence_level = "static-only"
+                        else:
+                            f.reachability = "unknown"
                         break
 
             # Adjust exposure if inside test or docs
@@ -1044,7 +1055,39 @@ class OfflineStaticChecker:
                                     if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
                                         used_names.add(elt.value)
 
-            unused_imports = [name for name, line_no in import_names.items() if name not in used_names and name != "_"]
+            # Collect type annotations, function return signatures, and Pydantic/dataclass annotations
+            for node in ast.walk(tree):
+                if isinstance(node, ast.AnnAssign):
+                    for sub in ast.walk(node.annotation):
+                        if isinstance(sub, ast.Name):
+                            used_names.add(sub.id)
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if node.returns:
+                        for sub in ast.walk(node.returns):
+                            if isinstance(sub, ast.Name):
+                                used_names.add(sub.id)
+                    for arg in node.args.args + getattr(node.args, "kwonlyargs", []):
+                        if arg.annotation:
+                            for sub in ast.walk(arg.annotation):
+                                if isinstance(sub, ast.Name):
+                                    used_names.add(sub.id)
+
+            # Guarded try-import statements (e.g. try: import lightgbm as lgb except: lgb = None) must not be flagged
+            guarded_imports: Set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Try):
+                    for sub in ast.walk(node):
+                        if isinstance(sub, ast.Import):
+                            for a in sub.names:
+                                guarded_imports.add(a.asname or a.name.split(".")[0])
+                        elif isinstance(sub, ast.ImportFrom):
+                            for a in sub.names:
+                                guarded_imports.add(a.asname or a.name)
+
+            unused_imports = [
+                name for name, line_no in import_names.items()
+                if name not in used_names and name not in guarded_imports and name != "_"
+            ]
             if unused_imports:
                 first_line = import_names[unused_imports[0]]
                 title = f"Unused Import: '{unused_imports[0]}'" if len(unused_imports) == 1 else f"Unused Imports ({len(unused_imports)} symbols in {Path(rel_path).name})"
@@ -1500,11 +1543,75 @@ class OfflineStaticChecker:
                 if isinstance(target, ast.Name):
                     global_names.add(target.id)
 
-        # 2. Scope-based undefined name checker and zero division / constant conditions
-        class BugVisitor(ast.NodeVisitor):
-            def __init__(self):
-                self.scope_stack: List[Set[str]] = []
+        # 2. Scope-based undefined name checker using Python's native symtable module
+        import symtable
+        try:
+            full_code = ""
+            full_file = self.repo_dir / rel_path
+            if full_file.is_file():
+                full_code = full_file.read_text(encoding="utf-8", errors="ignore")
+            if not full_code:
+                try:
+                    full_code = ast.unparse(tree)
+                except Exception:
+                    pass
 
+            if full_code:
+                st = symtable.symtable(full_code, rel_path, "exec")
+                module_symbols = {s.get_name(): s for s in st.get_symbols()}
+                module_defs = {
+                    name for name, s in module_symbols.items()
+                    if s.is_assigned() or s.is_imported() or s.is_namespace()
+                } | global_names
+
+                def _find_undefined_in_symtable(tbl: symtable.SymbolTable) -> List[Tuple[str, str]]:
+                    undef = []
+                    for s in tbl.get_symbols():
+                        name = s.get_name()
+                        if (
+                            s.is_referenced()
+                            and not s.is_assigned()
+                            and not s.is_local()
+                            and not s.is_free()
+                            and not s.is_parameter()
+                        ):
+                            if (
+                                name not in module_defs
+                                and name not in builtins_set
+                                and not (name.startswith("__") and name.endswith("__"))
+                            ):
+                                undef.append((name, tbl.get_name()))
+                    for child in tbl.get_children():
+                        undef.extend(_find_undefined_in_symtable(child))
+                    return undef
+
+                undef_names = _find_undefined_in_symtable(st)
+                if undef_names:
+                    load_nodes: Dict[str, int] = {}
+                    for node in ast.walk(tree):
+                        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                            if node.id not in load_nodes:
+                                load_nodes[node.id] = node.lineno
+
+                    for undef_name, scope_name in undef_names:
+                        line_no = load_nodes.get(undef_name, 1)
+                        findings.append(
+                            make_finding(
+                                RULES["OT-COR-002"],
+                                path=rel_path,
+                                line=line_no,
+                                file_sha256=f_sha,
+                                branch=branch,
+                                evidence=f"Line {line_no}: '{undef_name}' referenced in scope '{scope_name}' is undefined.",
+                                override_title=f"Undefined Name: '{undef_name}' Used in '{scope_name}'",
+                            )
+                        )
+                        c += 1
+        except Exception:
+            pass
+
+        # 3. Arithmetic and constant condition checker
+        class BugVisitor(ast.NodeVisitor):
             def visit_BinOp(self, node: ast.BinOp):
                 nonlocal c
                 if isinstance(node.op, (ast.Div, ast.FloorDiv, ast.Mod)):
@@ -1568,52 +1675,6 @@ class OfflineStaticChecker:
                         )
                         c += 1
                 self.generic_visit(node)
-
-            def visit_FunctionDef(self, node: ast.FunctionDef):
-                self._check_func(node)
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
-                self._check_func(node)
-
-            def _check_func(self, node: ast.FunctionDef | ast.AsyncFunctionDef):
-                nonlocal c
-                local_vars: Set[str] = set()
-                for arg in node.args.posonlyargs + node.args.args + node.args.kwonlyargs:
-                    local_vars.add(arg.arg)
-                if node.args.vararg:
-                    local_vars.add(node.args.vararg.arg)
-                if node.args.kwarg:
-                    local_vars.add(node.args.kwarg.arg)
-
-                for stmt in node.body:
-                    for n in ast.walk(stmt):
-                        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
-                            local_vars.add(n.id)
-                        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                            local_vars.add(n.name)
-
-                self.scope_stack.append(local_vars)
-
-                for stmt in node.body:
-                    for n in ast.walk(stmt):
-                        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
-                            name_id = n.id
-                            in_scope = any(name_id in scope for scope in self.scope_stack)
-                            if not in_scope and name_id not in global_names and name_id not in builtins_set:
-                                findings.append(
-                                    make_finding(
-                                        RULES["OT-COR-002"],
-                                        path=rel_path,
-                                        line=n.lineno,
-                                        file_sha256=f_sha,
-                                        branch=branch,
-                                        evidence=f"Line {n.lineno}: '{name_id}' loaded in function '{node.name}' is undefined.",
-                                        override_title=f"Undefined Name: '{name_id}' Used in Function '{node.name}'",
-                                    )
-                                )
-                                c += 1
-                self.generic_visit(node)
-                self.scope_stack.pop()
 
         visitor = BugVisitor()
         visitor.visit(tree)

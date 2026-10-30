@@ -83,9 +83,9 @@ flowchart TD
 
     subgraph P5["PHASE 5: MULTI-REPORT GENERATION & EVIDENCE STORE"]
         RootCauseClustering --> EvidenceStore["Cryptographic Evidence Store (SHA-256 / Protected HMAC)"]
-        EvidenceStore --> Rep1["📄 1. offline_testing_model_report.md (Executive Summary & Gate Decision)"]
-        EvidenceStore --> Rep2["🎯 2. developer_remediation_plan.md (Remediation Punch-List Ranked by Priority)"]
-        EvidenceStore --> Rep3["🔄 3. system_architecture_report.md (Architecture & SBOM Ledger)"]
+        EvidenceStore --> Rep1["📄 1. REPORT_1_DETAILED.md (Technical Investigation Report & Gate Decision)"]
+        EvidenceStore --> Rep2["🎯 2. REPORT_2_ISSUES.md (Actionable Issue Remediation Punch-List)"]
+        EvidenceStore --> Rep3["🔄 3. REPORT_3_WORKFLOWS.md (Architecture, SBOM Ledger & Workflow Journeys)"]
         EvidenceStore --> Rep4["🛡️ 4. results.sarif & attestation.json (Machine SARIF & Attestation)"]
     end
 ```

@@ -111,3 +111,20 @@ def test_end_to_end_assessment():
 
         repro_det = DetailedReportGenerator(loaded).generate_markdown()
         assert repro_det == det_content
+
+        # Verify Split Branch Reports exist and are properly populated
+        run_folder = Path(det_path).parent
+        rep_1a = run_folder / "REPORT_1A_DETAILED_HARDCODED.md"
+        rep_1b = run_folder / "REPORT_1B_DETAILED_CODE_DEFECTS.md"
+        rep_2a = run_folder / "REPORT_2A_ISSUES_HARDCODED.md"
+        rep_2b = run_folder / "REPORT_2B_ISSUES_CODE_DEFECTS.md"
+
+        assert rep_1a.exists()
+        assert rep_1b.exists()
+        assert rep_2a.exists()
+        assert rep_2b.exists()
+
+        assert "Hardcoded Secrets" in rep_1a.read_text(encoding="utf-8")
+        assert "Code Quality" in rep_1b.read_text(encoding="utf-8")
+        assert "Hardcoded Secrets" in rep_2a.read_text(encoding="utf-8")
+        assert "Code Quality" in rep_2b.read_text(encoding="utf-8")

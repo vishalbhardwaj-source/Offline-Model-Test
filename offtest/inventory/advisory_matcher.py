@@ -262,13 +262,19 @@ class OfflineAdvisoryMatcher:
                         or any(m.startswith(comp_name) for m in self.imported_modules)
                     )
 
+                    # Reachability analysis: check if package is imported in project
+                    is_reachable = (
+                        comp_name in self.imported_modules
+                        or any(m.startswith(comp_name) for m in self.imported_modules)
+                    )
+
                     # VEX status
                     if is_reachable:
                         vex_status = "affected"
                         reachability = "reachable"
                         evidence_level = "reachable"
                         finding_sev = adv["base_severity"]
-                        confidence = Confidence.CONFIRMED
+                        confidence = Confidence.DETERMINISTIC
                     else:
                         vex_status = "not_affected (component symbols not imported)"
                         reachability = "unreachable"

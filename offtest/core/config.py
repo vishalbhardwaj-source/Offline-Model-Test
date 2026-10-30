@@ -42,27 +42,72 @@ class OfflineConfig:
         "PYTHONPYCACHEPREFIX",
     }
 
+    # Hard-coded vendor and build directory names (applied per-engine to prevent false positives)
+    VENDOR_AND_BUILD_DIRS: Set[str] = {
+        "node_modules",
+        ".venv",
+        "venv",
+        "env",
+        "__pycache__",
+        ".pytest_cache",
+        ".tox",
+        ".offtest_runs",
+        "dist",
+        "build",
+        ".vite",
+        ".next",
+        ".nuxt",
+        ".turbo",
+        ".mypy_cache",
+        "target",
+        "bin",
+        "obj",
+    }
+
+    # Exact placeholder secret values allowlist (exact tokens, not common words)
+    SECRET_PLACEHOLDERS: Set[str] = {
+        "changeme",
+        "your-api-key-here",
+        "your_api_key_here",
+        "your_api_key",
+        "your-api-key",
+        "insert_key_here",
+        "insert-key-here",
+        "placeholder",
+        "my-secret-key",
+        "my_secret_key",
+        "your_secret_here",
+        "your-secret-here",
+        "api_key_here",
+        "xxx",
+        "xxxx",
+        "xxxxx",
+        "todo",
+    }
+
     # Default file exclusion patterns
     DEFAULT_EXCLUSIONS: List[str] = [
-        r"^\.git([\\/].*)?$",
-        r"^\.svn([\\/].*)?$",
-        r"^\.hg([\\/].*)?$",
-        r"^node_modules([\\/].*)?$",
-        r"^\.venv([\\/].*)?$",
-        r"^venv([\\/].*)?$",
-        r"^env([\\/].*)?$",
-        r"^__pycache__([\\/].*)?$",
-        r"^\.pytest_cache([\\/].*)?$",
-        r"^\.tox([\\/].*)?$",
-        r"^\.offtest_runs([\\/].*)?$",
-        r"^dist([\\/].*)?$",
-        r"^build([\\/].*)?$",
-        r"^\.next([\\/].*)?$",
-        r"^\.nuxt([\\/].*)?$",
-        r"^\.turbo([\\/].*)?$",
-        r"^target([\\/].*)?$",  # Rust/Java target
-        r"^bin([\\/].*)?$",
-        r"^obj([\\/].*)?$",
+        r"(^|[\\/])\.git([\\/].*)?$",
+        r"(^|[\\/])\.svn([\\/].*)?$",
+        r"(^|[\\/])\.hg([\\/].*)?$",
+        r"(^|[\\/])node_modules([\\/].*)?$",
+        r"(^|[\\/])\.venv([\\/].*)?$",
+        r"(^|[\\/])venv([\\/].*)?$",
+        r"(^|[\\/])env([\\/].*)?$",
+        r"(^|[\\/])__pycache__([\\/].*)?$",
+        r"(^|[\\/])\.pytest_cache([\\/].*)?$",
+        r"(^|[\\/])\.tox([\\/].*)?$",
+        r"(^|[\\/])\.offtest_runs([\\/].*)?$",
+        r"(^|[\\/])dist([\\/].*)?$",
+        r"(^|[\\/])build([\\/].*)?$",
+        r"(^|[\\/])\.vite([\\/].*)?$",
+        r"(^|[\\/])\.next([\\/].*)?$",
+        r"(^|[\\/])\.nuxt([\\/].*)?$",
+        r"(^|[\\/])\.turbo([\\/].*)?$",
+        r"(^|[\\/])\.mypy_cache([\\/].*)?$",
+        r"(^|[\\/])target([\\/].*)?$",  # Rust/Java target
+        r"(^|[\\/])bin([\\/].*)?$",
+        r"(^|[\\/])obj([\\/].*)?$",
     ]
 
     # Generated file markers

@@ -84,6 +84,7 @@ class ProjectIndex:
         self.dynamic_names: Set[str] = set()  # names used via getattr, __all__, etc.
         self.exported_names: Set[str] = set()  # names explicitly in __all__
         self.imported_modules: Set[str] = set()  # all packages/modules imported across project
+        self.all_loaded_names: Set[str] = set()  # all Name(ctx=Load) & annotation symbols across project
 
         # Call Graph adjacencies
         self.adjacency: Dict[str, Set[str]] = {}  # caller_key -> set(callee_keys)
@@ -160,12 +161,43 @@ class ProjectIndex:
                 for alias in node.names:
                     self.outer.imported_modules.add(alias.name)
                     self.outer.imported_modules.add(alias.name.split(".")[0])
+                    bound = alias.asname or alias.name.split(".")[0]
+                    self.outer.all_loaded_names.add(bound)
                 self.generic_visit(node)
 
             def visit_ImportFrom(self, node: ast.ImportFrom):
                 if node.module:
                     self.outer.imported_modules.add(node.module)
                     self.outer.imported_modules.add(node.module.split(".")[0])
+                for alias in node.names:
+                    bound = alias.asname or alias.name
+                    self.outer.all_loaded_names.add(bound)
+                    self.outer.all_loaded_names.add(alias.name)
+
+                # Resolved relative imports: e.g. from .ml_engine import ml_engine
+                if node.level and node.level > 0:
+                    caller_sym = self.current_function or "__top__"
+                    for alias in node.names:
+                        self.outer.call_edges.append(
+                            CallEdge(
+                                caller_file=rel_path,
+                                caller_symbol=caller_sym,
+                                callee_name=alias.name,
+                                line_number=node.lineno,
+                            )
+                        )
+                        self.outer.dynamic_names.add(alias.name)
+                self.generic_visit(node)
+
+            def visit_Name(self, node: ast.Name):
+                if isinstance(node.ctx, ast.Load):
+                    self.outer.all_loaded_names.add(node.id)
+                self.generic_visit(node)
+
+            def visit_AnnAssign(self, node: ast.AnnAssign):
+                for sub in ast.walk(node.annotation):
+                    if isinstance(sub, ast.Name):
+                        self.outer.all_loaded_names.add(sub.id)
                 self.generic_visit(node)
 
             def visit_Assign(self, node: ast.Assign):
@@ -195,6 +227,8 @@ class ProjectIndex:
                     caller_sym = self.current_function
                     if self.current_class and caller_sym:
                         caller_sym = f"{self.current_class}.{caller_sym}"
+                    # Top-level module code connects as __top__ root
+                    caller_sym = caller_sym or "__top__"
                     self.outer.call_edges.append(
                         CallEdge(
                             caller_file=rel_path,
@@ -265,6 +299,39 @@ class ProjectIndex:
                     is_entry = True
                 if any("command" in d.lower() or "endpoint" in d.lower() or "receiver" in d.lower() for d in decorators):
                     is_entry = True
+
+                # Inspect parameter defaults for FastAPI Depends(...) edges
+                all_defaults = list(node.args.defaults) + [d for d in getattr(node.args, "kw_defaults", []) if d is not None]
+                for d in all_defaults:
+                    for sub in ast.walk(d):
+                        if isinstance(sub, ast.Call):
+                            fn = getattr(sub.func, "id", None) or getattr(sub.func, "attr", None)
+                            if fn == "Depends" and sub.args:
+                                dep = getattr(sub.args[0], "id", None) or getattr(sub.args[0], "attr", None)
+                                if dep:
+                                    self.outer.call_edges.append(
+                                        CallEdge(
+                                            caller_file=rel_path,
+                                            caller_symbol=qname,
+                                            callee_name=dep,
+                                            line_number=node.lineno,
+                                        )
+                                    )
+                                    self.outer.dynamic_names.add(dep)
+
+                # Broad usage: any Load reference inside the function body connects as a dependency
+                # (generalizes callbacks e.g. map, Thread(target=...), run_in_threadpool)
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+                        if sub.id != node.name:
+                            self.outer.call_edges.append(
+                                CallEdge(
+                                    caller_file=rel_path,
+                                    caller_symbol=qname,
+                                    callee_name=sub.id,
+                                    line_number=sub.lineno,
+                                )
+                            )
 
                 # Semantic inspection: No-Op and Stub detection
                 is_noop, noop_reason, raises_not_impl = self._check_noop_and_stubs(node, params, decorators)
@@ -368,8 +435,20 @@ class ProjectIndex:
                                 route_path = arg0.value
 
                         if is_route and route_path:
-                            # Check auth
-                            auth = any("auth" in ast.unparse(d).lower() or "login_required" in ast.unparse(d).lower() for d in node.decorator_list)
+                            # Route-level authentication detection (Depends, decorators)
+                            auth = False
+                            all_defaults = list(node.args.defaults) + [d for d in getattr(node.args, "kw_defaults", []) if d is not None]
+                            for d in all_defaults:
+                                for sub in ast.walk(d):
+                                    if isinstance(sub, ast.Call):
+                                        fn = getattr(sub.func, "id", None) or getattr(sub.func, "attr", None)
+                                        if fn == "Depends" and sub.args:
+                                            dep_name = getattr(sub.args[0], "id", None) or getattr(sub.args[0], "attr", None) or ""
+                                            if any(w in dep_name.lower() for w in ("auth", "login", "user", "token", "jwt", "session", "cred", "permission", "security")):
+                                                auth = True
+                            if not auth:
+                                auth = any(any(w in ast.unparse(d).lower() for w in ("auth", "login_required", "jwt_required", "permission_required", "require_user", "authenticated")) for d in node.decorator_list)
+
                             return ExtractedRoute(
                                 path=route_path,
                                 method=method,
@@ -383,6 +462,9 @@ class ProjectIndex:
 
         visitor = IndexVisitor(self)
         visitor.visit(tree)
+
+        # Every module's top-level execution is an entry root (fixes init_cache_db() and singletons)
+        self.entry_points.add(f"{rel_path}::__top__")
 
         # Check for if __name__ == "__main__": as an entry point
         for node in ast.walk(tree):
@@ -470,7 +552,10 @@ class ProjectIndex:
     def _compute_reachability(self):
         """
         Runs BFS from all identified entry points to compute the reachable subgraph.
-        Any function or class in non-test user code that is not reachable is flagged as dead code.
+        Three-state reachability model:
+        - reachable: proven edge from an entry point.
+        - unknown: no edge found, no proof of absence (default).
+        - unreachable: positive evidence of a private symbol with zero references across project.
         """
         queue = list(self.entry_points)
         visited = set(self.entry_points)
@@ -484,17 +569,19 @@ class ProjectIndex:
 
         self.reachable_symbols = visited
 
+        all_referenced = set(self.dynamic_names) | set(self.exported_names) | self.all_loaded_names
+
         # Identify unreachable symbols in user code (exclude tests and dunder methods)
+        self.unreachable_symbols = []
         for key, sym in self.symbols.items():
             if "test" in sym.file_path.lower() or sym.file_path.startswith("tests"):
                 continue
             if sym.name.startswith("__") and sym.name.endswith("__"):
                 continue  # dunder methods like __init__, __str__
-            if sym.is_entry_point:
+            if sym.is_entry_point or key in self.reachable_symbols:
                 continue
 
-            if key not in self.reachable_symbols:
-                self.unreachable_symbols.append(sym)
+            self.unreachable_symbols.append(sym)
 
     def trace_workflow(self, handler_file: str, handler_name: str) -> List[Tuple[str, int, str]]:
         """

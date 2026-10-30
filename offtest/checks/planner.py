@@ -106,11 +106,19 @@ def get_tool_manifest() -> List[ToolManifestItem]:
 
 
 class CheckPlanner:
-    def __init__(self, repo_dir: Path, files: List[FileRecord], allow_scripts: bool = False, project_index: Optional[Any] = None):
+    def __init__(
+        self,
+        repo_dir: Path,
+        files: List[FileRecord],
+        allow_scripts: bool = False,
+        project_index: Optional[Any] = None,
+        app_tier: str = "unknown",
+    ):
         self.repo_dir = repo_dir
         self.files = files
         self.allow_scripts = allow_scripts
         self.project_index = project_index
+        self.app_tier = (app_tier or "unknown").lower()
 
     def execute_all(self, branch: str = "HEAD") -> Tuple[List[CheckResult], List[Finding]]:
         check_results: List[CheckResult] = []
@@ -118,7 +126,12 @@ class CheckPlanner:
 
         import time
         # 1. Run Offline Static Analysis & Security
-        static_checker = OfflineStaticChecker(self.repo_dir, self.files, project_index=self.project_index)
+        static_checker = OfflineStaticChecker(
+            self.repo_dir,
+            self.files,
+            project_index=self.project_index,
+            app_tier=self.app_tier,
+        )
         _static_start = time.perf_counter()
         static_findings = static_checker.run_all(branch=branch)
         _static_elapsed = time.perf_counter() - _static_start
@@ -166,7 +179,7 @@ class CheckPlanner:
 
             # Hard Override 4: Provider-pattern secret match outside test or fixture paths
             elif (
-                f.rule_id in ("OT-SCR-001", "OT-SCR-002", "OT-SCR-003")
+                f.rule_id in ("OT-SCR-001", "OT-SCR-002")
                 and f.confidence in (Confidence.DETERMINISTIC, Confidence.CONFIRMED, Confidence.LIKELY, Confidence.HIGH)
                 and getattr(f, "exposure", "internal") != "test_fixture"
             ):
@@ -257,7 +270,7 @@ class CheckPlanner:
                 )
                 or (getattr(f, "cisa_kev", False) and getattr(f, "reachability", "") != "unreachable")
                 or (
-                    f.rule_id in ("OT-SCR-001", "OT-SCR-002", "OT-SCR-003")
+                    f.rule_id in ("OT-SCR-001", "OT-SCR-002")
                     and f.confidence in (Confidence.DETERMINISTIC, Confidence.CONFIRMED, Confidence.LIKELY, Confidence.HIGH)
                     and getattr(f, "exposure", "internal") != "test_fixture"
                 )

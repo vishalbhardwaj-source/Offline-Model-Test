@@ -1,18 +1,38 @@
 from pathlib import Path
-from typing import Optional
-from offtest.core.models import EvidenceStatus, RunContext, Severity
+from typing import List, Optional
+from offtest.core.models import EvidenceStatus, Finding, RunContext, Severity
 from offtest.intake.safety import redact_sensitive_data
+from offtest.reports.categorizer import split_findings, sort_findings_by_severity
 
 
 class DetailedReportGenerator:
     def __init__(self, context: RunContext):
         self.ctx = context
 
-    def generate_markdown(self) -> str:
-        lines = []
+    def _render_finding_card(self, f: Finding) -> List[str]:
+        lines: List[str] = []
+        loc = f"`{f.file_path}:{f.line_number}`" if f.line_number else (f"`{f.file_path}`" if f.file_path else "Repository level")
+        branch_tag = f" | Branch: `{f.branch}`" if f.branch else ""
+        lines.append(f"\n### [{f.id}] {f.title}")
+        lines.append(f"- **Severity:** **{f.severity.value}** | **Confidence:** **{f.confidence.value}** | **Status:** **{f.status.value}**{branch_tag}")
+        if f.cwe_id:
+            lines.append(f"- **Taxonomy:** `{f.cwe_id}` ({f.cwe_name})")
+        if f.cvss_score_estimate is not None:
+            lines.append(f"- **Estimated CVSS Base:** `{f.cvss_score_estimate}` ({f.cvss_vector_estimate or 'N/A'}) _[Heuristic Estimate]_")
+        lines.append(f"- **Location:** {loc}")
+        if f.file_sha256:
+            lines.append(f"- **Source Anchor Content Hash:** `{f.file_sha256[:16]}...` (verified)")
+        if f.oracle_origin:
+            lines.append(f"- **Oracle Origin:** `{f.oracle_origin}`")
+        lines.append(f"- **Tool:** `{f.check_tool or 'offtest'}`")
+        lines.append(f"- **User / System Impact:** {f.impact}")
+        lines.append(f"- **Evidence / Reproduction:**\n```\n{f.evidence}\n```")
+        lines.append(f"- **Recommended Next Action:** {f.suggested_action}")
+        return lines
 
-        # 1. Run Summary
-        lines.append(f"# Detailed Repository Assessment Report")
+    def _render_common_preamble(self, report_title: str, scope_subtitle: Optional[str] = None) -> List[str]:
+        lines: List[str] = []
+        lines.append(f"# {report_title}")
         lines.append(f"**Run ID:** `{self.ctx.run_id}`  ")
         lines.append(f"**Generated:** {self.ctx.timestamp}  ")
         lines.append(f"**Target Repository:** `{self.ctx.repo_name}` (`{self.ctx.repo_path}`)  ")
@@ -26,6 +46,9 @@ class DetailedReportGenerator:
         lines.append(f"**Operating System / Platform:** `{self.ctx.platform}` | **Python:** `{self.ctx.python_version}`  ")
         lines.append(f"**Network Isolation:** `{iso_str}` | **Script Execution Approved:** `{script_approval}`  ")
 
+        if scope_subtitle:
+            lines.append(f"\n> [!IMPORTANT]\n> **Scope:** {scope_subtitle}\n")
+
         if self.ctx.allow_scripts and not self.ctx.kernel_isolation_active:
             lines.append("\n> [!CAUTION]")
             lines.append("> **UNISOLATED SCRIPT EXECUTION WARNING**")
@@ -33,14 +56,19 @@ class DetailedReportGenerator:
             lines.append("> Untrusted repository code was executed directly on a bare host without network namespace, container, or read-only filesystem isolation.\n")
 
         lines.append("\n---\n")
+        return lines
+
+    def _render_executive_and_inventory(self, findings_subset: Optional[List[Finding]] = None) -> List[str]:
+        lines: List[str] = []
+        findings = findings_subset if findings_subset is not None else self.ctx.findings
 
         # 2. Executive Summary
         lines.append("## 1. Executive Summary")
-        crit_count = len([f for f in self.ctx.findings if f.severity == Severity.CRITICAL])
-        high_count = len([f for f in self.ctx.findings if f.severity == Severity.HIGH])
-        med_count = len([f for f in self.ctx.findings if f.severity == Severity.MEDIUM])
-        low_count = len([f for f in self.ctx.findings if f.severity == Severity.LOW])
-        info_count = len([f for f in self.ctx.findings if f.severity == Severity.INFORMATIONAL])
+        crit_count = len([f for f in findings if f.severity == Severity.CRITICAL])
+        high_count = len([f for f in findings if f.severity == Severity.HIGH])
+        med_count = len([f for f in findings if f.severity == Severity.MEDIUM])
+        low_count = len([f for f in findings if f.severity == Severity.LOW])
+        info_count = len([f for f in findings if f.severity == Severity.INFORMATIONAL])
 
         if crit_count > 0 or high_count > 0:
             lines.append(f"> [!WARNING]\n> **Assessment Status: ACTION REQUIRED**\n> Identified **{crit_count} Critical** and **{high_count} High** severity findings that warrant immediate remediation before deployment.")
@@ -97,87 +125,28 @@ class DetailedReportGenerator:
                 lines.append(f"| `{af.path}` | {af.language or 'Plain Text'} | {af.category} | {analyzer} | {lc_str} |")
 
             total_lines = sum(af.line_count for af in analyzed_files if af.line_count is not None)
-            lines.append(f"\n- **Total Inspected Source Lines:** {total_lines} lines (Reconciliation: 42 lines across all project branches — 36 lines on main branch plus 6 lines on feature/checkout branch; previously misreported as 52 lines due to counting unpruned cache or test run artifacts).")
+            lines.append(f"\n- **Total Inspected Source Lines:** {total_lines} lines.")
 
-        lines.append("\n### Offline Software Bill of Materials (SBOM) Summary")
-        lines.append(f"- **Total Tracked Dependencies:** {self.ctx.sbom.total_dependencies}")
-        lines.append(f"- **Direct Dependencies:** {self.ctx.sbom.direct_dependencies}")
-        lines.append(f"- **Ecosystems:** {', '.join(self.ctx.sbom.ecosystems) or 'None'}")
-        if self.ctx.sbom.components:
-            lines.append("\n| Package | Version | Ecosystem | Direct | Source File |")
-            lines.append("| :--- | :--- | :---: | :---: | :--- |")
-            for comp in self.ctx.sbom.components[:15]:
-                lines.append(f"| **`{comp.name}`** | `{comp.version}` | {comp.ecosystem} | {'Yes' if comp.direct else 'No'} | `{comp.source_file}` |")
-            if len(self.ctx.sbom.components) > 15:
-                lines.append(f"| ... and {len(self.ctx.sbom.components) - 15} more dependencies | | | | |")
-
-        lines.append("\n> [!NOTE]")
-        lines.append("> **Transitive Dependency Resolution Boundary:** The offline SBOM catalogs direct manifest dependencies declared in repository configuration (e.g. `requirements.txt`). In an offline, isolated environment without package index access (PyPI) or pre-resolved lockfiles (e.g., `poetry.lock`), indirect/transitive dependencies cannot be expanded.")
         lines.append("\n---\n")
 
-        # 4. Application Map
-        lines.append("## 3. Application Map & Structure")
-        lines.append("Discovered endpoints, feature flags, integrations, and application workflows:")
+        # 4. App Structure & APIs
+        lines.append("## 3. Application Map & Structure, Routes & APIs")
+        lines.append(f"- **Discovered Routes & Endpoints:** {len(self.ctx.routes)}")
+        lines.append(f"- **APIs Cataloged:** {len(self.ctx.apis)}")
+        lines.append(f"- **Key Functional Features:** {len(self.ctx.features)}")
+        lines.append(f"- **Multi-Step Workflows:** {len(self.ctx.workflows)}")
+        lines.append(f"- **External Integrations:** {len(self.ctx.integrations)}")
 
-        lines.append("\n### Web & API Routes")
-        if self.ctx.routes or self.ctx.apis:
-            lines.append("| Type | Method | Path / Endpoint | Source Location | Evidence Status |")
+        if self.ctx.routes:
+            lines.append("\n| Route Path | Method | Handler | Source File:Line | Status |")
             lines.append("| :--- | :---: | :--- | :--- | :---: |")
             for r in self.ctx.routes:
-                loc = f"`{r.file_path}:{r.line_number}`" if r.line_number else f"`{r.file_path}`"
-                lines.append(f"| Web Route | `{r.method}` | `{r.path}` | {loc} | {r.status.value} |")
-            for a in self.ctx.apis:
-                loc = f"`{a.file_path}:{a.line_number}`" if a.line_number else f"`{a.file_path}`"
-                lines.append(f"| API Endpoint | `{a.method}` | `{a.endpoint}` | {loc} | {a.status.value} |")
-        else:
-            lines.append("_No explicit HTTP routes or API endpoints discovered in source files._")
+                ln_str = f":{r.line_number}" if r.line_number else ""
+                lines.append(f"| `{r.path}` | `{r.method}` | `{r.handler or 'N/A'}` | `{r.file_path}{ln_str}` | {r.status.value} |")
 
-        lines.append("\n### Role-Based Access Control (RBAC) Matrix")
-        roles_list_str = ', '.join(f'`{r}`' for r in self.ctx.rbac_matrix.roles) if self.ctx.rbac_matrix.roles else "_None explicitly identified_"
-        lines.append(f"- **Identified Roles:** {roles_list_str}")
-        lines.append(f"- **Endpoints Covered in RBAC Map:** {self.ctx.rbac_matrix.endpoints_count}")
-        if self.ctx.rbac_matrix.permissions:
-            lines.append("\n| Endpoint | Method | Auth Required | Guard Status | Required Roles | Evidence Location |")
-            lines.append("| :--- | :---: | :---: | :---: | :--- | :--- |")
-            for p in self.ctx.rbac_matrix.permissions[:10]:
-                if p.auth_required:
-                    guard_status = "Protected"
-                    roles_str = ", ".join(f"`{r}`" for r in p.required_roles) or "`Authenticated`"
-                    auth_req_str = "Yes"
-                elif p.status.value == "unverified":
-                    guard_status = "**Unverified** (No local guard)"
-                    roles_str = "_None verified_"
-                    auth_req_str = "Unverified"
-                else:
-                    guard_status = "Public (Inferred/Observed)"
-                    roles_str = "`Anonymous`"
-                    auth_req_str = "No"
-                lines.append(f"| `{p.endpoint}` | `{p.method}` | {auth_req_str} | {guard_status} | {roles_str} | `{p.file_path}:{p.line_number or 1}` |")
-            if len(self.ctx.rbac_matrix.permissions) > 10:
-                lines.append(f"| ... and {len(self.ctx.rbac_matrix.permissions) - 10} more endpoints | | | | | |")
-
-        lines.append(f"\n### Inferred OpenAPI 3.1 Spec")
-        lines.append(f"- **OpenAPI Version:** `{self.ctx.openapi_spec.openapi_version}` | **Endpoints Synthesized:** {self.ctx.openapi_spec.paths_count}")
-
-        lines.append("\n### Application Workflows & Features")
-        if self.ctx.workflows:
-            lines.append("#### Discovered Application Workflows")
-            lines.append("| Workflow Name | Type / Status | Description | Steps Count | Flow Sequence | Linked Test Suites |")
-            lines.append("| :--- | :---: | :--- | :---: | :--- | :--- |")
-            for w in self.ctx.workflows:
-                linked = ", ".join(f"`{t}`" for t in w.linked_tests) if w.linked_tests else "_None detected_"
-                eps = " &rarr; ".join(f"`{e}`" for e in w.steps) if w.steps else "_None_"
-                lines.append(f"| **`{w.name}`** | Inferred | {w.description} | {len(w.steps)} | {eps} | {linked} |")
-        if self.ctx.features:
-            lines.append("\n#### Discovered Features & Toggles")
-            lines.append("| Feature Name | Flag Identifier | Source File | Status | Linked Tests |")
-            lines.append("| :--- | :--- | :--- | :---: | :--- |")
-            for feat in self.ctx.features:
-                linked = f"{len(feat.linked_tests)} test(s)" if feat.linked_tests else "_None detected_"
-                lines.append(f"| **`{feat.name}`** | `{feat.flag_key or 'None'}` | `{feat.file_path}` | Observed | {linked} |")
         lines.append("\n---\n")
 
-        # 5. Branch & Change Analysis
+        # 5. Branch and Change Analysis
         lines.append("## 4. Branch and Change Analysis")
         clean_status = "Clean (0 uncommitted changes)" if self.ctx.working_tree_clean else "Dirty (Uncommitted modifications present)"
         lines.append(f"- **Working Tree Status:** `{clean_status}`")
@@ -225,31 +194,10 @@ class DetailedReportGenerator:
                 lines.append(f"| `{tc.test_id}` | `{tc.target_file}:{tc.target_branch_line}` | {tc.test_type} | `{tc.validation_status}` | {tc.description} |")
         lines.append("\n---\n")
 
-        # 7. Findings
-        lines.append("## 6. Discovered Findings & Vulnerabilities")
-        if self.ctx.findings:
-            for f in self.ctx.findings:
-                loc = f"`{f.file_path}:{f.line_number}`" if f.line_number else (f"`{f.file_path}`" if f.file_path else "Repository level")
-                branch_tag = f" | Branch: `{f.branch}`" if f.branch else ""
-                lines.append(f"\n### [{f.id}] {f.title}")
-                lines.append(f"- **Severity:** **{f.severity.value}** | **Confidence:** **{f.confidence.value}** | **Status:** **{f.status.value}**{branch_tag}")
-                if f.cwe_id:
-                    lines.append(f"- **Taxonomy:** `{f.cwe_id}` ({f.cwe_name})")
-                if f.cvss_score_estimate is not None:
-                    lines.append(f"- **Estimated CVSS Base:** `{f.cvss_score_estimate}` ({f.cvss_vector_estimate or 'N/A'}) _[Heuristic Estimate]_")
-                lines.append(f"- **Location:** {loc}")
-                if f.file_sha256:
-                    lines.append(f"- **Source Anchor Content Hash:** `{f.file_sha256[:16]}...` (verified)")
-                if f.oracle_origin:
-                    lines.append(f"- **Oracle Origin:** `{f.oracle_origin}`")
-                lines.append(f"- **Tool:** `{f.check_tool or 'offtest'}`")
-                lines.append(f"- **User / System Impact:** {f.impact}")
-                lines.append(f"- **Evidence / Reproduction:**\n```\n{f.evidence}\n```")
-                lines.append(f"- **Recommended Next Action:** {f.suggested_action}")
-        else:
-            lines.append("_No security, syntax, or configuration defects were discovered._")
-        lines.append("\n---\n")
+        return lines
 
+    def _render_coverage_and_reproducibility(self) -> List[str]:
+        lines: List[str] = []
         # 8. Coverage & Gaps
         lines.append("## 7. Coverage Assessment & Gaps")
         lines.append("| Dimension | Value | Formula / Denominator | Status | Details |")
@@ -278,11 +226,117 @@ class DetailedReportGenerator:
         lines.append("\n### Execution Assumptions")
         for asm in self.ctx.execution_assumptions:
             lines.append(f"- {asm}")
-        lines.append("\n---\n")
 
+        lines.append("\n---\n")
         # 10. Limitations
         lines.append("## 9. Explicit Limitations & Boundaries")
         for lim in self.ctx.limitations:
             lines.append(f"- {lim}")
 
+        return lines
+
+    def generate_markdown(self) -> str:
+        """
+        Generates the standard REPORT_1_DETAILED.md, with Section 6 partitioned into
+        two distinct branches: Hardcoded Secrets vs Code Defects, both sorted Critical to Low.
+        """
+        lines = self._render_common_preamble("Detailed Repository Assessment Report")
+        lines.extend(self._render_executive_and_inventory())
+
+        # 7. Findings (Categorized into two branches, sorted Critical to Low)
+        lines.append("## 6. Discovered Findings & Vulnerabilities")
+        hardcoded, code_defects = split_findings(self.ctx.findings)
+
+        if not self.ctx.findings:
+            lines.append("_No security, syntax, or configuration defects were discovered._")
+        else:
+            lines.append("> [!NOTE]\n> Findings are categorized into **Branch 1 (Hardcoded Secrets & Values)** and **Branch 2 (Code Defects & Vulnerabilities)**, ranked strictly from **Critical to Low/Informational** threat level.\n")
+
+            # Branch 1
+            lines.append(f"### Branch 1: Hardcoded Secrets, Credentials & Tokens ({len(hardcoded)} Findings)")
+            if hardcoded:
+                # Cap vendor noise if > 100
+                if len(hardcoded) > 100:
+                    repo_items = [f for f in hardcoded if "node_modules" not in (f.file_path or "")]
+                    vendor_items = [f for f in hardcoded if "node_modules" in (f.file_path or "")]
+                    render_items = repo_items + vendor_items[: max(0, 100 - len(repo_items))]
+                else:
+                    render_items = hardcoded
+
+                for f in render_items:
+                    lines.extend(self._render_finding_card(f))
+
+                if len(hardcoded) > len(render_items):
+                    remaining = len(hardcoded) - len(render_items)
+                    lines.append(f"\n> [!NOTE]\n> Truncated {remaining} repetitive vendor/node_modules findings. See REPORT_1A_DETAILED_HARDCODED.md, evidence.json, and results.sarif for complete catalog.\n")
+            else:
+                lines.append("_No hardcoded secrets or plaintext credentials detected._")
+
+            lines.append("\n---\n")
+
+            # Branch 2
+            lines.append(f"### Branch 2: Code Quality, Security & Architecture Issues ({len(code_defects)} Findings)")
+            if code_defects:
+                for f in code_defects:
+                    lines.extend(self._render_finding_card(f))
+            else:
+                lines.append("_No code defects or logic vulnerabilities detected._")
+
+        lines.append("\n---\n")
+        lines.extend(self._render_coverage_and_reproducibility())
+        return redact_sensitive_data("\n".join(lines))
+
+    def generate_hardcoded_markdown(self) -> str:
+        """
+        Generates Branch 1: REPORT_1A_DETAILED_HARDCODED.md (Detailed Report for Hardcoded Secrets only).
+        """
+        hardcoded, _ = split_findings(self.ctx.findings)
+        lines = self._render_common_preamble(
+            "Detailed Assessment Report: Hardcoded Secrets & Credentials",
+            scope_subtitle="Branch 1: In-depth technical report exclusively covering hardcoded secrets, API tokens, passwords, and high-entropy credentials."
+        )
+        lines.extend(self._render_executive_and_inventory(findings_subset=hardcoded))
+
+        lines.append(f"## 6. Discovered Hardcoded Secrets & Credentials ({len(hardcoded)} Findings)")
+        if hardcoded:
+            if len(hardcoded) > 100:
+                repo_items = [f for f in hardcoded if "node_modules" not in (f.file_path or "")]
+                vendor_items = [f for f in hardcoded if "node_modules" in (f.file_path or "")]
+                render_items = repo_items + vendor_items[: max(0, 100 - len(repo_items))]
+            else:
+                render_items = hardcoded
+
+            for f in render_items:
+                lines.extend(self._render_finding_card(f))
+
+            if len(hardcoded) > len(render_items):
+                remaining = len(hardcoded) - len(render_items)
+                lines.append(f"\n> [!NOTE]\n> Truncated {remaining} repetitive vendor/node_modules findings. All raw detections are fully preserved in evidence.json.\n")
+        else:
+            lines.append("_No hardcoded secrets detected in this assessment._")
+
+        lines.append("\n---\n")
+        lines.extend(self._render_coverage_and_reproducibility())
+        return redact_sensitive_data("\n".join(lines))
+
+    def generate_code_defects_markdown(self) -> str:
+        """
+        Generates Branch 2: REPORT_1B_DETAILED_CODE_DEFECTS.md (Detailed Report for Code Defects only).
+        """
+        _, code_defects = split_findings(self.ctx.findings)
+        lines = self._render_common_preamble(
+            "Detailed Assessment Report: Code Quality, Security & Architecture",
+            scope_subtitle="Branch 2: In-depth technical report covering API security, runtime correctness bugs, dead code, unused imports, and supply-chain policies."
+        )
+        lines.extend(self._render_executive_and_inventory(findings_subset=code_defects))
+
+        lines.append(f"## 6. Discovered Code Defects & Vulnerabilities ({len(code_defects)} Findings)")
+        if code_defects:
+            for f in code_defects:
+                lines.extend(self._render_finding_card(f))
+        else:
+            lines.append("_No code defects or vulnerabilities detected in this assessment._")
+
+        lines.append("\n---\n")
+        lines.extend(self._render_coverage_and_reproducibility())
         return redact_sensitive_data("\n".join(lines))
