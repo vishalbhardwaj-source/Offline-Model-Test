@@ -318,6 +318,48 @@ class OfflineStaticChecker:
                     )
                     counter += 1
 
+                # Check login/authentication endpoints missing rate limiting (OT-SEC-019)
+                if any(k in p_lower for k in ("login", "signin", "auth/token", "/token")):
+                    f_sha = self.file_hashes.get(route.file_path)
+                    findings.append(
+                        make_finding(
+                            RULES["OT-SEC-019"],
+                            path=route.file_path,
+                            line=route.line_number,
+                            file_sha256=f_sha,
+                            branch=branch,
+                            evidence=f"{route.method} {route.path} (handler '{route.handler_name}') exposes authentication endpoint without explicit rate limiting or brute-force throttling.",
+                            override_title=f"Missing Rate Limiting on Authentication Endpoint ({route.path})",
+                            exposure="public_unauth",
+                            reachability="reachable",
+                        )
+                    )
+                    counter += 1
+
+        # Check docker-compose / IaC configurations for privileged mode (OT-POL-007)
+        for f_rec in self.files:
+            f_p_lower = f_rec.path.lower()
+            if f_p_lower.endswith((".yml", ".yaml")) and any(k in f_p_lower for k in ("docker-compose", "compose", "k8s", "pod", "deployment")):
+                try:
+                    f_full = self.repo_dir / f_rec.path
+                    if f_full.is_file():
+                        c_text = f_full.read_text(encoding="utf-8", errors="ignore")
+                        if re.search(r"privileged:\s*true", c_text, re.IGNORECASE):
+                            findings.append(
+                                make_finding(
+                                    RULES["OT-POL-007"],
+                                    path=f_rec.path,
+                                    line=1,
+                                    file_sha256=self.file_hashes.get(f_rec.path),
+                                    branch=branch,
+                                    evidence="Container configuration explicitly specifies 'privileged: true'.",
+                                    exposure="internal",
+                                    reachability="reachable",
+                                )
+                            )
+                except Exception:
+                    pass
+
         # 4. Supply Chain: Match SBOM packages against offline CVE advisory snapshot
         try:
             from offtest.inventory.sbom import SBOMGenerator
@@ -389,6 +431,21 @@ class OfflineStaticChecker:
                         rule_target = m.group(1)
                         reason_target = m.group(2)
                         if not rule_target or (f.rule_id and rule_target.upper() == f.rule_id.upper()):
+                            # Check if suppression has an expiry date: expires="YYYY-MM-DD"
+                            exp_match = re.search(r'expires=["\']?(\d{4}-\d{2}-\d{2})["\']?', cand, re.IGNORECASE)
+                            if exp_match:
+                                exp_str = exp_match.group(1)
+                                try:
+                                    import datetime as _dt
+                                    exp_date = _dt.date.fromisoformat(exp_str)
+                                    if _dt.date.today() > exp_date:
+                                        # Expired suppression: do not suppress
+                                        f.suppressed = False
+                                        f.suppression_reason = f"Suppression expired on {exp_str}"
+                                        break
+                                except Exception:
+                                    pass
+
                             f.suppressed = True
                             f.suppression_reason = (
                                 reason_target.strip()
@@ -813,6 +870,68 @@ class OfflineStaticChecker:
                                 override_title="Potential IDOR / Missing Object-Level Authorization",
                             )
                         )
+
+                # 15. Mass Assignment Detection (OT-SEC-016)
+                if any(kw.arg is None and any(src in ast.unparse(kw.value) for src in ("request.json", "request.form", "request.get_json", "request.args")) for kw in node.keywords):
+                    self.findings.append(
+                        make_finding(
+                            RULES["OT-SEC-016"],
+                            path=rel_path,
+                            line=node.lineno,
+                            file_sha256=f_sha,
+                            branch=branch,
+                            evidence=f"Line {node.lineno}: Request payload unpacked directly into call: {ast.unparse(node)}",
+                            override_title="Mass Assignment Risk: Unbounded Request Body Binding",
+                        )
+                    )
+
+                # 16. Insecure JWT Configuration (OT-SEC-017)
+                if func_name.endswith(("jwt.decode", "decode")):
+                    unparsed_call = ast.unparse(node)
+                    if (
+                        "verify=False" in unparsed_call
+                        or "verify_signature': False" in unparsed_call
+                        or 'verify_signature": False' in unparsed_call
+                        or "'none'" in unparsed_call.lower()
+                        or '"none"' in unparsed_call.lower()
+                    ):
+                        self.findings.append(
+                            make_finding(
+                                RULES["OT-SEC-017"],
+                                path=rel_path,
+                                line=node.lineno,
+                                file_sha256=f_sha,
+                                branch=branch,
+                                evidence=f"Line {node.lineno}: Insecure JWT configuration: {unparsed_call}",
+                                override_title="Insecure JWT / Session Configuration",
+                            )
+                        )
+
+                # 17. Crypto Misuse: Weak Mode or Primitives (OT-SEC-020)
+                if "MODE_ECB" in ast.unparse(node) or "modes.ECB" in ast.unparse(node):
+                    self.findings.append(
+                        make_finding(
+                            RULES["OT-SEC-020"],
+                            path=rel_path,
+                            line=node.lineno,
+                            file_sha256=f_sha,
+                            branch=branch,
+                            evidence=f"Line {node.lineno}: Insecure ECB cipher mode: {ast.unparse(node)}",
+                            override_title="Cryptographic Misuse: Insecure ECB Mode Used",
+                        )
+                    )
+                elif func_name.endswith("RSA.generate") and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, int) and node.args[0].value < 2048:
+                    self.findings.append(
+                        make_finding(
+                            RULES["OT-SEC-020"],
+                            path=rel_path,
+                            line=node.lineno,
+                            file_sha256=f_sha,
+                            branch=branch,
+                            evidence=f"Line {node.lineno}: Weak RSA key size ({node.args[0].value} bits < 2048 bits)",
+                            override_title="Cryptographic Misuse: Insufficient RSA Key Size",
+                        )
+                    )
 
                 # Check CERT_NONE in any function call keyword
                 for kw in node.keywords:

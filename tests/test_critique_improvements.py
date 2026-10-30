@@ -299,17 +299,17 @@ def test_4_axis_categorization_and_priority_calculation():
     assert eval_rule.asvs_chapter == "V5 Validation, Sanitization and Encoding"
 
     # Make finding and check dynamic priority score calculation
-    # High (4.0) * Likely (0.8) * reachable (1.0) * public_unauth (1.0) = 3.2
+    # High (7.0) * Likely (0.8) * reachable (1.0) * public_unauth (1.5) = 8.4
     p_high_reach = compute_priority(
         Severity.HIGH, Confidence.LIKELY, reachability="reachable", exposure="public_unauth"
     )
-    assert p_high_reach == 3.2
+    assert p_high_reach == 8.4
 
-    # High (4.0) * Likely (0.8) * unreachable (0.3) * internal (0.5) = 0.48
+    # High (7.0) * Likely (0.8) * unreachable (0.2) * internal (0.6) = 0.67
     p_unreach = compute_priority(
         Severity.HIGH, Confidence.LIKELY, reachability="unreachable", exposure="internal"
     )
-    assert p_unreach == 0.48
+    assert p_unreach == 0.67
     assert p_high_reach > p_unreach
 
     # Test finding creation with new fields
@@ -323,7 +323,7 @@ def test_4_axis_categorization_and_priority_calculation():
     )
     assert finding.owasp_category == "A03:2021-Injection"
     assert finding.asvs_chapter == "V5 Validation, Sanitization and Encoding"
-    assert finding.priority_score == 3.2
+    assert finding.priority_score == 8.4
     assert finding.exposure == "public_unauth"
     assert finding.reachability == "reachable"
 
@@ -643,5 +643,96 @@ def test_test_confirmation_feedback_loop():
     assert finding.confidence == Confidence.CONFIRMED
     assert finding.evidence_level == "test-confirmed"
     assert "Dynamic Test Failure Corroboration" in finding.context["test_feedback"]
+
+    # Verify asymmetric feedback semantics:
+    # A passing test does NOT demote a deterministic rule finding
+    passing_result = CheckResult(
+        tool_name="pytest",
+        tool_version="8.0.0",
+        check_name="Unit and Integration Tests",
+        check_type="unit_test",
+        command="pytest",
+        exit_code=0,
+        duration_sec=0.15,
+        status=CheckStatus.PASSED,
+        stdout="PASS: test_something in api/handlers.py",
+        stderr="",
+        gate_outcome="Pass",
+    )
+    static_rule_finding = make_finding(
+        RULES["OT-SEC-008"],
+        path="api/handlers.py",
+        line=42,
+        evidence="cursor.execute('SELECT * FROM users WHERE name = ' + user)",
+        confidence=Confidence.LIKELY,
+    )
+    calibrate_findings_with_test_results([static_rule_finding], [passing_result])
+    # Must remain LIKELY, not demoted
+    assert static_rule_finding.confidence == Confidence.LIKELY
+
+
+def test_expanded_security_and_governance_rules():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+
+        # 1. OT-SEC-016: Mass Assignment
+        # 2. OT-SEC-017: Insecure JWT
+        # 3. OT-SEC-020: ECB cipher
+        python_code = """
+import jwt
+from Crypto.Cipher import AES
+
+payload = User(**request.json)
+token = jwt.decode('sample_token', options={"verify_signature": False})
+cipher = AES.new(b"secretkey1234567", AES.MODE_ECB)
+"""
+        (tmp_path / "security_app.py").write_text(python_code, encoding="utf-8")
+
+        # 4. OT-POL-007: Privileged container mode in compose
+        compose_yml = """
+version: '3.8'
+services:
+  app:
+    image: myapp:latest
+    privileged: true
+"""
+        (tmp_path / "docker-compose.yml").write_text(compose_yml, encoding="utf-8")
+
+        engine = InventoryEngine(str(tmp_path))
+        files, _ = engine.scan()
+
+        checker = OfflineStaticChecker(tmp_path, files)
+        findings = checker.run_all()
+
+        rule_ids = {f.rule_id for f in findings}
+        assert "OT-SEC-016" in rule_ids
+        assert "OT-SEC-017" in rule_ids
+        assert "OT-SEC-020" in rule_ids
+        assert "OT-POL-007" in rule_ids
+
+
+def test_expired_inline_suppression():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        code = """
+import subprocess
+
+# offtest: ignore[OT-SEC-003]: temporary test expires="2020-01-01"
+subprocess.run("dir", shell=True)
+"""
+        (tmp_path / "expired_suppression.py").write_text(code, encoding="utf-8")
+
+        engine = InventoryEngine(str(tmp_path))
+        files, _ = engine.scan()
+
+        checker = OfflineStaticChecker(tmp_path, files)
+        findings = checker.run_all()
+
+        sec_findings = [f for f in findings if f.rule_id == "OT-SEC-003"]
+        assert len(sec_findings) == 1
+        # Expired suppression must NOT suppress the finding!
+        assert sec_findings[0].suppressed is False
+        assert "expired" in sec_findings[0].suppression_reason.lower()
+
 
 

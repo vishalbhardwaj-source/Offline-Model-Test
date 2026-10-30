@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12-3776AB.svg?logo=python)](https://python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests: 103 Passing](https://img.shields.io/badge/Tests-103%20Passing-brightgreen.svg)](tests/)
+[![Tests: 105 Passing](https://img.shields.io/badge/Tests-105%20Passing-brightgreen.svg)](tests/)
 [![Architecture: Neuro--Symbolic](https://img.shields.io/badge/Architecture-Neuro--Symbolic-blueviolet.svg)](BLUEPRINT.md)
 [![Air--Gap: Enforced](https://img.shields.io/badge/Air--Gap-Enforced%20%26%20Sinkholed-red.svg)](offtest/checks/sandbox_interceptor.py)
 
@@ -113,16 +113,31 @@ flowchart TD
 
 ### 3. 4-Axis Taxonomy & Priority Formula
 Findings are classified along four independent, orthogonal axes rather than mixed into a single arbitrary scale:
-1. **Category (Taxonomy):** Mapped to standard CWE identifiers and OWASP Top 10 categories (e.g. `CWE-89` SQL Injection, `CWE-798` Hardcoded Credentials, `CWE-639` IDOR, `CWE-285` Privilege Escalation).
-2. **Intrinsic Severity:** Technical worst-case impact on a 5-point scale (`CRITICAL` = 5.0, `HIGH` = 4.0, `MEDIUM` = 3.0, `LOW` = 2.0, `INFORMATIONAL` = 1.0).
-3. **Engine Confidence:** Single normalized certainty scale (`CONFIRMED` = 1.0, `LIKELY` = 0.7, `POSSIBLE` = 0.4).
-4. **Evidence Level:** Verification pedigree (`test-confirmed`, `reachable`, `static-only`, `model-hypothesis`).
+1. **Category (Taxonomy):** Mapped to standard CWE identifiers and OWASP Top 10 categories (e.g. `CWE-89` SQL Injection, `CWE-798` Hardcoded Credentials, `CWE-639` Object Auth/IDOR, `CWE-285` Function Auth/PrivEsc, `CWE-915` Mass Assignment).
+2. **Intrinsic Severity:** Worst-case technical impact weight calibrated against enterprise benchmarks:
+   - `CRITICAL` = **10.0**
+   - `HIGH` = **7.0**
+   - `MEDIUM` = **4.0**
+   - `LOW` = **2.0**
+   - `INFORMATIONAL` = **0.5**
+3. **Engine Confidence:** Single normalized certainty scale (0.0 to 1.0):
+   - `CONFIRMED` = **1.0** (Deterministic high-pattern or test-corroborated match)
+   - `HIGH` = **0.9**
+   - `LIKELY` = **0.8**
+   - `MEDIUM` = **0.6**
+   - `POSSIBLE` / `LOW` = **0.4**
+4. **Evidence Level:** Verification pedigree hierarchy:
+   - `test-confirmed`: Actively reproduced or asserted by dynamic test execution.
+   - `reachable`: Connected to an external entry point (HTTP route, CLI, public API) via cross-file call graph.
+   - `static-only`: Syntax/AST pattern match without dynamic verification.
+   - `model-hypothesis`: Synthesized by a neural model, requiring symbolic validation before confirmation.
 
 Remediation priority is computed deterministically:
-$$\text{Priority} = \text{Severity (1..5)} \times \text{Confidence (0.4..1.0)} \times \text{Reachability (0.3..1.0)} \times \text{Exposure (0.2..1.0)}$$
+$$\text{Priority} = \text{Severity Weight (10..0.5)} \times \text{Confidence (0.4..1.0)} \times \text{Reachability Factor (1.0..0.2)} \times \text{Exposure Factor (1.5..0.2)}$$
 
-- **Reachability Multipliers:** `reachable` (1.0), `unknown` (0.8), `unreachable` / dead code (0.3).
-- **Exposure Multipliers:** `public_unauth` (1.0), `public_auth` (0.7), `internal` (0.5), `test_fixture` (0.2).
+- **Reachability Multipliers:** `reachable` (**1.0**), `unknown` (**0.7**), `unreachable` / dead code (**0.2**).
+- **Exposure Multipliers:** `public_unauth` (**1.5**), `public_auth` (**1.0**), `internal` (**0.6**), `test_fixture` (**0.2**).
+- **Score Spectrum & Thresholds:** Scores range from **0.04** (Info in test fixture) up to **15.0** (Confirmed Critical in unauthenticated public route). Any defect scoring $\ge \mathbf{7.0}$ triggers mandatory release blocking.
 - **Root-Cause Deduplication:** Findings sharing the same underlying cause (`file_path::rule_id::parent_symbol`) are deduplicated into singular remediation tasks to eliminate alert fatigue.
 
 ### 4. Source-to-Sink Taint Engine & SARIF CodeFlows
@@ -137,22 +152,34 @@ $$\text{Priority} = \text{Severity (1..5)} \times \text{Confidence (0.4..1.0)} \
 - Evaluates dependency reachability via cross-file import call graphs to assign OpenVEX status:
   - `affected`: The vulnerable package is imported and referenced in live application code.
   - `not_affected`: The package is merely present in lockfiles but dead/unreferenced.
-- **Staleness Guard:** Flags a prominent warning in executive reports if the offline advisory snapshot exceeds `ADVISORY_STALENESS_THRESHOLD_DAYS` (90 days), preventing false security assumptions.
+- **Staleness Guard:** If the offline advisory snapshot exceeds `ADVISORY_STALENESS_THRESHOLD_DAYS` (90 days), the system actively generates finding `OT-SUP-006` with a warning in executive reports, preventing false security assumptions.
 
-### 6. Expanded Access Control & Infrastructure Governance
-- **`OT-SEC-012` (Unauthenticated Mutating Routes):** Detects state-modifying endpoints (`POST`, `PUT`, `DELETE`, `PATCH`) lacking authentication decorators or session checks.
-- **`OT-SEC-013` (Potential IDOR):** Detects direct primary key database lookups (`query.get`, `find_by_id`, `WHERE id = ...`) using user-supplied route parameters without tenant or ownership scoping.
-- **`OT-SEC-014` (Privilege Escalation):** Detects administrative routes (`/admin/*`, `/manage/*`) lacking explicit role checks (`@require_admin` / `@has_role`).
-- **`OT-SEC-015` (Permissive CORS):** Detects insecure wildcard origins (`*`) configured simultaneously with credential sharing (`supports_credentials=True`).
-- **`OT-POL-005` (Dockerfile Root User):** Flags container images running as default `root` without a dedicated `USER` declaration.
-- **`OT-POL-006` (Unpinned CI Actions):** Flags GitHub Actions workflows referencing mutable branch/tag refs (`@v4`, `@main`) instead of cryptographic 40-character commit SHAs.
-- **`OT-SUP-005` (Copyleft License Risk):** Identifies restrictive licenses (GPL, AGPL) in commercial target codebases.
+### 6. Expanded Access Control, Auth & Infrastructure Governance
+- **Function-Level vs. Object-Level Authorization:**
+  - `OT-SEC-013` (Object-Level / IDOR): Direct database lookup using user-supplied keys without tenant/user ownership checks (`CWE-639`).
+  - `OT-SEC-014` (Function-Level / PrivEsc): Administrative routes (`/admin/*`, `/manage/*`) lacking role checks (`CWE-285`).
+- **Application Security Controls:**
+  - `OT-SEC-012`: Unauthenticated mutating routes (`POST`, `PUT`, `DELETE`, `PATCH` without auth decorators).
+  - `OT-SEC-015`: Permissive CORS wildcard origins (`*`) configured simultaneously with credential sharing.
+  - `OT-SEC-016`: Mass assignment / unbounded request body unpacking (`**request.json`) into model constructors (`CWE-915`).
+  - `OT-SEC-017`: Insecure JWT/session configuration (`verify=False`, `none` algorithm, missing `exp` enforcement).
+  - `OT-SEC-018`: Missing CSRF protection on cookie-authenticated state-changing routes (`CWE-352`).
+  - `OT-SEC-019`: Missing rate limiting on authentication/login endpoints (`CWE-307`).
+  - `OT-SEC-020`: Cryptographic misuse (AES-ECB mode, weak RSA < 2048, MD5/SHA1 for sensitive tokens).
+- **Infrastructure as Code (IaC) & Policy:**
+  - `OT-POL-005`: Dockerfile executing as default `root` user without a dedicated `USER` directive.
+  - `OT-POL-006`: GitHub Actions workflows referencing mutable branch/tag refs (`@v4`, `@main`) instead of cryptographic 40-character commit SHAs.
+  - `OT-POL-007`: Privileged container mode (`privileged: true` / `--privileged`) in Docker Compose / IaC configs.
+  - `OT-SUP-005`: Copyleft license risk (GPL, AGPL) in commercial target codebases.
+- **Git-History Secret Scanning:** Walks local git commit history and staging diffs to detect committed credentials, private keys, and API tokens.
+- **Timed Inline Suppressions:** Parses `# offtest: ignore[RULE_ID] expires="YYYY-MM-DD"`. If the expiry date has passed, the suppression is automatically invalidated and the finding is flagged as active.
+- **Model Input Hardening:** Wraps untrusted source code and comments inside cryptographically nonce-fenced delimiters (`<untrusted_repo_content token="...">`), neutralizing prompt injection payloads in scanned code.
 
-### 7. Test-Confirmation Feedback Loop
-Dynamic test results directly calibrate static findings:
-- When a synthesized or existing unit test executes and fails on a defect's target file/function, the finding is elevated to `confidence = CONFIRMED` and `evidence_level = "test-confirmed"`.
-- When a test passes cleanly on an unverified model hypothesis, certainty is demoted to prevent false alarms.
-- Non-deterministic tests quarantined during flakiness repeat-sampling demote finding certainty to `evidence_level = "flaky-test"`.
+### 7. Asymmetric Test-Confirmation Feedback Loop
+Dynamic test results calibrate static findings with asymmetric confidence semantics:
+- **Strong Positive Corroboration:** When a synthesized or existing unit test executes and fails on a defect's target file/function, the finding is elevated to `confidence = CONFIRMED` (1.0) and `evidence_level = "test-confirmed"`.
+- **Weak Negative Non-Demotion:** When a test passes cleanly, it does **NOT** demote deterministic static rule findings, because auto-generated tests may simply lack assertion depth or branch coverage. Only unverified `model-hypothesis` findings are gently nudged down to `POSSIBLE`.
+- **Flakiness Quarantine Demotion:** Non-deterministic tests quarantined during repeat-sampling ($N \ge 3$) demote finding certainty to `evidence_level = "flaky-test"`.
 
 ### 4. Constrained Branch Test Synthesis & Self-Healing
 - Analyzes Abstract Syntax Tree (AST) conditional predicates (null checks, range comparisons, boolean guards).

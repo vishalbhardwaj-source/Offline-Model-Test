@@ -211,38 +211,44 @@ def compute_priority(
 ) -> float:
     """
     Computes an exposure-weighted priority score for ranking actionable findings:
-    Priority = Severity * Confidence * Reachability * Exposure (scale ~0.06 to 5.0)
+    Priority = Severity Weight * Confidence * Reachability Factor * Exposure Factor
+
+    Calibrated Weights:
+    - Severity: Critical (10.0), High (7.0), Medium (4.0), Low (2.0), Informational (0.5)
+    - Confidence: Confirmed (1.0), High (0.9), Likely (0.8), Medium (0.6), Possible/Low (0.4)
+    - Reachability: Reachable (1.0), Unknown (0.7), Unreachable (0.2)
+    - Exposure: Public Unauthenticated (1.5), Authenticated (1.0), Internal (0.6), Test Fixture (0.2)
     """
     sev_map = {
-        Severity.CRITICAL: 5.0,
-        Severity.HIGH: 4.0,
-        Severity.MEDIUM: 3.0,
+        Severity.CRITICAL: 10.0,
+        Severity.HIGH: 7.0,
+        Severity.MEDIUM: 4.0,
         Severity.LOW: 2.0,
-        Severity.INFORMATIONAL: 1.0,
+        Severity.INFORMATIONAL: 0.5,
     }
     conf_map = {
         Confidence.CONFIRMED: 1.0,
-        Confidence.LIKELY: 0.8,
         Confidence.HIGH: 0.9,
-        Confidence.MEDIUM: 0.7,
+        Confidence.LIKELY: 0.8,
+        Confidence.MEDIUM: 0.6,
         Confidence.POSSIBLE: 0.4,
         Confidence.LOW: 0.4,
     }
     reach_map = {
         "reachable": 1.0,
         "unknown": 0.7,
-        "unreachable": 0.3,
+        "unreachable": 0.2,
     }
     expo_map = {
-        "public_unauth": 1.0,
-        "public_auth": 0.8,
-        "internal": 0.5,
+        "public_unauth": 1.5,
+        "public_auth": 1.0,
+        "internal": 0.6,
         "test_fixture": 0.2,
     }
-    s = sev_map.get(severity, 2.0)
+    s = sev_map.get(severity, 4.0)
     c = conf_map.get(confidence, 0.7)
     r = reach_map.get(reachability, 0.7)
-    e = expo_map.get(exposure, 0.5)
+    e = expo_map.get(exposure, 0.6)
     return round(s * c * r * e, 2)
 
 

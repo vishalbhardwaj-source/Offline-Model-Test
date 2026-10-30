@@ -203,6 +203,22 @@ class OfflineAdvisoryMatcher:
 
     def match(self, components: List[SBOMComponent]) -> List[Finding]:
         findings: List[Finding] = []
+
+        # Audit advisory staleness and emit warning finding if older than threshold
+        is_stale, age_days, warn_msg = check_advisory_staleness()
+        if is_stale and "OT-SUP-006" in RULES:
+            f_path = components[0].source_file if components and components[0].source_file else "SBOM"
+            findings.append(
+                make_finding(
+                    RULES["OT-SUP-006"],
+                    path=f_path,
+                    line=1,
+                    evidence=warn_msg,
+                    exposure="internal",
+                    reachability="reachable",
+                )
+            )
+
         rule = RULES.get("OT-SUP-004")
         if not rule:
             return findings
