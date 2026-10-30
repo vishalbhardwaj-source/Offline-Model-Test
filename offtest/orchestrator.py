@@ -24,6 +24,7 @@ from offtest.intake.git_manager import GitManager
 from offtest.intake.intake import RepositoryIntake, SecurityError
 from offtest.inventory.engine import InventoryEngine
 from offtest.inventory.sbom import SBOMGenerator
+from offtest.adapters.registry import get_all_coverages
 from offtest.checks.isolated_runner import verify_kernel_sandbox_environment
 from offtest.reports.detailed import DetailedReportGenerator
 from offtest.reports.issue_focused import IssueFocusedReportGenerator
@@ -265,6 +266,8 @@ class AssessmentOrchestrator:
             openapi_spec=openapi_spec,
             flakiness=flakiness_report,
             generated_test_suite=generated_test_suite,
+            language_coverages=get_all_coverages(),
+            skipped_generated_bundle_count=getattr(getattr(check_planner, "static_checker", None), "skipped_bundle_count", 0),
         )
 
         # 9. Save Evidence Store & Cryptographic Integrity Checksum (SHA-256)

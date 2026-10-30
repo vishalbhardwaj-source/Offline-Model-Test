@@ -78,8 +78,43 @@ class DetailedReportGenerator:
         lines.append("\n### Key Observations & Operational Risk")
         lines.append(f"- **Total Discovered Files:** {self.ctx.inventory_summary.total_files} ({self.ctx.inventory_summary.analyzed_count} analyzed, {self.ctx.inventory_summary.excluded_count} excluded, {self.ctx.inventory_summary.generated_count} generated, {self.ctx.inventory_summary.binary_count} binary)")
         lines.append(f"- **Identified Ecosystem:** Languages: `{', '.join(self.ctx.inventory_summary.languages.keys()) or 'None'}` | Frameworks: `{', '.join(self.ctx.inventory_summary.frameworks) or 'None'}`")
-        lines.append(f"- **Offline SBOM Dependencies:** {self.ctx.sbom.total_dependencies} components across `{', '.join(self.ctx.sbom.ecosystems) or 'None'}`")
+        lines.append(f"- **Offline SBOM Dependencies:** {self.ctx.sbom.total_dependencies} components across `{', '.join(self.ctx.sbom.ecosystems) or 'None'}` (Status: **{getattr(self.ctx.sbom, 'status', 'complete').upper()}**)")
+        if getattr(self.ctx.sbom, "status", "") == "incomplete":
+            lines.append(f"> [!WARNING]\n> **Incomplete SBOM Warning:** {self.ctx.sbom.notes or 'Transitive dependencies unverified offline without local repository cache.'}")
+        if getattr(self.ctx, "skipped_generated_bundle_count", 0) > 0:
+            lines.append(f"- **Generated Code & Bundles Skipped for Static Rules:** {self.ctx.skipped_generated_bundle_count} files (in dist, build, target, .next, .gradle, caches)")
         lines.append(f"- **Test Execution Security:** {'Script execution was approved by user flag.' if self.ctx.allow_scripts else 'Project-supplied test scripts were BLOCKED from automated execution per safety policy.'}")
+
+        # Language Adapter Coverage & Analysis Depth (Page 1)
+        coverages = getattr(self.ctx, "language_coverages", {})
+        if coverages:
+            lines.append("\n### Language Coverage & Analysis Depth Matrix")
+            lines.append("| Language Adapter | Symbols | Call Graph | Reachability | Routes & Auth | Taint & Rules | Test Synthesis | Pedigree & Operational Notes |")
+            lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |")
+            for c_name, cov in coverages.items():
+                cov_dict = cov.model_dump() if hasattr(cov, "model_dump") else cov
+                lang_l = cov_dict.get("language", c_name)
+                sym_d = cov_dict.get("symbols", "heuristic")
+                cg_d = cov_dict.get("call_graph", "heuristic")
+                reach_d = cov_dict.get("reachability", "heuristic")
+                ra_d = cov_dict.get("routes_and_auth", "heuristic")
+                tr_d = cov_dict.get("taint_and_rules", "heuristic")
+                ts_d = cov_dict.get("test_synthesis", "none")
+                notes = cov_dict.get("notes") or ""
+                lines.append(f"| **{lang_l}** | `{sym_d}` | `{cg_d}` | `{reach_d}` | `{ra_d}` | `{tr_d}` | `{ts_d}` | {notes} |")
+
+            # Check if any discovered repo language has no semantic findings
+            discovered_langs = set(self.ctx.inventory_summary.languages.keys())
+            finding_paths = {f.file_path for f in findings if f.file_path}
+            for d_lang in discovered_langs:
+                if d_lang in ("Python", "TypeScript", "JavaScript", "Java"):
+                    has_findings = any(
+                        af.language == d_lang and af.path in finding_paths
+                        for af in self.ctx.files
+                    )
+                    if not has_findings:
+                        lines.append(f"\n> [!NOTE]\n> **Analysis Depth Notice:** Language `{d_lang}` identified in repository has 0 semantic findings and is cataloged as **not analyzed at this depth**, not verified clean.")
+
         lines.append("\n---\n")
 
         # 3. Repository Inventory
@@ -113,12 +148,16 @@ class DetailedReportGenerator:
             for af in analyzed_files:
                 if af.language == "Python":
                     analyzer = "Python AST Validator & Security AST Visitor"
+                elif af.language in ("JavaScript", "TypeScript", "JavaScript (JSX)", "TypeScript (TSX)"):
+                    analyzer = "TypeScript / React AST & Component Security Adapter"
+                elif af.language == "Java":
+                    analyzer = "Java / Spring Boot Parser & Bean Security Adapter"
+                elif af.language == "Properties":
+                    analyzer = "Spring Properties Configuration Security Inspector"
                 elif af.language == "HTML":
                     analyzer = "HTML DOM Template & Route Structure Mapper"
                 elif af.language in ["Requirements", "JSON", "YAML", "TOML"]:
                     analyzer = "Offline SBOM & Dependency Configuration Inspector"
-                elif af.language in ["JavaScript", "TypeScript"]:
-                    analyzer = "JavaScript/TypeScript Static Route & Syntax Inspector"
                 else:
                     analyzer = f"Offline {af.language or 'Text'} Inspector"
                 lc_str = str(af.line_count) if af.line_count is not None else "N/A"

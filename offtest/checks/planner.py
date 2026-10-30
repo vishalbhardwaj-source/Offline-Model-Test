@@ -132,6 +132,7 @@ class CheckPlanner:
             project_index=self.project_index,
             app_tier=self.app_tier,
         )
+        self.static_checker = static_checker
         _static_start = time.perf_counter()
         static_findings = static_checker.run_all(branch=branch)
         _static_elapsed = time.perf_counter() - _static_start

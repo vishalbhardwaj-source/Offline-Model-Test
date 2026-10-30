@@ -44,6 +44,19 @@ RULE_CWE_CVSS_MAP: Dict[str, Tuple[str, str, float, str]] = {
     "No-Op Function": ("CWE-561", "Dead Code", 0.0, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N"),
     "Uncalled Dead Code": ("CWE-561", "Dead Code", 0.0, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N"),
     "Constant Condition": ("CWE-570", "Expression is Always False", 0.0, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N"),
+    "dangerouslySetInnerHTML": ("CWE-79", "Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')", 8.2, "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N"),
+    "javascript: URL": ("CWE-79", "Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')", 8.2, "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:L/A:N"),
+    "localStorage": ("CWE-922", "Insecure Storage of Sensitive Information", 5.9, "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N"),
+    "Browser Environment Variable": ("CWE-200", "Exposure of Sensitive Information to an Unauthorized Actor", 7.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"),
+    "Java SQL Injection": ("CWE-89", "Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')", 8.8, "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"),
+    "Unsafe Java Object Deserialization": ("CWE-502", "Deserialization of Untrusted Data", 9.8, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
+    "XML External Entity": ("CWE-611", "Improper Restriction of XML External Entity Reference", 8.2, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:N"),
+    "Missing Method-Level Security": ("CWE-306", "Missing Authentication for Critical Function", 7.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N"),
+    "Spring Security CSRF": ("CWE-352", "Cross-Site Request Forgery (CSRF)", 6.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:H/A:N"),
+    "Spring Configuration Credential": ("CWE-798", "Use of Hard-coded Credentials", 7.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"),
+    "NoSQL Injection": ("CWE-943", "Improper Neutralization of Special Elements in Data Query Logic", 8.5, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N"),
+    "child_process": ("CWE-78", "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')", 8.8, "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"),
+    "Missing Helmet": ("CWE-1021", "Improper Restriction of Rendered UI Layers or Frames", 5.4, "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N"),
 }
 
 SANDBOX_ARTIFACT_PATTERNS = [
@@ -114,9 +127,16 @@ class OfflineStaticChecker:
     def run_all(self, branch: Optional[str] = None) -> List[Finding]:
         findings: List[Finding] = []
         counter = 1
+        self.skipped_bundle_count = 0
 
         for f in self.files:
             if f.disposition.value != "analyzed":
+                continue
+
+            # Skip generated code and bundles for static rules (Page 3)
+            norm_parts = [p.lower() for p in Path(f.path).parts]
+            if any(p in ("dist", "build", "target", ".next", ".gradle", "caches") for p in norm_parts):
+                self.skipped_bundle_count += 1
                 continue
 
             full_path = self.repo_dir / f.path
@@ -206,8 +226,22 @@ class OfflineStaticChecker:
                 )
                 counter += 1
 
-            # 2. Python specific checks (AST syntax & security)
-            if f.language == "Python":
+            # 2. Language-specific adapter checks (TypeScript/React, Java/Spring, Python)
+            from offtest.adapters.registry import get_adapter_for_language
+            adapter = get_adapter_for_language(f.language)
+
+            if adapter and adapter.name != "python":
+                adapter_findings = adapter.run_rules(f.path, content, self.project_index, self, branch)
+                for item in adapter_findings:
+                    findings.append(item)
+                    counter += 1
+            elif f.language == "YAML" and Path(f.path).name.lower() in ("application.yml", "application.yaml"):
+                java_ad = get_adapter_for_language("Java")
+                if java_ad:
+                    for item in java_ad.run_rules(f.path, content, self.project_index, self, branch):
+                        findings.append(item)
+                        counter += 1
+            elif f.language == "Python":
                 syntax_finding, parsed_ast = self._check_python_syntax(f.path, content, counter, branch)
                 if syntax_finding:
                     findings.append(syntax_finding)

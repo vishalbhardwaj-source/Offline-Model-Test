@@ -281,6 +281,46 @@ class SBOMGenerator:
             except Exception:
                 pass
 
+        # 10. Java: Maven (pom.xml) and Gradle (*.lockfile, build.gradle)
+        sbom_status = "complete"
+        sbom_notes = None
+        has_pom = any(f.endswith("pom.xml") for f in file_map)
+        has_gradle_lock = any(f.endswith(".lockfile") or "gradle.lockfile" in f for f in file_map)
+        has_dep_tree = any(f.endswith("dependency-tree.txt") or f.endswith("mvn-dependency-tree.txt") for f in file_map)
+
+        if has_pom:
+            for p_path in [p for p in file_map if p.endswith("pom.xml")]:
+                try:
+                    full_p = self.repo_dir / p_path
+                    xml_text = full_p.read_text(encoding="utf-8", errors="ignore")
+                    dep_blocks = re.findall(r"<dependency>(.*?)</dependency>", xml_text, flags=re.DOTALL)
+                    for block in dep_blocks:
+                        gid_m = re.search(r"<groupId>(.*?)</groupId>", block)
+                        aid_m = re.search(r"<artifactId>(.*?)</artifactId>", block)
+                        ver_m = re.search(r"<version>(.*?)</version>", block)
+                        if gid_m and aid_m:
+                            gid = gid_m.group(1).strip()
+                            aid = aid_m.group(1).strip()
+                            ver = ver_m.group(1).strip() if ver_m else "unknown"
+                            full_name = f"{gid}:{aid}"
+                            components.append(
+                                SBOMComponent(
+                                    name=full_name,
+                                    version=ver,
+                                    ecosystem="maven",
+                                    purl=f"pkg:maven/{gid}/{aid}@{ver}",
+                                    source_file=p_path,
+                                    direct=True,
+                                    is_approximate_range=ver == "unknown",
+                                )
+                            )
+                except Exception:
+                    pass
+
+            if not has_gradle_lock and not has_dep_tree:
+                sbom_status = "incomplete"
+                sbom_notes = "pom.xml lists direct dependencies only. Transitive ones need a resolved tree (mvn dependency:tree) or a Gradle lockfile; offline without local repository, reported as incomplete."
+
         # Deduplicate components by (ecosystem, name, version)
         unique_components: List[SBOMComponent] = []
         seen = set()
@@ -299,4 +339,6 @@ class SBOMGenerator:
             direct_dependencies=direct_count,
             ecosystems=ecosystems,
             components=unique_components,
+            status=sbom_status,
+            notes=sbom_notes,
         )

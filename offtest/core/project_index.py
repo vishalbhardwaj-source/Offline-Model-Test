@@ -129,9 +129,15 @@ class ProjectIndex:
         return lines
 
     def _build_index(self):
-        # 1. Parse and extract symbols, calls, routes per file
+        from offtest.adapters.registry import get_adapter_for_language
+
+        # 1. Parse and extract symbols, calls, routes per file via language adapters
         for f in self.analyzed_files:
-            if f.language == "Python":
+            adapter = get_adapter_for_language(f.language)
+            content = self.get_content(f.path)
+            if adapter:
+                adapter.index_file(f.path, content, self)
+            elif f.language == "Python":
                 tree = self.get_ast(f.path)
                 if tree:
                     self._index_python_file(f.path, tree)
@@ -579,6 +585,13 @@ class ProjectIndex:
             if sym.name.startswith("__") and sym.name.endswith("__"):
                 continue  # dunder methods like __init__, __str__
             if sym.is_entry_point or key in self.reachable_symbols:
+                continue
+
+            # Heuristic reachability rule (Page 1 & 3): Heuristic reachability can only produce
+            # 'unknown', never 'unreachable'. For non-Python languages (TS/JS/React, Java) and Spring beans,
+            # symbols with no proven path remain in 'unknown' reachability state.
+            ext = Path(sym.file_path).suffix.lower()
+            if ext not in (".py",):
                 continue
 
             self.unreachable_symbols.append(sym)

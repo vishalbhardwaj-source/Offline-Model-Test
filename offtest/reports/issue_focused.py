@@ -116,6 +116,17 @@ class IssueFocusedReportGenerator:
         Generates the standard REPORT_2_ISSUES.md, with findings sorted Critical to Low.
         """
         lines = self._render_header_and_summary("Actionable Issue-Focused Assessment Report", self.ctx.findings)
+
+        # Multi-Language Adapter Coverage Matrix
+        coverages = getattr(self.ctx, "language_coverages", {})
+        if coverages:
+            lines.append("\n## Multi-Language Adapter Coverage & Analysis Depth")
+            lines.append("| Language Adapter | Symbols | Call Graph | Reachability | Routes & Auth | Taint & Rules | Test Synthesis | Notes |")
+            lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |")
+            for c_name, cov in coverages.items():
+                cov_dict = cov.model_dump() if hasattr(cov, "model_dump") else cov
+                lines.append(f"| **{cov_dict.get('language', c_name)}** | `{cov_dict.get('symbols', 'heuristic')}` | `{cov_dict.get('call_graph', 'heuristic')}` | `{cov_dict.get('reachability', 'heuristic')}` | `{cov_dict.get('routes_and_auth', 'heuristic')}` | `{cov_dict.get('taint_and_rules', 'heuristic')}` | `{cov_dict.get('test_synthesis', 'none')}` | {cov_dict.get('notes') or ''} |")
+
         lines.extend(self._render_findings_list(self.ctx.findings, cap_vendor_noise=False))
 
         # Flakiness Quarantine Section

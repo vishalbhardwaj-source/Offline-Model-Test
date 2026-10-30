@@ -148,6 +148,9 @@ def assess(
     click.echo(f"[+] Inferred RBAC Roles: {', '.join(context.rbac_matrix.roles)}")
     click.echo(f"[+] Generated Branch Tests: {context.generated_test_suite.total_generated} (Status: synthesized, unverified)")
     click.echo(f"[+] Total findings: {len(context.findings)}")
+    click.echo(f"[+] Language Adapters: Python, TypeScript/React, Java/Spring active")
+    if getattr(context.sbom, "status", "") == "incomplete":
+        click.echo(f"[!] SBOM Status: INCOMPLETE (direct dependencies only; transitive tree unresolved offline)")
     click.echo(f"[+] Report 1 (Detailed): {detailed_path}")
     if getattr(orchestrator_res, "detailed_hardcoded_path", None):
         click.echo(f"[+]   -> Branch 1A (Detailed Hardcoded): {orchestrator_res.detailed_hardcoded_path}")

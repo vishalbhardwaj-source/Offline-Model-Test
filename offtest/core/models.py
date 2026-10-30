@@ -56,6 +56,23 @@ class CheckStatus(str, Enum):
     ANALYSIS_INCOMPLETE = "AnalysisIncomplete"
 
 
+class FeatureDepth(str, Enum):
+    NONE = "none"
+    HEURISTIC = "heuristic"
+    SEMANTIC = "semantic"
+
+
+class LanguageCoverage(BaseModel):
+    language: str
+    symbols: FeatureDepth = FeatureDepth.HEURISTIC
+    call_graph: FeatureDepth = FeatureDepth.HEURISTIC
+    reachability: FeatureDepth = FeatureDepth.HEURISTIC
+    routes_and_auth: FeatureDepth = FeatureDepth.HEURISTIC
+    taint_and_rules: FeatureDepth = FeatureDepth.HEURISTIC
+    test_synthesis: FeatureDepth = FeatureDepth.NONE
+    notes: Optional[str] = None
+
+
 class FileRecord(BaseModel):
     path: str
     size_bytes: int
@@ -444,6 +461,8 @@ class SBOMReport(BaseModel):
     direct_dependencies: int = 0
     ecosystems: List[str] = Field(default_factory=list)
     components: List[SBOMComponent] = Field(default_factory=list)
+    status: str = "complete"  # complete, incomplete
+    notes: Optional[str] = None
 
 
 class RBACPermissionRecord(BaseModel):
@@ -572,3 +591,5 @@ class RunContext(BaseModel):
     openapi_spec: OpenAPISpecRecord = Field(default_factory=OpenAPISpecRecord)
     flakiness: FlakinessReport = Field(default_factory=FlakinessReport)
     generated_test_suite: GeneratedTestSuite = Field(default_factory=GeneratedTestSuite)
+    language_coverages: Dict[str, LanguageCoverage] = Field(default_factory=dict)
+    skipped_generated_bundle_count: int = 0

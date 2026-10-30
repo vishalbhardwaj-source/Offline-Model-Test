@@ -62,6 +62,8 @@ class OfflineConfig:
         "target",
         "bin",
         "obj",
+        ".gradle",
+        ".m2",
     }
 
     # Exact placeholder secret values allowlist (exact tokens, not common words)
@@ -108,6 +110,8 @@ class OfflineConfig:
         r"(^|[\\/])target([\\/].*)?$",  # Rust/Java target
         r"(^|[\\/])bin([\\/].*)?$",
         r"(^|[\\/])obj([\\/].*)?$",
+        r"(^|[\\/])\.gradle([\\/].*)?$",
+        r"(^|[\\/])\.m2([\\/].*)?$",
     ]
 
     # Generated file markers

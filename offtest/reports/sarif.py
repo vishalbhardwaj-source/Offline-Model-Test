@@ -181,6 +181,7 @@ class SARIFReportGenerator:
                         "kernelIsolationActive": bool(getattr(self.ctx, "kernel_isolation_active", False)),
                         "networkIsolationMode": getattr(self.ctx, "network_isolation_mode", "unknown"),
                         "offlineEnforced": bool(getattr(self.ctx, "offline_enforced", True)),
+                        "languageCoverages": {k: v.model_dump() if hasattr(v, "model_dump") else v for k, v in getattr(self.ctx, "language_coverages", {}).items()},
                     },
                     "results": results,
                 }

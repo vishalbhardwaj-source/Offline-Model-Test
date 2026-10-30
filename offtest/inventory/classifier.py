@@ -39,6 +39,7 @@ EXTENSION_LANGUAGE_MAP: Dict[str, str] = {
     ".rb": "Ruby",
     ".sql": "SQL",
     ".dockerfile": "Dockerfile",
+    ".properties": "Properties",
 }
 
 BINARY_EXTENSIONS = {
@@ -58,7 +59,8 @@ TEST_PATTERNS = [
 ENTRY_POINT_FILENAMES = {
     "main.py", "app.py", "wsgi.py", "asgi.py", "index.js", "server.js",
     "app.js", "main.js", "index.ts", "server.ts", "app.ts", "main.go",
-    "main.rs", "Application.java"
+    "main.rs", "Application.java", "index.tsx", "main.tsx", "App.tsx",
+    "index.jsx", "main.jsx", "App.jsx"
 }
 
 
@@ -135,7 +137,7 @@ def classify_file(rel_path: str, abs_path: Path) -> Tuple[FileDisposition, str, 
         category = "source"
 
     # If language is recognized for analysis
-    if language in ["Python", "JavaScript", "JavaScript (JSX)", "TypeScript", "TypeScript (TSX)", "HTML", "CSS", "JSON", "YAML", "Shell", "Requirements", "Dockerfile"]:
+    if language in ["Python", "JavaScript", "JavaScript (JSX)", "TypeScript", "TypeScript (TSX)", "Java", "Properties", "HTML", "CSS", "JSON", "YAML", "Shell", "Requirements", "Dockerfile"]:
         return FileDisposition.ANALYZED, "Supported language or manifest for offline inspection", language, category
 
     if language is not None:
