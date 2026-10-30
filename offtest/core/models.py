@@ -24,12 +24,13 @@ class FindingCategory(str, Enum):
 
 
 class Confidence(str, Enum):
-    CONFIRMED = "Confirmed"
-    LIKELY = "Likely"
-    POSSIBLE = "Possible"
-    HIGH = "High"
-    MEDIUM = "Medium"
-    LOW = "Low"
+    DETERMINISTIC = "Deterministic"  # 1.00: Unambiguous AST or provider pattern syntax (formerly Confirmed)
+    CONFIRMED = "Confirmed"          # Backwards-compatible alias for DETERMINISTIC
+    LIKELY = "Likely"                # 0.85: High-precision AST pattern match
+    POSSIBLE = "Possible"            # 0.40: Broad syntactic indicator
+    HIGH = "High"                    # 0.85 alias
+    MEDIUM = "Medium"                # 0.65
+    LOW = "Low"                      # 0.40 alias
 
 
 class EvidenceStatus(str, Enum):
@@ -252,6 +253,7 @@ def compute_priority(
         Severity.INFORMATIONAL: 5.0,
     }
     conf_map = {
+        Confidence.DETERMINISTIC: 1.00,
         Confidence.CONFIRMED: 1.00,
         Confidence.HIGH: 0.85,
         Confidence.LIKELY: 0.85,

@@ -127,29 +127,54 @@ class CheckPlanner:
         # Gate evaluation based on Category, Severity, Confidence, Priority (0-100 scale), and Hard Overrides:
         # 1. Blocking security defects:
         #    - Score-based: VULNERABILITY or SECRET with Priority >= 45.0 (excluding model-hypothesis)
-        #    - Hard Overrides (independent of multiplicative factors):
-        #      * Confirmed Critical or High defect (Severity in CRITICAL/HIGH and Confidence == CONFIRMED)
-        #      * Known-Exploited Vulnerability (cisa_kev == True)
-        #      * Verified live exposed cloud/auth secret (OT-SCR-001..003 with Confidence != POSSIBLE)
+        #    - Hard Overrides (sets gate = FAIL regardless of multiplicative factors, with priority floor >= 90):
+        #      * Test-confirmed Critical or High defect (evidence_level == "test-confirmed" and Severity in CRITICAL/HIGH)
+        #      * Reachable Critical with precision >= 0.85 (Severity == CRITICAL, reachability == "reachable", confidence in DETERMINISTIC/CONFIRMED/LIKELY)
+        #      * KEV-listed Vulnerability in an affected or unknown dependency (cisa_kev == True and reachability != "unreachable")
+        #      * Provider-pattern secret match outside test/fixture paths (OT-SCR-001..003 with confidence != POSSIBLE and exposure != "test_fixture")
         #    Suppressed findings never block the gate.
-        blocking_security = [
-            f for f in static_findings
-            if getattr(f, "category", FindingCategory.VULNERABILITY) in (FindingCategory.VULNERABILITY, FindingCategory.SECRET, FindingCategory.SUPPLY_CHAIN)
-            and not getattr(f, "suppressed", False)
-            and getattr(f, "evidence_level", "") != "model-hypothesis"
-            and (
-                (getattr(f, "priority_score", 0.0) >= 45.0)
-                or (
-                    f.severity in (Severity.CRITICAL, Severity.HIGH)
-                    and f.confidence in (Confidence.CONFIRMED, Confidence.LIKELY)
-                )
-                or getattr(f, "cisa_kev", False)
-                or (
-                    f.rule_id in ("OT-SCR-001", "OT-SCR-002", "OT-SCR-003")
-                    and f.confidence in (Confidence.CONFIRMED, Confidence.LIKELY)
-                )
-            )
-        ]
+        blocking_security = []
+        for f in static_findings:
+            if getattr(f, "suppressed", False):
+                continue
+            if getattr(f, "evidence_level", "") == "model-hypothesis":
+                continue
+
+            is_blocking = False
+            # Score-based threshold:
+            if getattr(f, "priority_score", 0.0) >= 45.0:
+                is_blocking = True
+
+            # Hard Override 1: Test-confirmed Critical or High defect
+            elif f.evidence_level == "test-confirmed" and f.severity in (Severity.CRITICAL, Severity.HIGH):
+                is_blocking = True
+                f.priority_score = max(f.priority_score, 90.0)
+
+            # Hard Override 2: Reachable Critical defect on internal/public route with precision >= 0.85
+            elif (
+                f.severity == Severity.CRITICAL
+                and getattr(f, "reachability", "") == "reachable"
+                and f.confidence in (Confidence.DETERMINISTIC, Confidence.CONFIRMED, Confidence.LIKELY, Confidence.HIGH)
+            ):
+                is_blocking = True
+                f.priority_score = max(f.priority_score, 90.0)
+
+            # Hard Override 3: KEV-listed CVE restricted to affected or unknown reachability (not unreachable lockfiles)
+            elif getattr(f, "cisa_kev", False) and getattr(f, "reachability", "") != "unreachable":
+                is_blocking = True
+                f.priority_score = max(f.priority_score, 90.0)
+
+            # Hard Override 4: Provider-pattern secret match outside test or fixture paths
+            elif (
+                f.rule_id in ("OT-SCR-001", "OT-SCR-002", "OT-SCR-003")
+                and f.confidence in (Confidence.DETERMINISTIC, Confidence.CONFIRMED, Confidence.LIKELY, Confidence.HIGH)
+                and getattr(f, "exposure", "internal") != "test_fixture"
+            ):
+                is_blocking = True
+                f.priority_score = max(f.priority_score, 90.0)
+
+            if is_blocking:
+                blocking_security.append(f)
 
         # 2. Air-gap policy violations: POLICY at Critical/High with Confirmed/Likely confidence
         #    (e.g., OT-POL-001 external URLs, OT-POL-002 network sockets, OT-POL-003 unpinned base images,
